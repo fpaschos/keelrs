@@ -1,4 +1,8 @@
 //! The tool loop, driven on rig-core's scripted model: no network.
+//!
+//! Unit tests, not `keelrs/tests/`: they inject the model through the private
+//! `run_with` and read Rig's messages from `Settled`, neither of which the
+//! public API exposes (Rig types stay in this module, ADR 0004).
 
 use std::convert::Infallible;
 use std::io;
