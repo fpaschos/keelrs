@@ -5,6 +5,7 @@
 //! that change one file can each write over the other; the implementer's instructions ask it
 //! never to send such calls in one reply.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use keelrs::{Tool, ToolCall};
@@ -14,49 +15,34 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 /// Longest a `shell` command runs; the model then reads that it timed out.
-const SHELL_TIMEOUT: Duration = Duration::from_mins(20);
+const SHELL_TIMEOUT: Duration = Duration::from_mins(5);
 
-/// One set of coding tools; clones share what `read` has seen.
-#[derive(Clone)]
-pub struct CodingTools {
-    read: Read,
-    write: Write,
-    edit: Edit,
-}
+/// `read`, `search`, `list` and `shell`: looking around, and `git`/`gh` through `shell`.
+pub static LOOKING: LazyLock<Vec<Tool>> = LazyLock::new(|| looking(Read::default()));
 
-impl CodingTools {
-    pub fn new() -> Self {
-        let read = Read::default();
-        Self {
-            write: Write {
-                seen: read.seen.clone(),
-                ..Write::default()
-            },
-            edit: Edit {
-                seen: read.seen.clone(),
-                ..Edit::default()
-            },
-            read,
-        }
-    }
+/// [`LOOKING`], plus `write` and `edit`, which share what its `read` has seen.
+pub static CODING: LazyLock<Vec<Tool>> = LazyLock::new(|| {
+    let read = Read::default();
+    let seen = read.seen.clone();
+    let mut tools = looking(read);
+    tools.push(rig(Write {
+        seen: seen.clone(),
+        ..Write::default()
+    }));
+    tools.push(rig(Edit {
+        seen,
+        ..Edit::default()
+    }));
+    tools
+});
 
-    /// `read`, `search`, `list` and `shell`: looking around, and `git`/`gh` through `shell`.
-    pub fn looking(&self) -> Vec<Tool> {
-        vec![
-            rig(self.read.clone()),
-            rig(Search::default()),
-            rig(List::default()),
-            rig(Shell::default()).timeout(SHELL_TIMEOUT),
-        ]
-    }
-
-    /// [`looking`](Self::looking), plus `write` and `edit`.
-    pub fn coding(&self) -> Vec<Tool> {
-        let mut tools = self.looking();
-        tools.push(rig(self.write.clone()));
-        tools.push(rig(self.edit.clone()));
-        tools
-    }
+fn looking(read: Read) -> Vec<Tool> {
+    vec![
+        rig(read),
+        rig(Search::default()),
+        rig(List::default()),
+        rig(Shell::default()).timeout(SHELL_TIMEOUT),
+    ]
 }
 
 /// A Rig tool as a keelrs tool; each call is logged to stderr.

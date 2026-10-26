@@ -1,6 +1,7 @@
 //! Flow: keelrs working on keelrs. A planner picks the next `agent-ready` issue, an implementer
 //! changes the working tree, and a reviewer on another model reads the change; its findings go
-//! back to the same implementer conversation, for at most three rounds. Nothing is committed.
+//! back to the same implementer conversation, until it approves or [`MAX_ROUNDS`] run out.
+//! Nothing is committed.
 //!
 //! No sandbox and no worktree: the agents work in this checkout. Each tool call is logged to
 //! stderr.
@@ -14,12 +15,14 @@
 mod coding;
 mod report;
 
+use std::sync::LazyLock;
+
 use anyhow::bail;
 use keelrs::{Agent, AgentContext, Runtime};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::coding::CodingTools;
+use crate::coding::{CODING, LOOKING};
 use crate::report::Report;
 
 /// Implement-then-review rounds before the flow gives up.
@@ -60,56 +63,51 @@ enum Verdict {
     Changes,
 }
 
+static PLAN: LazyLock<Report<Plan>> = LazyLock::new(|| Report::new("report_plan"));
+static IMPLEMENTATION: LazyLock<Report<Implementation>> =
+    LazyLock::new(|| Report::new("report_implementation"));
+static REVIEW: LazyLock<Report<Review>> = LazyLock::new(|| Report::new("report_review"));
+
+/// Picks the next issue, looking only.
+fn planner(cx: &mut AgentContext) -> String {
+    cx.use_model("anthropic/claude-sonnet-5-5");
+    for tool in LOOKING.iter() {
+        cx.use_tool(tool.clone());
+    }
+    cx.use_tool(PLAN.tool("Report the issue you picked, or none. Call once, last."));
+    include_str!("../prompts/plan.md").into()
+}
+
+/// Changes the working tree for one issue.
+fn implementer(cx: &mut AgentContext) -> String {
+    cx.use_model("anthropic/claude-sonnet-5-5");
+    for tool in CODING.iter() {
+        cx.use_tool(tool.clone());
+    }
+    cx.use_tool(IMPLEMENTATION.tool("Report the outcome. Call once, as the very last step."));
+    include_str!("../prompts/implement.md").into()
+}
+
+/// Reviews the change on another model, looking only.
+fn reviewer(cx: &mut AgentContext) -> String {
+    cx.use_model("anthropic/claude-opus-5-5");
+    for tool in LOOKING.iter() {
+        cx.use_tool(tool.clone());
+    }
+    cx.use_tool(REVIEW.tool("Report your verdict. Call once, last."));
+    include_str!("../prompts/review.md").into()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let tools = CodingTools::new();
-    let plan = Report::<Plan>::new("report_plan");
-    let implementation = Report::<Implementation>::new("report_implementation");
-    let review = Report::<Review>::new("report_review");
-
-    let planner = Agent::new("planner", {
-        let (tools, plan) = (tools.clone(), plan.clone());
-        move |cx: &mut AgentContext| {
-            cx.use_model("anthropic/claude-sonnet-5-5");
-            for tool in tools.looking() {
-                cx.use_tool(tool);
-            }
-            cx.use_tool(plan.tool("Report the issue you picked, or none. Call once, last."));
-            include_str!("../prompts/plan.md").into()
-        }
-    });
-    let implementer = Agent::new("implementer", {
-        let (tools, implementation) = (tools.clone(), implementation.clone());
-        move |cx: &mut AgentContext| {
-            cx.use_model("anthropic/claude-sonnet-5-5");
-            for tool in tools.coding() {
-                cx.use_tool(tool);
-            }
-            cx.use_tool(
-                implementation.tool("Report the outcome. Call once, as the very last step."),
-            );
-            include_str!("../prompts/implement.md").into()
-        }
-    })
-    .max_turns(300);
-
-    let reviewer = Agent::new("reviewer", {
-        let (tools, review) = (tools.clone(), review.clone());
-        move |cx: &mut AgentContext| {
-            cx.use_model("anthropic/claude-opus-5-5");
-            for tool in tools.looking() {
-                cx.use_tool(tool);
-            }
-            cx.use_tool(review.tool("Report your verdict. Call once, last."));
-            include_str!("../prompts/review.md").into()
-        }
-    });
-
+    let planner = Agent::new("planner", planner);
+    let implementer = Agent::new("implementer", implementer).max_turns(300);
+    let reviewer = Agent::new("reviewer", reviewer);
     let runtime = Runtime::start([planner.clone(), implementer.clone(), reviewer.clone()]);
 
     // 1. Plan.
     let planned = runtime.init(&planner).id("plan")?;
-    let Some(Picked { number, title }) = plan
+    let Some(Picked { number, title }) = PLAN
         .ask(&planned, "Pick the next issue.".into())
         .await?
         .issue
@@ -119,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
     };
     println!("Picked #{number}: {title}");
 
-    // 2. Implement and review, sending findings back to the same conversation.
+    // 2. Implement and review, sending findings back to the same implementer conversation.
     let implementing = runtime
         .init(&implementer)
         .id(format!("implement-{number}"))?;
@@ -127,21 +125,21 @@ async fn main() -> anyhow::Result<()> {
     let mut message = format!("Implement issue #{number}: {title}");
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
-        let report = implementation.ask(&implementing, message).await?;
-        println!("{}", report.summary);
+        let implementation = IMPLEMENTATION.ask(&implementing, message).await?;
+        println!("{}", implementation.summary);
 
         println!("Round {round}: reviewing");
         let ask = format!("Review issue #{number}: the uncommitted changes.");
-        let verdict = review.ask(&reviewing, ask).await?;
-        if verdict.verdict == Verdict::Approve {
+        let review = REVIEW.ask(&reviewing, ask).await?;
+        if review.verdict == Verdict::Approve {
             println!("Approved.");
             return Ok(());
         }
-        println!("Changes asked: {}", verdict.findings.len());
         message = format!(
             "A reviewer asks for changes:\n\n- {}\n\nMake them.",
-            verdict.findings.join("\n- ")
+            review.findings.join("\n- ")
         );
+        println!("{message}");
     }
     bail!("#{number} is not approved after {MAX_ROUNDS} rounds")
 }
