@@ -11,6 +11,10 @@ input=$(cat)
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 
+# The settings `if` filter also lets through compound commands with no commit
+# in them, so check for an actual `git [-C dir] commit` here.
+grep -Eq '(^|[;&|(][[:space:]]*|[[:space:]])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+commit([[:space:]]|$)' <<<"$cmd" || exit 0
+
 root=$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
 
@@ -53,7 +57,7 @@ run() {
 for ws in root examples; do
   manifest=Cargo.toml
   [[ $ws == examples ]] && manifest=examples/Cargo.toml
-  run "$ws: fmt" cargo fmt --all --check --manifest-path "$manifest"
+  run "$ws: fmt" cargo fmt --all --check --manifest-path "$manifest" -- --color never
   run "$ws: clippy" cargo clippy --locked --workspace --all-targets --all-features --manifest-path "$manifest" -- -D warnings
   run "$ws: test" cargo test --locked --workspace --manifest-path "$manifest"
   if command -v cargo-deny &>/dev/null; then
