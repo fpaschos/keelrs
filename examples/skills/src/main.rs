@@ -30,8 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let runtime = Runtime::start([greeter.clone()]);
 
     let instance = runtime.init(&greeter).id("demo")?;
-    let receipt = instance.dispatch("Hi, I'm Ada").await?;
-    let reply = instance.read(&receipt).await?;
+    let reply = instance.ask("Hi, I'm Ada").await?;
 
     println!("{}", reply.text());
     Ok(())

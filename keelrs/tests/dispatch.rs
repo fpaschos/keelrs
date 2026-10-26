@@ -1,26 +1,21 @@
-//! Dispatch and read through the public API, with no network.
+//! Dispatch, read and ask through the public API, with no network.
 
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime};
 
-/// Dispatches one message to a fresh instance of `agent` and reads its failure reason.
+/// Asks a fresh instance of `agent` one message and returns its failure reason.
 async fn failure_reason(agent: Agent) -> String {
     let runtime = Runtime::start([agent.clone()]);
     let instance = runtime.init(&agent).id("test").unwrap();
-    let receipt = instance.dispatch("Say hello").await.unwrap();
-    match instance.read(&receipt).await {
+    match instance.ask("Say hello").await {
         Err(Error::Run {
             outcome: Outcome::Failed { reason },
-            submission_id,
-        }) => {
-            assert_eq!(submission_id, receipt.submission_id());
-            reason
-        }
+            ..
+        }) => reason,
         other => panic!("expected a failed run, got {other:?}"),
     }
 }
 
 #[tokio::test]
-#[ignore = "STORE: reads need durable events"]
 async fn an_agent_that_never_calls_use_model_fails() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
     let reason = failure_reason(agent).await;
@@ -28,7 +23,6 @@ async fn an_agent_that_never_calls_use_model_fails() {
 }
 
 #[tokio::test]
-#[ignore = "STORE: reads need durable events"]
 async fn an_agent_that_calls_use_model_twice_fails() {
     let agent = Agent::new("two-models", |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
@@ -40,7 +34,6 @@ async fn an_agent_that_calls_use_model_twice_fails() {
 }
 
 #[tokio::test]
-#[ignore = "STORE: reads need durable events"]
 async fn an_empty_model_id_fails() {
     let agent = Agent::new("empty-model", |cx: &mut AgentContext| {
         cx.use_model("");
@@ -51,7 +44,6 @@ async fn an_empty_model_id_fails() {
 }
 
 #[tokio::test]
-#[ignore = "STORE: reads need durable events"]
 async fn an_unknown_vendor_fails_with_rigs_reason() {
     let agent = Agent::new("unknown-vendor", |cx: &mut AgentContext| {
         cx.use_model("nope/model");
@@ -62,7 +54,6 @@ async fn an_unknown_vendor_fails_with_rigs_reason() {
 }
 
 #[tokio::test]
-#[ignore = "STORE: reads need durable events"]
 async fn a_read_issued_before_the_run_settles_gets_the_outcome() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
     let runtime = Runtime::start([agent.clone()]);

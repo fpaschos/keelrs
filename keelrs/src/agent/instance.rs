@@ -2,9 +2,11 @@
 //! (Alice Ryhl's "Actors with Tokio").
 //!
 //! The actor takes commands from its inbox one at a time, running each dispatch
-//! to settled before the next. It keeps no events: the canonical events
-//! ([`Event`]) go to durable storage, marked `STORE:` below.
+//! to settled before the next. The canonical events ([`Event`]) go to durable
+//! storage, marked `STORE:` below; until then the actor keeps each settled
+//! result in memory to answer reads.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -41,6 +43,7 @@ impl AgentInstance {
             agent,
             inbox: receiver,
             cancel: shutdown.child_token(),
+            settled: HashMap::new(),
         };
         tokio::spawn(actor.run());
         Self { id, inbox }
@@ -66,6 +69,13 @@ impl AgentInstance {
             return Err(aborted(submission_id));
         }
         Ok(Receipt { submission_id })
+    }
+
+    /// [`dispatch`](Self::dispatch) then [`read`](Self::read): submits `message`
+    /// and waits for its reply.
+    pub async fn ask(&self, message: impl Into<String>) -> Result<Reply> {
+        let receipt = self.dispatch(message).await?;
+        self.read(&receipt).await
     }
 
     /// Waits for the receipt's message to settle and takes its reply.
@@ -116,6 +126,8 @@ struct InstanceActor {
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,
+    /// STORE: stands in for the stored `Event::Settled`s until durable storage keeps them.
+    settled: HashMap<SubmissionId, Result<String, Outcome>>,
 }
 
 impl InstanceActor {
@@ -132,14 +144,14 @@ impl InstanceActor {
                     respond_to,
                 } => {
                     // STORE: answer from the stored `Event::Settled` for `submission_id`.
-                    let _ = respond_to.send(Err(Error::SubmissionNotFound(submission_id)));
+                    let _ = respond_to.send(self.read(submission_id));
                 }
             }
         }
     }
 
     /// Runs one dispatch to settled; a kill aborts it.
-    async fn dispatch(&self, submission_id: SubmissionId, text: String) {
+    async fn dispatch(&mut self, submission_id: SubmissionId, text: String) {
         // STORE: load the history from the stored `Event::Message`s.
         let history = Vec::new();
         let mut events = Vec::new();
@@ -157,9 +169,26 @@ impl InstanceActor {
         };
         events.push(Event::Settled {
             submission_id,
-            result,
+            result: result.clone(),
         });
         // STORE: append `events` to durable storage, before answering reads.
+        self.settled.insert(submission_id, result);
+    }
+
+    /// The settled reply for `submission_id`; never pending, as the inbox runs
+    /// every dispatch before a read sent after it.
+    fn read(&self, submission_id: SubmissionId) -> Result<Reply> {
+        match self.settled.get(&submission_id) {
+            Some(Ok(text)) => Ok(Reply {
+                text: text.clone(),
+                submission_id,
+            }),
+            Some(Err(outcome)) => Err(Error::Run {
+                outcome: outcome.clone(),
+                submission_id,
+            }),
+            None => Err(Error::SubmissionNotFound(submission_id)),
+        }
     }
 }
 
