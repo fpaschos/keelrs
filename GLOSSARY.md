@@ -40,6 +40,15 @@ One model call within a dispatch, with the agent function run before it; a dispa
 each round of tool calls.
 _Avoid_: Step, iteration, round
 
+**Tool**:
+A named function, described to the model, that the model may call during a turn; the agent declares it with `use_tool`
+on each turn.
+_Avoid_: Function, action
+
+**Tool call**:
+One request from the model to run a tool with arguments; its result goes back to the model.
+_Avoid_: Invocation
+
 **Read**:
 Waiting for a dispatched message to settle and taking its reply.
 _Avoid_: Await, poll
