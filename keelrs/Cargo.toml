@@ -11,8 +11,15 @@ description = "A Flue-style agent harness for Rust"
 workspace = true
 
 [dependencies]
+futures.workspace = true
 rig-agent.workspace = true
 rig-core = { workspace = true, features = ["reqwest"] }
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 tokio-util.workspace = true
+
+[dev-dependencies]
+rig-core = { workspace = true, features = ["test-utils"] }
