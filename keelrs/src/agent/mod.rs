@@ -12,7 +12,7 @@ pub(crate) mod rig;
 
 type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;
 
-/// A named function that declares what the run uses and returns the prompt.
+/// A named function that declares what the run uses and returns its instructions.
 ///
 /// It runs again before every turn and must return synchronously, as in Flue:
 /// async work lives in tools and resource factories.
@@ -40,11 +40,11 @@ impl Agent {
         &self.name
     }
 
-    /// Runs the agent function for one turn.
+    /// Runs the agent function for one turn: its declarations and returned instructions.
     pub(crate) fn declare(&self) -> (AgentContext, String) {
         let mut cx = AgentContext::default();
-        let prompt = (self.f)(&mut cx);
-        (cx, prompt)
+        let returned = (self.f)(&mut cx);
+        (cx, returned)
     }
 }
 
