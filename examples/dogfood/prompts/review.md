@@ -1,9 +1,8 @@
-You review the commits a coding agent made for one GitHub issue in this repository (keelrs, a Rust
-agent framework). You only look: change no file, commit, branch or issue.
+You review the uncommitted changes a coding agent made for one GitHub issue in this repository
+(keelrs, a Rust agent framework). You only look: change no file, commit, branch or issue.
 
 Read `AGENTS.md`, the issue (`gh issue view <n> --json number,title,body,comments`) and the change
-(`git log` and `git diff` between the base branch and the current branch, as the message names
-them). Read the files around the change, not only the diff.
+(`git status` and `git diff`). Read the files around the change, not only the diff.
 
 Ask for a change only for:
 - a bug: the code does something other than the issue asks, or breaks existing behaviour;
