@@ -9,6 +9,9 @@ all-features = true
 [licenses]
 allow = ["Apache-2.0", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "MIT-0", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.8
+exceptions = [
+  { crate = "notify", allow = ["CC0-1.0"] }, # via rig-tools, in examples/dogfood
+]
 
 [licenses.private]
 ignore = true # examples are publish = false
