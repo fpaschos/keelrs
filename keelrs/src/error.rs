@@ -8,10 +8,7 @@ pub enum Error {
     /// The agent was never given to [`Runtime::start`](crate::Runtime::start).
     #[error("unknown agent `{0}`")]
     UnknownAgent(String),
-    /// A read addressed an instance that was never dispatched to.
-    #[error("no agent instance `{0}`")]
-    InstanceNotFound(String),
-    /// A read named a submission the instance never received.
+    /// A read named a submission this instance never received.
     #[error("no submission {0}")]
     SubmissionNotFound(SubmissionId),
     /// The dispatched message settled without a reply.
@@ -25,19 +22,22 @@ pub enum Error {
 }
 
 /// How a dispatched message settled when it produced no reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The run ended in an error.
-    Failed,
+    Failed {
+        /// What went wrong, as plain text (e.g. which environment variable to set).
+        reason: String,
+    },
     /// The run was stopped before it finished.
     Aborted,
 }
 
 impl Outcome {
-    fn describe(self) -> &'static str {
+    fn describe(&self) -> String {
         match self {
-            Self::Failed => "failed",
-            Self::Aborted => "was aborted",
+            Self::Failed { reason } => format!("failed: {reason}"),
+            Self::Aborted => "was aborted".to_owned(),
         }
     }
 }

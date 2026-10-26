@@ -17,6 +17,7 @@ static GREETING: Skill = keelrs::skill!("../skills/greeting/SKILL.md");
 
 fn greeter(cx: &mut AgentContext) -> String {
     cx.use_model("anthropic/claude-sonnet-5-5");
+    // STUB: accepted and ignored until the skill design is decided.
     cx.use_skill(GREETING);
     "Activate the `greeting` skill before greeting anyone.".into()
 }
@@ -28,9 +29,8 @@ async fn main() -> anyhow::Result<()> {
     let greeter = Agent::new("greeter", greeter);
     let runtime = Runtime::start([greeter.clone()]);
 
-    let instance = runtime.init(&greeter).id("demo");
-    let receipt = instance.dispatch("Hi, I'm Ada").await?;
-    let reply = instance.read(&receipt).await?;
+    let instance = runtime.init(&greeter).id("demo")?;
+    let reply = instance.ask("Hi, I'm Ada").await?;
 
     println!("{}", reply.text());
     Ok(())

@@ -4,16 +4,17 @@
 //! Terms follow `GLOSSARY.md`.
 
 pub mod agent;
-pub mod event;
 pub mod model;
 pub mod runtime;
 pub mod sandbox;
 pub mod skill;
-pub mod tool;
 
 mod error;
+mod event;
+mod tool;
 
-pub use agent::{Agent, AgentContext};
+pub use agent::{Agent, AgentContext, AgentInstance, Receipt, Reply, SubmissionId};
 pub use error::{Error, Outcome, Result};
-pub use runtime::{AgentInstance, Init, Receipt, Reply, Runtime, SubmissionId};
+pub use model::{Model, Thinking};
+pub use runtime::{Init, Runtime};
 pub use skill::Skill;
