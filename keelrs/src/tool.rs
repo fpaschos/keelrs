@@ -15,8 +15,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// What one call of a tool receives: the model's arguments and the call's id.
-///
-/// New fields may be added; read the ones you need.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ToolCall<Args> {
@@ -27,7 +25,7 @@ pub struct ToolCall<Args> {
 }
 
 /// What a tool's call settles to: its value, or the message the model reads.
-pub(crate) type Called = Result<Value, String>;
+type Called = Result<Value, String>;
 
 type Run = dyn Fn(Value, String) -> Pin<Box<dyn Future<Output = Called> + Send>> + Send + Sync;
 
@@ -42,7 +40,8 @@ pub struct Tool {
     /// The JSON schema of the arguments, sent to the model.
     pub(crate) schema: Arc<Value>,
     pub(crate) timeout: Option<Duration>,
-    run: Arc<Run>,
+    /// Runs one call with the model's arguments and the call's id.
+    pub(crate) run: Arc<Run>,
 }
 
 impl Tool {
@@ -103,15 +102,6 @@ impl Tool {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Runs one call with the model's `arguments`.
-    pub(crate) fn call(
-        &self,
-        arguments: Value,
-        id: String,
-    ) -> impl Future<Output = Called> + Send + 'static {
-        (self.run)(arguments, id)
     }
 }
 

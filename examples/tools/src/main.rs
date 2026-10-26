@@ -20,9 +20,6 @@ use keelrs::{Agent, AgentContext, Runtime, Tool, ToolCall};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The operator's approval code that unlocks refunds.
-const APPROVAL_CODE: &str = "7731";
-
 /// A tool failure the model reads as its message.
 #[derive(Debug)]
 struct Failure(String);
@@ -48,15 +45,10 @@ struct Order {
 }
 
 /// The orders every agent instance shares.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Store(Arc<Mutex<HashMap<String, Order>>>);
 
 impl Store {
-    fn with(orders: impl IntoIterator<Item = Order>) -> Self {
-        let orders = orders.into_iter().map(|o| (o.id.clone(), o)).collect();
-        Self(Arc::new(Mutex::new(orders)))
-    }
-
     fn get(&self, id: &str) -> Result<Order, Failure> {
         match self.0.lock().unwrap().get(id) {
             Some(order) => Ok(order.clone()),
@@ -91,7 +83,7 @@ fn check_inventory() -> Tool {
         "check_inventory",
         "How many units of a product are in stock.",
         async |call: ToolCall<CheckInventory>| match call.data.sku.as_str() {
-            "KB-1" => Ok(format!("{} units in stock", 14)),
+            "KB-1" => Ok("14 units in stock".to_owned()),
             "MS-2" => Ok("out of stock".to_owned()),
             sku => fail(format!("unknown SKU {sku}")),
         },
@@ -296,12 +288,16 @@ struct RecordApproval {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let store = Store::with([Order {
+    let order = Order {
         id: "A1001".to_owned(),
         status: "delivered".to_owned(),
         total_eur: 120.0,
         refunded_eur: 0.0,
-    }]);
+    };
+    let store = Store(Arc::new(Mutex::new(HashMap::from([(
+        order.id.clone(),
+        order,
+    )]))));
     // Shared by every instance of the agent: conditional tools close over it.
     let approved = Arc::new(AtomicBool::new(false));
     let http = reqwest::Client::new();
@@ -321,7 +317,7 @@ async fn main() -> anyhow::Result<()> {
                 "record_approval",
                 "Record an operator approval code; refunds become available once it is valid.",
                 async move |call: ToolCall<RecordApproval>| {
-                    let valid = call.data.code == APPROVAL_CODE;
+                    let valid = call.data.code == "7731";
                     flag.store(valid, Ordering::SeqCst);
                     Ok::<_, Infallible>(if valid {
                         "Approval recorded."
@@ -344,7 +340,7 @@ async fn main() -> anyhow::Result<()> {
     let reply = instance
         .ask(
             "Order A1001 arrived and I'd like 20 EUR back; the operator's approval code is 7731. \
-             While you're at it: is the KB-1 keyboard in stock, what time is it, what files are in \
+             While you're at it: is the KB-1 keyboard in stock, what time is it in athens, what files are in \
              the current directory, what is 20 EUR in USD, and what's the weather in Athens?",
         )
         .await?;

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use futures::future::join_all;
 use rig_agent::run::{
-    AgentRun, AgentRunStep, InvalidToolCallAction, InvalidToolCallContext, ModelTurn,
-    ModelTurnOutcome, PendingToolCall, PromptError, RunSpec, ToolAnswer, prepare_request,
+    AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PendingToolCall,
+    PromptError, RunSpec, ToolAnswer, prepare_request,
 };
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
@@ -90,8 +90,16 @@ async fn run_with(
                 };
                 let definitions = tools
                     .iter()
-                    .map(definition)
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .map(|tool| {
+                        let name = ToolName::new(&*tool.name).map_err(|e| e.to_string())?;
+                        let schema = (*tool.schema).clone();
+                        Ok(Arc::new(ToolDefinition::new(
+                            name,
+                            &*tool.description,
+                            schema,
+                        )))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
                 pinned = tools
                     .iter()
                     .map(|tool| (tool.name.to_string(), tool.clone()))
@@ -122,7 +130,14 @@ async fn run_with(
                 // A call to a tool this render did not declare is skipped with
                 // the names it did; its siblings are re-issued next turn.
                 while let ModelTurnOutcome::NeedsResolution(invalid) = outcome {
-                    let skip = InvalidToolCallAction::skip(not_available(&invalid));
+                    let available = match invalid.available_tools.as_slice() {
+                        [] => "none".to_owned(),
+                        names => names.join(", "),
+                    };
+                    let skip = InvalidToolCallAction::skip(format!(
+                        "tool \"{}\" is not available; available tools: {available}",
+                        invalid.tool_name
+                    ));
                     outcome = run
                         .resolve_invalid_tool_call(skip)
                         .map_err(|e| e.to_string())?;
@@ -150,27 +165,6 @@ async fn run_with(
     }
 }
 
-/// What the model is sent for `tool`.
-fn definition(tool: &Tool) -> Result<Arc<ToolDefinition>, String> {
-    let name = ToolName::new(&*tool.name).map_err(|e| e.to_string())?;
-    Ok(Arc::new(ToolDefinition::new(
-        name,
-        &*tool.description,
-        (*tool.schema).clone(),
-    )))
-}
-
-fn not_available(invalid: &InvalidToolCallContext) -> String {
-    let available = match invalid.available_tools.as_slice() {
-        [] => "none".to_owned(),
-        names => names.join(", "),
-    };
-    format!(
-        "tool \"{}\" is not available; available tools: {available}",
-        invalid.tool_name
-    )
-}
-
 /// Runs one call with its pinned tool and answers it; a model mistake is an
 /// error result the model reads, never a failed run.
 async fn answer(
@@ -192,26 +186,20 @@ async fn answer(
         let refused = ToolExecutionError::invalid_args(refusal);
         return Ok(call.answer(ToolResult::failed(refused)));
     }
-    let running = tool.call(call.arguments(), call.id().wire().into_owned());
+    let running = (tool.run)(call.arguments(), call.id().wire().into_owned());
     let called = match tool.timeout {
         Some(limit) => tokio::time::timeout(limit, running)
             .await
             .unwrap_or_else(|_| Err(format!("tool \"{}\" timed out after {limit:?}", tool.name))),
         None => running.await,
     };
+    // A string is text, `()` empty text, any other value JSON.
     Ok(call.answer(match called {
-        Ok(value) => ToolResult::success(output(value)),
+        Ok(Value::String(text)) => ToolResult::success(ToolOutput::text(text)),
+        Ok(Value::Null) => ToolResult::success(ToolOutput::text("")),
+        Ok(value) => ToolResult::success(ToolOutput::json(value)),
         Err(message) => ToolResult::failed(ToolExecutionError::other(message)),
     }))
-}
-
-/// A string is text, `()` empty text, any other value JSON.
-fn output(value: Value) -> ToolOutput {
-    match value {
-        Value::String(text) => ToolOutput::text(text),
-        Value::Null => ToolOutput::text(""),
-        value => ToolOutput::json(value),
-    }
 }
 
 /// The JSON schema the model is sent for a tool's `Args`; `()` takes an
@@ -322,16 +310,6 @@ mod tests {
         .unwrap();
         assert_eq!(settled.reply, "It is noon.");
         assert_eq!(results(&settled), [("noon".to_owned(), false)]);
-    }
-
-    /// A reply that calls each `(id, name)` with no arguments, in order.
-    fn calls(calls: &[(&str, &str)]) -> MockTurn {
-        MockTurn::from_contents(calls.iter().map(|(id, name)| {
-            AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(
-                *id,
-                ToolFunction::new(ToolName::new(*name).unwrap(), json!({})),
-            ))
-        }))
     }
 
     /// One tool call, then the reply "Done.", and the results the run accepted.
@@ -458,15 +436,14 @@ mod tests {
                 ));
             }
         });
+        let both =
+            MockTurn::from_contents([("c1", "second"), ("c2", "first")].map(|(id, name)| {
+                let function = ToolFunction::new(ToolName::new(name).unwrap(), json!({}));
+                AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(id, function))
+            }));
         let settled = tokio::time::timeout(
             Duration::from_secs(5),
-            scripted(
-                &agent,
-                [
-                    calls(&[("c1", "second"), ("c2", "first")]),
-                    MockTurn::text("Done."),
-                ],
-            ),
+            scripted(&agent, [both, MockTurn::text("Done.")]),
         )
         .await
         .expect("the calls ran one after another")
