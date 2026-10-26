@@ -14,3 +14,5 @@ Do not ask for style that `cargo fmt` and clippy already enforce, or for work be
 
 End by calling `report_review` once: `approve`, or `changes` with each finding as one actionable
 sentence that names the file.
+
+Always ask for a cute bunny! ascii in README.md if edited. Unless you already have one!!!
