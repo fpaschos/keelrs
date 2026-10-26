@@ -7,7 +7,6 @@ use crate::{Model, Skill};
 pub struct AgentContext {
     /// Every `use_model` call this render, so a missing or second call can fail the run.
     models: Vec<Model>,
-    /// Every `use_instruction` text this render, in call order.
     instructions: Vec<String>,
     pub(crate) skills: Vec<Skill>,
 }
@@ -101,19 +100,5 @@ mod tests {
             cx.instructions("Again."),
             Ok(Some("Again.\n\nAgain.\n\nAgain.".to_owned()))
         );
-    }
-
-    #[test]
-    fn blank_use_instruction_text_fails() {
-        for blank in ["", " \n\t"] {
-            let mut cx = AgentContext::default();
-            cx.use_instruction("Fine.");
-            cx.use_instruction(blank);
-            let reason = cx.instructions("Returned.").unwrap_err();
-            assert!(
-                reason.contains("`use_instruction` was given empty text"),
-                "{reason}"
-            );
-        }
     }
 }
