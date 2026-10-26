@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{Agent, AgentInstance};
+use crate::{Agent, AgentInstance, Error, Result};
 
 /// The running keelrs instance that knows the agents and hosts their instances.
 ///
@@ -43,7 +43,7 @@ impl Runtime {
 
     /// Addresses `agent` on this runtime; pick the instance with [`Init::id`].
     ///
-    /// Never fails: an unknown agent errors on dispatch and read.
+    /// Never fails: an unknown agent errors on [`Init::id`].
     #[must_use]
     pub fn init(&self, agent: &Agent) -> Init {
         Init {
@@ -69,18 +69,23 @@ pub struct Init {
 impl Init {
     /// The instance with this id: spawned on first use, continued after.
     ///
-    /// Must be called within a Tokio runtime.
-    pub fn id(self, id: impl Into<String>) -> AgentInstance {
+    /// Fails with [`Error::UnknownAgent`] when the agent was never given to
+    /// [`Runtime::start`]. Must be called within a Tokio runtime.
+    pub fn id(self, id: impl Into<String>) -> Result<AgentInstance> {
         let id = id.into();
-        let Some(agent) = self.runtime.agents.get(&self.agent) else {
-            return AgentInstance::unknown(self.agent, id);
-        };
-        self.runtime
+        let agent = self
+            .runtime
+            .agents
+            .get(&self.agent)
+            .ok_or_else(|| Error::UnknownAgent(self.agent.clone()))?;
+        let instance = self
+            .runtime
             .instances
             .lock()
             .unwrap()
             .entry((self.agent, id.clone()))
             .or_insert_with(|| AgentInstance::spawn(agent.clone(), id, &self.runtime.shutdown))
-            .clone()
+            .clone();
+        Ok(instance)
     }
 }

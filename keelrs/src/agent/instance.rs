@@ -1,9 +1,9 @@
 //! Agent instances: a cloneable [`AgentInstance`] handle and the actor behind it
 //! (Alice Ryhl's "Actors with Tokio").
 //!
-//! The actor owns the instance's events and takes commands from its inbox one at
-//! a time, running each dispatch to settled before the next. Nothing is
-//! persisted: events live in memory.
+//! The actor takes commands from its inbox one at a time, running each dispatch
+//! to settled before the next. It keeps no events: the canonical events
+//! ([`Event`]) go to durable storage, marked `STORE:` below.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,8 +29,8 @@ static NEXT_SUBMISSION: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
     id: String,
-    /// The actor's inbox, or the name of the agent the runtime does not know.
-    inbox: std::result::Result<mpsc::Sender<Command>, String>,
+    /// The actor's inbox.
+    inbox: mpsc::Sender<Command>,
 }
 
 impl AgentInstance {
@@ -41,21 +41,9 @@ impl AgentInstance {
             agent,
             inbox: receiver,
             cancel: shutdown.child_token(),
-            events: Vec::new(),
         };
         tokio::spawn(actor.run());
-        Self {
-            id,
-            inbox: Ok(inbox),
-        }
-    }
-
-    /// An instance of an agent the runtime does not know: every call fails.
-    pub(crate) fn unknown(agent: String, id: String) -> Self {
-        Self {
-            id,
-            inbox: Err(agent),
-        }
+        Self { id, inbox }
     }
 
     /// The id that addresses this instance.
@@ -69,13 +57,12 @@ impl AgentInstance {
     /// The message runs after those dispatched before it; a model or connect
     /// error shows up on [`read`](Self::read), not here.
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
-        let inbox = self.inbox()?;
         let submission_id = SubmissionId(NEXT_SUBMISSION.fetch_add(1, Ordering::Relaxed));
         let command = Command::Dispatch {
             submission_id,
             text: message.into(),
         };
-        if inbox.send(command).await.is_err() {
+        if self.inbox.send(command).await.is_err() {
             return Err(aborted(submission_id));
         }
         Ok(Receipt { submission_id })
@@ -83,26 +70,19 @@ impl AgentInstance {
 
     /// Waits for the receipt's message to settle and takes its reply.
     pub async fn read(&self, receipt: &Receipt) -> Result<Reply> {
-        let inbox = self.inbox()?;
         let submission_id = receipt.submission_id;
         let (respond_to, response) = oneshot::channel();
         let command = Command::Read {
             submission_id,
             respond_to,
         };
-        if inbox.send(command).await.is_err() {
+        if self.inbox.send(command).await.is_err() {
             return Err(aborted(submission_id));
         }
         // An actor that stops before answering (it panicked) counts as aborted.
         response
             .await
             .unwrap_or_else(|_| Err(aborted(submission_id)))
-    }
-
-    fn inbox(&self) -> Result<&mpsc::Sender<Command>> {
-        self.inbox
-            .as_ref()
-            .map_err(|agent| Error::UnknownAgent(agent.clone()))
     }
 }
 
@@ -126,7 +106,7 @@ enum Command {
     },
 }
 
-/// Owns one agent instance: its events, and the one dispatch it runs at a time.
+/// Runs one agent instance's dispatches, one at a time.
 ///
 /// The inbox is the queue: commands run in the order they were sent, and a
 /// dispatch runs to settled before the next command, so a read always finds its
@@ -136,8 +116,6 @@ struct InstanceActor {
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,
-    /// Canonical events, in memory for now.
-    events: Vec<Event>,
 }
 
 impl InstanceActor {
@@ -153,68 +131,35 @@ impl InstanceActor {
                     submission_id,
                     respond_to,
                 } => {
-                    let result = self
-                        .settled(submission_id)
-                        .unwrap_or(Err(Error::SubmissionNotFound(submission_id)));
-                    let _ = respond_to.send(result);
+                    // STORE: answer from the stored `Event::Settled` for `submission_id`.
+                    let _ = respond_to.send(Err(Error::SubmissionNotFound(submission_id)));
                 }
             }
         }
     }
 
-    /// Runs one dispatch to settled and records it; a kill aborts it.
-    async fn dispatch(&mut self, submission_id: SubmissionId, text: String) {
-        let history = self
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                Event::Message(message) => Some(message.clone()),
-                Event::Settled { .. } => None,
-            })
-            .collect();
+    /// Runs one dispatch to settled; a kill aborts it.
+    async fn dispatch(&self, submission_id: SubmissionId, text: String) {
+        // STORE: load the history from the stored `Event::Message`s.
+        let history = Vec::new();
+        let mut events = Vec::new();
         let result = select! {
             biased;
             // Dropping the run's future stops its model call.
             () = self.cancel.cancelled() => Err(Outcome::Aborted),
             result = rig::run(self.agent.clone(), text, history) => match result {
                 Ok(Settled { reply, messages }) => {
-                    self.events.extend(messages.into_iter().map(Event::Message));
+                    events.extend(messages.into_iter().map(Event::Message));
                     Ok(reply)
                 }
                 Err(reason) => Err(Outcome::Failed { reason }),
             },
         };
-        self.events.push(Event::Settled {
+        events.push(Event::Settled {
             submission_id,
             result,
         });
-    }
-
-    fn settled(&self, submission_id: SubmissionId) -> Option<Result<Reply>> {
-        self.events.iter().find_map(|event| match event {
-            Event::Settled {
-                submission_id: id,
-                result,
-            } if *id == submission_id => Some(answer(submission_id, result)),
-            _ => None,
-        })
-    }
-}
-
-/// What a read of a settled submission gets.
-fn answer(
-    submission_id: SubmissionId,
-    result: &std::result::Result<String, Outcome>,
-) -> Result<Reply> {
-    match result {
-        Ok(text) => Ok(Reply {
-            text: text.clone(),
-            submission_id,
-        }),
-        Err(outcome) => Err(Error::Run {
-            outcome: outcome.clone(),
-            submission_id,
-        }),
+        // STORE: append `events` to durable storage, before answering reads.
     }
 }
 

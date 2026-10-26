@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let hello = Agent::new("hello", hello);
     let runtime = Runtime::start([hello.clone()]);
 
-    let instance = runtime.init(&hello).id("demo");
+    let instance = runtime.init(&hello).id("demo")?;
     let receipt = instance.dispatch("Say hello").await?;
     let reply = instance.read(&receipt).await?;
 
