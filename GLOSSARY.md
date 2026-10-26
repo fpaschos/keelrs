@@ -7,8 +7,13 @@ Terms follow Flue's where Flue has one.
 
 **Agent**:
 A named function that, on every turn, declares what the run uses (model, sandbox, skills, MCP servers, tools) and
-returns the prompt.
+returns its instructions.
 _Avoid_: Agent definition, bot
+
+**Instructions**:
+The text an agent gives the model ahead of the conversation on each turn: what the agent function returns, followed by
+everything added with `use_instruction`.
+_Avoid_: Prompt, preamble, system prompt
 
 **Agent context**:
 What an agent function receives to make its declarations for the current turn.
