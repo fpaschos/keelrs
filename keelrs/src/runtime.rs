@@ -33,7 +33,7 @@ struct Inner {
     agents: HashMap<String, Agent>,
     next_submission: AtomicU64,
     /// Running instance tasks, keyed by `(agent name, instance id)`.
-    instances: Mutex<HashMap<(String, String), Handle>>,
+    instances: Mutex<HashMap<(String, String), mpsc::Sender<Command>>>,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
@@ -116,7 +116,15 @@ impl AgentInstance {
             .ok_or_else(|| Error::UnknownAgent(self.agent.clone()))?;
         let submission_id =
             SubmissionId(self.runtime.next_submission.fetch_add(1, Ordering::Relaxed));
-        let inbox = self.handle_or_spawn(agent).inbox;
+        // The first dispatch to this id spawns its task.
+        let inbox = self
+            .runtime
+            .instances
+            .lock()
+            .unwrap()
+            .entry(self.key())
+            .or_insert_with(|| InstanceTask::spawn(agent.clone(), &self.runtime.shutdown))
+            .clone();
         let command = Command::Dispatch {
             submission_id,
             text: message.into(),
@@ -133,9 +141,13 @@ impl AgentInstance {
             return Err(Error::UnknownAgent(self.agent.clone()));
         }
         let inbox = self
-            .handle()
-            .ok_or_else(|| Error::InstanceNotFound(self.id.clone()))?
-            .inbox;
+            .runtime
+            .instances
+            .lock()
+            .unwrap()
+            .get(&self.key())
+            .cloned()
+            .ok_or_else(|| Error::InstanceNotFound(self.id.clone()))?;
         let submission_id = receipt.submission_id;
         let (respond_to, response) = oneshot::channel();
         let command = Command::Read {
@@ -154,26 +166,6 @@ impl AgentInstance {
     fn key(&self) -> (String, String) {
         (self.agent.clone(), self.id.clone())
     }
-
-    fn handle(&self) -> Option<Handle> {
-        self.runtime
-            .instances
-            .lock()
-            .unwrap()
-            .get(&self.key())
-            .cloned()
-    }
-
-    /// The instance task's handle, spawning the task on the first dispatch to this id.
-    fn handle_or_spawn(&self, agent: &Agent) -> Handle {
-        self.runtime
-            .instances
-            .lock()
-            .unwrap()
-            .entry(self.key())
-            .or_insert_with(|| InstanceTask::spawn(agent.clone(), &self.runtime.shutdown))
-            .clone()
-    }
 }
 
 fn aborted(submission_id: SubmissionId) -> Error {
@@ -183,13 +175,7 @@ fn aborted(submission_id: SubmissionId) -> Error {
     }
 }
 
-/// How an [`AgentInstance`] reaches its task.
-#[derive(Debug, Clone)]
-struct Handle {
-    /// Dispatch and Read, in order.
-    inbox: mpsc::Sender<Command>,
-}
-
+/// What an [`AgentInstance`] sends its task, in order.
 #[derive(Debug)]
 enum Command {
     Dispatch {
@@ -228,7 +214,7 @@ struct InstanceTask {
 }
 
 impl InstanceTask {
-    fn spawn(agent: Agent, shutdown: &CancellationToken) -> Handle {
+    fn spawn(agent: Agent, shutdown: &CancellationToken) -> mpsc::Sender<Command> {
         let (inbox_tx, inbox) = mpsc::channel(64);
         let task = Self {
             agent,
@@ -240,7 +226,7 @@ impl InstanceTask {
             current_run: None,
         };
         tokio::spawn(task.run());
-        Handle { inbox: inbox_tx }
+        inbox_tx
     }
 
     async fn run(mut self) {
@@ -345,16 +331,13 @@ impl InstanceTask {
         submission_id: SubmissionId,
         result: std::result::Result<String, Outcome>,
     ) {
+        for waiter in self.waiters.remove(&submission_id).unwrap_or_default() {
+            let _ = waiter.send(answer(submission_id, &result));
+        }
         self.events.push(Event::Settled {
             submission_id,
             result,
         });
-        let answer = self.settled(submission_id);
-        for waiter in self.waiters.remove(&submission_id).unwrap_or_default() {
-            if let Some(answer) = &answer {
-                let _ = waiter.send(clone_answer(answer));
-            }
-        }
     }
 
     /// Settles the run in flight and every queued dispatch as aborted.
@@ -372,16 +355,7 @@ impl InstanceTask {
             Event::Settled {
                 submission_id: id,
                 result,
-            } if *id == submission_id => Some(match result {
-                Ok(text) => Ok(Reply {
-                    text: text.clone(),
-                    submission_id,
-                }),
-                Err(outcome) => Err(Error::Run {
-                    outcome: outcome.clone(),
-                    submission_id,
-                }),
-            }),
+            } if *id == submission_id => Some(answer(submission_id, result)),
             _ => None,
         })
     }
@@ -402,17 +376,20 @@ async fn settle(run: &mut Option<Run>) -> (SubmissionId, std::result::Result<Set
     }
 }
 
-fn clone_answer(answer: &Result<Reply>) -> Result<Reply> {
-    match answer {
-        Ok(reply) => Ok(reply.clone()),
-        Err(Error::Run {
-            outcome,
+/// What a read of a settled submission gets.
+fn answer(
+    submission_id: SubmissionId,
+    result: &std::result::Result<String, Outcome>,
+) -> Result<Reply> {
+    match result {
+        Ok(text) => Ok(Reply {
+            text: text.clone(),
             submission_id,
-        }) => Err(Error::Run {
-            outcome: outcome.clone(),
-            submission_id: *submission_id,
         }),
-        Err(_) => unreachable!("a settled answer is a reply or a run error"),
+        Err(outcome) => Err(Error::Run {
+            outcome: outcome.clone(),
+            submission_id,
+        }),
     }
 }
 
@@ -426,7 +403,8 @@ impl fmt::Display for SubmissionId {
     }
 }
 
-/// The claim ticket for one dispatched message: plain data, readable from any instance handle.
+/// The claim ticket for one dispatched message: plain data, readable from any
+/// handle to the instance that issued it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     submission_id: SubmissionId,

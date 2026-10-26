@@ -45,14 +45,14 @@ pub(crate) async fn run(
                 // The agent function runs again before every turn (ADR 0004).
                 let (cx, system) = agent.declare();
                 let declared = cx.model()?;
-                if connected.is_none() {
-                    let model = Catalog::builtin()
-                        .connect(declared.id.as_str())
-                        .map_err(|e| e.to_string())?;
-                    connected = Some((model, declared.thinking));
-                }
-                let Some((model, thinking)) = &connected else {
-                    unreachable!("connected above");
+                let (model, thinking) = match &mut connected {
+                    Some(connected) => connected,
+                    None => connected.insert((
+                        Catalog::builtin()
+                            .connect(declared.id.as_str())
+                            .map_err(|e| e.to_string())?,
+                        declared.thinking,
+                    )),
                 };
 
                 let mut spec = RunSpec::new();
