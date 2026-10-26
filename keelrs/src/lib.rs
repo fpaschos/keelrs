@@ -18,3 +18,4 @@ pub use error::{Error, Outcome, Result};
 pub use model::{Model, Thinking};
 pub use runtime::{Init, Runtime};
 pub use skill::Skill;
+pub use tool::{Tool, ToolCall};

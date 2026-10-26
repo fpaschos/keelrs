@@ -1,6 +1,6 @@
 //! What an agent function declares for the current turn.
 
-use crate::{Model, Skill};
+use crate::{Model, Skill, Tool};
 
 /// What an agent function receives to make its declarations for the current turn.
 #[derive(Debug, Default)]
@@ -8,6 +8,7 @@ pub struct AgentContext {
     /// Every `use_model` call this render, so a missing or second call can fail the run.
     models: Vec<Model>,
     instructions: Vec<String>,
+    tools: Vec<Tool>,
     pub(crate) skills: Vec<Skill>,
 }
 
@@ -25,6 +26,14 @@ impl AgentContext {
     /// Blank text settles the dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
     pub fn use_instruction(&mut self, text: impl Into<String>) {
         self.instructions.push(text.into());
+    }
+
+    /// Declares a tool the model may call this turn, in call order.
+    ///
+    /// Two tools with one name, or a tool whose arguments are not a JSON
+    /// object, settle the dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
+    pub fn use_tool(&mut self, tool: impl Into<Tool>) {
+        self.tools.push(tool.into());
     }
 
     /// Mounts an already-resolved skill; nothing is read here.
@@ -47,6 +56,25 @@ impl AgentContext {
                 models.len()
             )),
         }
+    }
+
+    /// The tools this render declared, or why the run fails.
+    pub(crate) fn tools(&self) -> Result<&[Tool], String> {
+        for (i, tool) in self.tools.iter().enumerate() {
+            if self.tools[..i].iter().any(|other| other.name == tool.name) {
+                return Err(format!(
+                    "two tools are named `{}`; tool names must be unique",
+                    tool.name
+                ));
+            }
+            if tool.schema.get("type").and_then(|t| t.as_str()) != Some("object") {
+                return Err(format!(
+                    "`{}`'s arguments must be a JSON object; its schema is {}",
+                    tool.name, tool.schema
+                ));
+            }
+        }
+        Ok(&self.tools)
     }
 
     /// This turn's instructions: the returned text, then each `use_instruction`

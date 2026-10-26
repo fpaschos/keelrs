@@ -12,6 +12,9 @@ pub(crate) mod rig;
 
 type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;
 
+/// Model calls one dispatch may make unless [`Agent::max_turns`] says otherwise.
+const DEFAULT_MAX_TURNS: usize = 100;
+
 /// A named function that declares what the run uses and returns its instructions.
 ///
 /// It runs again before every turn and must return synchronously, as in Flue:
@@ -20,6 +23,7 @@ type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;
 pub struct Agent {
     name: String,
     f: Arc<AgentFn>,
+    max_turns: usize,
 }
 
 impl Agent {
@@ -31,7 +35,16 @@ impl Agent {
         Self {
             name: name.into(),
             f: Arc::new(f),
+            max_turns: DEFAULT_MAX_TURNS,
         }
+    }
+
+    /// Caps the model calls of one dispatch (default 100); reaching the cap
+    /// settles it as [`Outcome::Failed`](crate::Outcome::Failed).
+    #[must_use]
+    pub fn max_turns(mut self, max_turns: usize) -> Self {
+        self.max_turns = max_turns;
+        self
     }
 
     /// The name the runtime knows this agent by.

@@ -10,6 +10,9 @@ rust-version = "1.99"
 [workspace.dependencies]
 anyhow = "=1.0.104"
 keelrs = { path = "../keelrs" }
+reqwest = "=0.13.5"
+schemars = "=1.2.3"
+serde = "=1.0.229"
 tokio = "=1.54.1"
 
 [workspace.lints.rust]
