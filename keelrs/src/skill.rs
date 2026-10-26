@@ -15,16 +15,19 @@ pub struct Skill {
 
 impl Skill {
     #[doc(hidden)]
+    #[must_use]
     pub const fn embedded(source: &'static str) -> Self {
         Self { source }
     }
 
     /// `name` from the frontmatter.
+    #[must_use]
     pub fn name(&self) -> &str {
         self.field("name").unwrap_or("<unnamed>")
     }
 
     /// `description` from the frontmatter.
+    #[must_use]
     pub fn description(&self) -> &str {
         self.field("description").unwrap_or("")
     }

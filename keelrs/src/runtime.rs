@@ -42,6 +42,7 @@ impl Runtime {
     /// Addresses `agent` on this runtime; pick the instance with [`Init::id`].
     ///
     /// Creates nothing and never fails: an unknown agent errors on dispatch.
+    #[must_use]
     pub fn init(&self, agent: &Agent) -> Init {
         Init {
             runtime: self.inner.clone(),
@@ -77,6 +78,8 @@ pub struct AgentInstance {
 }
 
 impl AgentInstance {
+    /// The id that addresses this instance.
+    #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -149,6 +152,8 @@ pub struct Receipt {
 }
 
 impl Receipt {
+    /// The dispatched message this receipt claims.
+    #[must_use]
     pub fn submission_id(&self) -> SubmissionId {
         self.submission_id
     }
@@ -163,10 +168,13 @@ pub struct Reply {
 
 impl Reply {
     /// Final assistant text; empty when there is none.
+    #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// The dispatched message this reply settles.
+    #[must_use]
     pub fn submission_id(&self) -> SubmissionId {
         self.submission_id
     }

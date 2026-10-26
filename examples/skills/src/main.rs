@@ -22,7 +22,7 @@ fn greeter(cx: &mut AgentContext) -> String {
 }
 
 #[tokio::main]
-async fn main() -> keelrs::Result<()> {
+async fn main() -> anyhow::Result<()> {
     println!("mounted: {} — {}", GREETING.name(), GREETING.description());
 
     let greeter = Agent::new("greeter", greeter);

@@ -1,0 +1,3 @@
+# Lets bare `rustfmt <file>` (as hooks call it) agree with `cargo fmt`.
+edition = "2024"
+style_edition = "2024"

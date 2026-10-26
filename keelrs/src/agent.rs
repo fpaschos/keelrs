@@ -18,6 +18,7 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// An agent named `name` whose function `f` runs before every turn.
     pub fn new(
         name: impl Into<String>,
         f: impl Fn(&mut AgentContext) -> String + Send + Sync + 'static,
@@ -28,6 +29,8 @@ impl Agent {
         }
     }
 
+    /// The name the runtime knows this agent by.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }

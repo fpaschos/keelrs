@@ -2,8 +2,13 @@
 name = "example-hello-world"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
-keelrs = { path = "../../keelrs" }
-tokio = { version = "1", features = ["full"] }
+keelrs.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["full"] }

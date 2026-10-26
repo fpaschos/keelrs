@@ -1,0 +1,27 @@
+# One config for both workspaces: cargo-deny walks up from the cwd to find it.
+
+[graph]
+all-features = true
+
+[advisories]
+# defaults: vulnerabilities and unsound (direct) fail, yanked warns, unmaintained = "all"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true # examples are publish = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true # examples' path dependency on keelrs
+
+[bans.workspace-dependencies]
+duplicates = "deny"
+unused = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

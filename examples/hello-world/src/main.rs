@@ -15,7 +15,7 @@ fn hello(cx: &mut AgentContext) -> String {
 }
 
 #[tokio::main]
-async fn main() -> keelrs::Result<()> {
+async fn main() -> anyhow::Result<()> {
     let hello = Agent::new("hello", hello);
     let runtime = Runtime::start([hello.clone()]);
 
