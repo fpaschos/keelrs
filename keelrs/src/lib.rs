@@ -13,8 +13,8 @@ mod error;
 mod event;
 mod tool;
 
-pub use agent::{Agent, AgentContext};
+pub use agent::{Agent, AgentContext, AgentInstance, Receipt, Reply, SubmissionId};
 pub use error::{Error, Outcome, Result};
 pub use model::{Model, Thinking};
-pub use runtime::{AgentInstance, Init, Receipt, Reply, Runtime, SubmissionId};
+pub use runtime::{Init, Runtime};
 pub use skill::Skill;

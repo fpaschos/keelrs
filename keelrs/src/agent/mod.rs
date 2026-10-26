@@ -4,9 +4,10 @@ use std::fmt;
 use std::sync::Arc;
 
 pub use context::AgentContext;
+pub use instance::{AgentInstance, Receipt, Reply, SubmissionId};
 
 mod context;
-pub(crate) mod instance;
+mod instance;
 pub(crate) mod rig;
 
 type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;

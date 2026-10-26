@@ -8,10 +8,7 @@ pub enum Error {
     /// The agent was never given to [`Runtime::start`](crate::Runtime::start).
     #[error("unknown agent `{0}`")]
     UnknownAgent(String),
-    /// A read addressed an instance that was never dispatched to.
-    #[error("no agent instance `{0}`")]
-    InstanceNotFound(String),
-    /// A read named a submission the instance never received.
+    /// A read named a submission this instance never received.
     #[error("no submission {0}")]
     SubmissionNotFound(SubmissionId),
     /// The dispatched message settled without a reply.

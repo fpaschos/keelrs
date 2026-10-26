@@ -81,10 +81,10 @@ async fn a_read_issued_before_the_run_settles_gets_the_outcome() {
 }
 
 #[tokio::test]
-async fn reading_an_instance_never_dispatched_to_fails() {
+async fn reading_a_receipt_on_another_instance_fails() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
     let runtime = Runtime::start([agent.clone()]);
     let receipt = runtime.init(&agent).id("a").dispatch("hi").await.unwrap();
     let result = runtime.init(&agent).id("b").read(&receipt).await;
-    assert!(matches!(result, Err(Error::InstanceNotFound(id)) if id == "b"));
+    assert!(matches!(result, Err(Error::SubmissionNotFound(id)) if id == receipt.submission_id()));
 }
