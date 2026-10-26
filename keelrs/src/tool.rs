@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// What one call of a tool receives: the model's arguments and the call's id.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct ToolCall<Args> {
     /// The arguments, deserialised from what the model sent.
@@ -96,12 +96,6 @@ impl Tool {
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
-    }
-
-    /// The name the model calls this tool by.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
     }
 }
 

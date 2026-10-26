@@ -177,11 +177,10 @@ async fn answer(
         PendingToolCall::Malformed(call) => return Ok(call.answer(None)),
         other => return Err(format!("unsupported tool call {other:?}")),
     };
-    let Some(tool) = tools.get(&**call.name()) else {
-        let missing =
-            ToolExecutionError::not_found(format!("tool \"{}\" is not available", call.name()));
-        return Ok(call.answer(ToolResult::failed(missing)));
-    };
+    // The run only emits calls the pinned render declared.
+    let tool = tools
+        .get(&**call.name())
+        .ok_or_else(|| format!("tool \"{}\" was not declared this turn", call.name()))?;
     if let Some(refusal) = arguments_refusal(&tool.schema, call.tool_call()) {
         let refused = ToolExecutionError::invalid_args(refusal);
         return Ok(call.answer(ToolResult::failed(refused)));
