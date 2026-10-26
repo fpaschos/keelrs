@@ -8,6 +8,7 @@ pub mod event;
 pub mod model;
 pub mod runtime;
 pub mod sandbox;
+pub mod skill;
 pub mod tool;
 
 mod error;
@@ -15,3 +16,4 @@ mod error;
 pub use agent::{Agent, AgentContext};
 pub use error::{Error, Outcome, Result};
 pub use runtime::{AgentInstance, Init, Receipt, Reply, Runtime, SubmissionId};
+pub use skill::Skill;

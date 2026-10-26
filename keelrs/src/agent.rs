@@ -3,6 +3,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use crate::Skill;
+
 type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;
 
 /// A named function that declares what the run uses and returns the prompt.
@@ -50,11 +52,17 @@ impl fmt::Debug for Agent {
 #[derive(Debug, Default)]
 pub struct AgentContext {
     pub(crate) model: Option<String>,
+    pub(crate) skills: Vec<Skill>,
 }
 
 impl AgentContext {
     /// Declares the model, as `provider/model`.
     pub fn use_model(&mut self, model: impl Into<String>) {
         self.model = Some(model.into());
+    }
+
+    /// Mounts an already-resolved skill; nothing is read here.
+    pub fn use_skill(&mut self, skill: Skill) {
+        self.skills.push(skill);
     }
 }

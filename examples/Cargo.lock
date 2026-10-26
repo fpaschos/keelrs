@@ -39,6 +39,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-skills"
+version = "0.1.0"
+dependencies = [
+ "keelrs",
+ "tokio",
+]
+
+[[package]]
 name = "keelrs"
 version = "0.1.0"
 

@@ -92,8 +92,9 @@ impl AgentInstance {
             SubmissionId(self.runtime.next_submission.fetch_add(1, Ordering::Relaxed));
 
         let (cx, prompt) = agent.declare();
+        let skills: Vec<&str> = cx.skills.iter().map(|s| s.name()).collect();
         let text = format!(
-            "[stub {} | instance {}] system: {prompt:?} user: {:?}",
+            "[stub {} | instance {} | skills {skills:?}] system: {prompt:?} user: {:?}",
             cx.model.as_deref().unwrap_or("<no model>"),
             self.id,
             message.into(),
