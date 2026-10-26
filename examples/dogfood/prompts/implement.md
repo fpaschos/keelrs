@@ -13,6 +13,8 @@ While you work:
   needs.
 - Use `read`, `edit` and `write` for files, `search` and `list` to find them, and `shell` for
   `cargo`, `git` and `gh`.
+- The working tree may hold changes you did not make. Never discard, revert, stash or check them
+  out, even when a reviewer asks; leave them as they are and name them in your report.
 - The calls of one reply run at the same time. Put every change to one file in a single `edit`
   (it takes several replacements), and never send two calls that change the same file, or a
   `shell` command that changes files beside a `write` or `edit`, in one reply.
