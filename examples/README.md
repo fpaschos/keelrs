@@ -17,4 +17,5 @@ set -a; source .env; set +a; cargo run -p example-hello-world
 | Example | Flow |
 |---|---|
 | [`hello-world`](hello-world) | Smallest agent: one turn, no tools, a real reply from Claude Sonnet 5.5 |
+| [`instructions`](instructions) | Templated returned instructions plus a static `use_instruction` style guide, a real reply |
 | [`skills`](skills) | Mount a skill embedded at compile time (sample, `use_skill` undecided and ignored for now) |

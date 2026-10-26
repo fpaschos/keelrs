@@ -306,6 +306,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-instructions"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "keelrs",
+ "tokio",
+]
+
+[[package]]
 name = "example-skills"
 version = "0.1.0"
 dependencies = [

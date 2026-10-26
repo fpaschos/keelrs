@@ -43,8 +43,9 @@ pub(crate) async fn run(
                 prompt, history, ..
             } => {
                 // The agent function runs again before every turn (ADR 0004).
-                let (cx, system) = agent.declare();
+                let (cx, returned) = agent.declare();
                 let declared = cx.model()?;
+                let instructions = cx.instructions(&returned)?;
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
                     None => connected.insert((
@@ -56,7 +57,7 @@ pub(crate) async fn run(
                 };
 
                 let mut spec = RunSpec::new();
-                spec.preamble = Some(system);
+                spec.preamble = instructions;
                 if let Some(thinking) = thinking {
                     spec.options = GenerationOptions::default().reasoning(reasoning(*thinking));
                 }

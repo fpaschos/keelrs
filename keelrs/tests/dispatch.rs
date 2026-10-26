@@ -44,6 +44,20 @@ async fn an_empty_model_id_fails() {
 }
 
 #[tokio::test]
+async fn blank_use_instruction_text_fails() {
+    let agent = Agent::new("blank-instruction", |cx: &mut AgentContext| {
+        cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_instruction("  ");
+        "Greet.".into()
+    });
+    let reason = failure_reason(agent).await;
+    assert!(
+        reason.contains("`use_instruction` was given empty text"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
 async fn an_unknown_vendor_fails_with_rigs_reason() {
     let agent = Agent::new("unknown-vendor", |cx: &mut AgentContext| {
         cx.use_model("nope/model");
