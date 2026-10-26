@@ -1,4 +1,6 @@
 /target
 /examples/target
 .idea/
-.claude/
+.claude/settings.json
+.claude/settings.local.json
+.claude/worktrees/

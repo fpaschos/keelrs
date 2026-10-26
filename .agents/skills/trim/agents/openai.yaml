@@ -1,0 +1,5 @@
+interface:
+  display_name: 'Trim'
+  short_description: 'Cut code and comments, keep behaviour'
+policy:
+  allow_implicit_invocation: false

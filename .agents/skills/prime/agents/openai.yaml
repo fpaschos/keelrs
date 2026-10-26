@@ -1,0 +1,3 @@
+interface:
+  display_name: 'Prime'
+  short_description: 'Orient on project structure and git state'
