@@ -1,6 +1,6 @@
-//! Flow: the smallest possible agent — one turn, no tools.
+//! Flow: the smallest possible agent — one turn, no tools — answered by a real model.
 //!
-//! Run with
+//! Needs `ANTHROPIC_API_KEY`. Run with
 //!
 //! ```not_rust
 //! cargo run -p example-hello-world

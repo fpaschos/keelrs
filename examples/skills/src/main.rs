@@ -17,6 +17,7 @@ static GREETING: Skill = keelrs::skill!("../skills/greeting/SKILL.md");
 
 fn greeter(cx: &mut AgentContext) -> String {
     cx.use_model("anthropic/claude-sonnet-5-5");
+    // STUB: accepted and ignored until the skill design is decided.
     cx.use_skill(GREETING);
     "Activate the `greeting` skill before greeting anyone.".into()
 }

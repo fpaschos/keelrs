@@ -1,16 +1,28 @@
 //! The runtime, agent instances, and dispatching messages to them.
 //!
-//! STUB: no model is called and nothing is persisted. A dispatch runs the agent
-//! function and settles at once with a reply that echoes what the agent declared.
+//! Each agent instance is one task that owns its events and runs one dispatch at
+//! a time; [`AgentInstance`] reaches it through a channel (Alice Ryhl's "Actors
+//! with Tokio"). Nothing is persisted: events live in memory.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::{Agent, Error, Result};
+use tokio::select;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+use crate::driver::{self, Settled};
+use crate::event::Event;
+use crate::{Agent, Error, Outcome, Result};
 
 /// The running keelrs instance that knows the agents and hosts their instances.
+///
+/// Dropping it stops every agent instance: runs in flight and queued settle as
+/// [`Outcome::Aborted`].
 #[derive(Debug)]
 pub struct Runtime {
     inner: Arc<Inner>,
@@ -20,8 +32,10 @@ pub struct Runtime {
 struct Inner {
     agents: HashMap<String, Agent>,
     next_submission: AtomicU64,
-    /// Settled replies, per instance, keyed by `(agent name, instance id)`.
-    instances: Mutex<HashMap<(String, String), HashMap<SubmissionId, Reply>>>,
+    /// Running instance tasks, keyed by `(agent name, instance id)`.
+    instances: Mutex<HashMap<(String, String), Handle>>,
+    /// Parent of every instance token; cancelled when the runtime is dropped.
+    shutdown: CancellationToken,
 }
 
 impl Runtime {
@@ -51,6 +65,12 @@ impl Runtime {
     }
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.inner.shutdown.cancel();
+    }
+}
+
 /// An agent on a runtime, waiting for an instance id.
 #[derive(Debug)]
 pub struct Init {
@@ -70,7 +90,7 @@ impl Init {
 }
 
 /// One conversation with an agent, addressed by an id.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AgentInstance {
     runtime: Arc<Inner>,
     agent: String,
@@ -85,6 +105,9 @@ impl AgentInstance {
     }
 
     /// Submits `message`; returns a receipt, not the reply.
+    ///
+    /// The message runs after those dispatched before it; a model or connect
+    /// error shows up on [`read`](Self::read), not here.
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
         let agent = self
             .runtime
@@ -93,29 +116,14 @@ impl AgentInstance {
             .ok_or_else(|| Error::UnknownAgent(self.agent.clone()))?;
         let submission_id =
             SubmissionId(self.runtime.next_submission.fetch_add(1, Ordering::Relaxed));
-
-        let (cx, prompt) = agent.declare();
-        let skills: Vec<&str> = cx.skills.iter().map(|s| s.name()).collect();
-        let text = format!(
-            "[stub {} | instance {} | skills {skills:?}] system: {prompt:?} user: {:?}",
-            cx.model.as_deref().unwrap_or("<no model>"),
-            self.id,
-            message.into(),
-        );
-
-        self.runtime
-            .instances
-            .lock()
-            .unwrap()
-            .entry((self.agent.clone(), self.id.clone()))
-            .or_default()
-            .insert(
-                submission_id,
-                Reply {
-                    text,
-                    submission_id,
-                },
-            );
+        let inbox = self.handle_or_spawn(agent).inbox;
+        let command = Command::Dispatch {
+            submission_id,
+            text: message.into(),
+        };
+        if inbox.send(command).await.is_err() {
+            return Err(aborted(submission_id));
+        }
         Ok(Receipt { submission_id })
     }
 
@@ -124,14 +132,287 @@ impl AgentInstance {
         if !self.runtime.agents.contains_key(&self.agent) {
             return Err(Error::UnknownAgent(self.agent.clone()));
         }
-        let instances = self.runtime.instances.lock().unwrap();
-        let replies = instances
-            .get(&(self.agent.clone(), self.id.clone()))
-            .ok_or_else(|| Error::InstanceNotFound(self.id.clone()))?;
-        replies
-            .get(&receipt.submission_id)
+        let inbox = self
+            .handle()
+            .ok_or_else(|| Error::InstanceNotFound(self.id.clone()))?
+            .inbox;
+        let submission_id = receipt.submission_id;
+        let (respond_to, response) = oneshot::channel();
+        let command = Command::Read {
+            submission_id,
+            respond_to,
+        };
+        if inbox.send(command).await.is_err() {
+            return Err(aborted(submission_id));
+        }
+        // A task that stops before answering was shut down.
+        response
+            .await
+            .unwrap_or_else(|_| Err(aborted(submission_id)))
+    }
+
+    fn key(&self) -> (String, String) {
+        (self.agent.clone(), self.id.clone())
+    }
+
+    fn handle(&self) -> Option<Handle> {
+        self.runtime
+            .instances
+            .lock()
+            .unwrap()
+            .get(&self.key())
             .cloned()
-            .ok_or(Error::SubmissionNotFound(receipt.submission_id))
+    }
+
+    /// The instance task's handle, spawning the task on the first dispatch to this id.
+    fn handle_or_spawn(&self, agent: &Agent) -> Handle {
+        self.runtime
+            .instances
+            .lock()
+            .unwrap()
+            .entry(self.key())
+            .or_insert_with(|| InstanceTask::spawn(agent.clone(), &self.runtime.shutdown))
+            .clone()
+    }
+}
+
+fn aborted(submission_id: SubmissionId) -> Error {
+    Error::Run {
+        outcome: Outcome::Aborted,
+        submission_id,
+    }
+}
+
+/// How an [`AgentInstance`] reaches its task.
+#[derive(Debug, Clone)]
+struct Handle {
+    /// Dispatch and Read, in order.
+    inbox: mpsc::Sender<Command>,
+}
+
+#[derive(Debug)]
+enum Command {
+    Dispatch {
+        submission_id: SubmissionId,
+        text: String,
+    },
+    Read {
+        submission_id: SubmissionId,
+        respond_to: oneshot::Sender<Result<Reply>>,
+    },
+}
+
+/// One dispatch in flight: the driver's future, which settles it.
+struct Run {
+    submission_id: SubmissionId,
+    future: Pin<Box<dyn Future<Output = std::result::Result<Settled, String>> + Send>>,
+}
+
+/// A dispatched message that has not started.
+struct Queued {
+    submission_id: SubmissionId,
+    text: String,
+}
+
+/// Owns one agent instance: its events, its queue, and the run in flight.
+struct InstanceTask {
+    agent: Agent,
+    inbox: mpsc::Receiver<Command>,
+    /// The instance token: cancelling it shuts the instance down.
+    cancel: CancellationToken,
+    /// Canonical events, in memory for now.
+    events: Vec<Event>,
+    queue: VecDeque<Queued>,
+    waiters: HashMap<SubmissionId, Vec<oneshot::Sender<Result<Reply>>>>,
+    current_run: Option<Run>,
+}
+
+impl InstanceTask {
+    fn spawn(agent: Agent, shutdown: &CancellationToken) -> Handle {
+        let (inbox_tx, inbox) = mpsc::channel(64);
+        let task = Self {
+            agent,
+            inbox,
+            cancel: shutdown.child_token(),
+            events: Vec::new(),
+            queue: VecDeque::new(),
+            waiters: HashMap::new(),
+            current_run: None,
+        };
+        tokio::spawn(task.run());
+        Handle { inbox: inbox_tx }
+    }
+
+    async fn run(mut self) {
+        loop {
+            select! {
+                biased;
+                // 1. A kill always wins: the run in flight and everything queued abort.
+                () = self.cancel.cancelled() => {
+                    self.abort_all();
+                    return;
+                }
+                // 2. Dispatch and Read, in order.
+                command = self.inbox.recv() => match command {
+                    Some(command) => self.handle(command),
+                    // Every handle is gone; nobody can read what is left.
+                    None => return,
+                },
+                // 3. The run in flight settles.
+                (submission_id, result) = settle(&mut self.current_run) => {
+                    self.current_run = None;
+                    self.record(submission_id, result);
+                    self.start_next();
+                }
+            }
+        }
+    }
+
+    fn handle(&mut self, command: Command) {
+        match command {
+            Command::Dispatch {
+                submission_id,
+                text,
+            } => {
+                self.queue.push_back(Queued {
+                    submission_id,
+                    text,
+                });
+                self.start_next();
+            }
+            Command::Read {
+                submission_id,
+                respond_to,
+            } => {
+                if let Some(result) = self.settled(submission_id) {
+                    let _ = respond_to.send(result);
+                } else if self.is_pending(submission_id) {
+                    self.waiters
+                        .entry(submission_id)
+                        .or_default()
+                        .push(respond_to);
+                } else {
+                    let _ = respond_to.send(Err(Error::SubmissionNotFound(submission_id)));
+                }
+            }
+        }
+    }
+
+    /// Starts the next queued dispatch unless one is running: one run at a time.
+    fn start_next(&mut self) {
+        if self.current_run.is_some() {
+            return;
+        }
+        let Some(Queued {
+            submission_id,
+            text,
+        }) = self.queue.pop_front()
+        else {
+            return;
+        };
+        let history = self
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Message(message) => Some(message.clone()),
+                Event::Settled { .. } => None,
+            })
+            .collect();
+        self.current_run = Some(Run {
+            submission_id,
+            future: Box::pin(driver::run(self.agent.clone(), text, history)),
+        });
+    }
+
+    /// Records how a run settled and answers its waiters.
+    fn record(
+        &mut self,
+        submission_id: SubmissionId,
+        result: std::result::Result<Settled, String>,
+    ) {
+        let result = match result {
+            Ok(Settled { reply, messages }) => {
+                self.events.extend(messages.into_iter().map(Event::Message));
+                Ok(reply)
+            }
+            Err(reason) => Err(Outcome::Failed { reason }),
+        };
+        self.settle_with(submission_id, result);
+    }
+
+    fn settle_with(
+        &mut self,
+        submission_id: SubmissionId,
+        result: std::result::Result<String, Outcome>,
+    ) {
+        self.events.push(Event::Settled {
+            submission_id,
+            result,
+        });
+        let answer = self.settled(submission_id);
+        for waiter in self.waiters.remove(&submission_id).unwrap_or_default() {
+            if let Some(answer) = &answer {
+                let _ = waiter.send(clone_answer(answer));
+            }
+        }
+    }
+
+    /// Settles the run in flight and every queued dispatch as aborted.
+    fn abort_all(&mut self) {
+        // Dropping the run's future stops its model call.
+        let current = self.current_run.take().map(|run| run.submission_id);
+        let queued: Vec<_> = self.queue.drain(..).map(|q| q.submission_id).collect();
+        for submission_id in current.into_iter().chain(queued) {
+            self.settle_with(submission_id, Err(Outcome::Aborted));
+        }
+    }
+
+    fn settled(&self, submission_id: SubmissionId) -> Option<Result<Reply>> {
+        self.events.iter().find_map(|event| match event {
+            Event::Settled {
+                submission_id: id,
+                result,
+            } if *id == submission_id => Some(match result {
+                Ok(text) => Ok(Reply {
+                    text: text.clone(),
+                    submission_id,
+                }),
+                Err(outcome) => Err(Error::Run {
+                    outcome: outcome.clone(),
+                    submission_id,
+                }),
+            }),
+            _ => None,
+        })
+    }
+
+    fn is_pending(&self, submission_id: SubmissionId) -> bool {
+        self.current_run
+            .as_ref()
+            .is_some_and(|run| run.submission_id == submission_id)
+            || self.queue.iter().any(|q| q.submission_id == submission_id)
+    }
+}
+
+/// Waits for the run in flight; never resolves when there is none.
+async fn settle(run: &mut Option<Run>) -> (SubmissionId, std::result::Result<Settled, String>) {
+    match run {
+        Some(run) => (run.submission_id, run.future.as_mut().await),
+        None => std::future::pending().await,
+    }
+}
+
+fn clone_answer(answer: &Result<Reply>) -> Result<Reply> {
+    match answer {
+        Ok(reply) => Ok(reply.clone()),
+        Err(Error::Run {
+            outcome,
+            submission_id,
+        }) => Err(Error::Run {
+            outcome: outcome.clone(),
+            submission_id: *submission_id,
+        }),
+        Err(_) => unreachable!("a settled answer is a reply or a run error"),
     }
 }
 
