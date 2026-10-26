@@ -1,0 +1,10 @@
+[package]
+name = "keelrs"
+version = "0.1.0"
+edition.workspace = true
+description = "A Flue-style agent harness for Rust"
+
+[lints]
+workspace = true
+
+[dependencies]

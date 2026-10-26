@@ -1,0 +1,9 @@
+[package]
+name = "example-hello-world"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+keelrs = { path = "../../keelrs" }
+tokio = { version = "1", features = ["full"] }
