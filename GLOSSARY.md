@@ -30,6 +30,11 @@ _Avoid_: Ask, send, prompt
 The claim ticket for one dispatched message, used to read its reply later.
 _Avoid_: Admission, ticket
 
+**Turn**:
+One model call within a dispatch, with the agent function run before it; a dispatch takes one turn, plus one more for
+each round of tool calls.
+_Avoid_: Step, iteration, round
+
 **Read**:
 Waiting for a dispatched message to settle and taking its reply.
 _Avoid_: Await, poll
