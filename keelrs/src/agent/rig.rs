@@ -1,4 +1,4 @@
-//! Drives one Rig `AgentRun` per dispatch: the only module where Rig types appear (ADR 0004).
+//! The Rig integration: drives one Rig `AgentRun` per dispatch; the only module where Rig types appear (ADR 0004).
 //!
 //! One turn, no tools: a tool call fails the run.
 

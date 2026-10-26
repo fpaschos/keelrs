@@ -1,7 +1,7 @@
 //! The model an agent declares with [`AgentContext::use_model`](crate::AgentContext::use_model).
 //!
 //! Plain data: the `provider/model` id and an optional thinking level. keelrs
-//! connects it through Rig inside a private driver, so no Rig type appears here.
+//! connects it through Rig inside a private module, so no Rig type appears here.
 
 /// A model to call, as `provider/model` (e.g. `anthropic/claude-sonnet-5-5`).
 ///

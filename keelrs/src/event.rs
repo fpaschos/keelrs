@@ -3,7 +3,7 @@
 //! Private and minimal for now: just enough to rebuild the history for the next
 //! dispatch and to answer reads. Kept in memory.
 
-use crate::driver::Message;
+use crate::agent::rig::Message;
 use crate::{Outcome, SubmissionId};
 
 #[derive(Debug, Clone)]

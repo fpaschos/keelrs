@@ -9,7 +9,6 @@ pub mod runtime;
 pub mod sandbox;
 pub mod skill;
 
-mod driver;
 mod error;
 mod event;
 mod tool;

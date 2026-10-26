@@ -1,22 +1,17 @@
-//! The runtime, agent instances, and dispatching messages to them.
+//! The runtime, handles to agent instances, and dispatching messages to them.
 //!
-//! Each agent instance is one task that owns its events and runs one dispatch at
-//! a time; [`AgentInstance`] reaches it through a channel (Alice Ryhl's "Actors
-//! with Tokio"). Nothing is persisted: events live in memory.
+//! Each agent instance is an actor (`agent::instance`); an
+//! [`AgentInstance`] handle reaches it through its inbox.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::select;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::driver::{self, Settled};
-use crate::event::Event;
+use crate::agent::instance::{Command, InstanceTask};
 use crate::{Agent, Error, Outcome, Result};
 
 /// The running keelrs instance that knows the agents and hosts their instances.
@@ -157,7 +152,7 @@ impl AgentInstance {
         if inbox.send(command).await.is_err() {
             return Err(aborted(submission_id));
         }
-        // A task that stops before answering was shut down.
+        // A task that stops before answering (it panicked) counts as aborted.
         response
             .await
             .unwrap_or_else(|_| Err(aborted(submission_id)))
@@ -172,224 +167,6 @@ fn aborted(submission_id: SubmissionId) -> Error {
     Error::Run {
         outcome: Outcome::Aborted,
         submission_id,
-    }
-}
-
-/// What an [`AgentInstance`] sends its task, in order.
-#[derive(Debug)]
-enum Command {
-    Dispatch {
-        submission_id: SubmissionId,
-        text: String,
-    },
-    Read {
-        submission_id: SubmissionId,
-        respond_to: oneshot::Sender<Result<Reply>>,
-    },
-}
-
-/// One dispatch in flight: the driver's future, which settles it.
-struct Run {
-    submission_id: SubmissionId,
-    future: Pin<Box<dyn Future<Output = std::result::Result<Settled, String>> + Send>>,
-}
-
-/// A dispatched message that has not started.
-struct Queued {
-    submission_id: SubmissionId,
-    text: String,
-}
-
-/// Owns one agent instance: its events, its queue, and the run in flight.
-struct InstanceTask {
-    agent: Agent,
-    inbox: mpsc::Receiver<Command>,
-    /// The instance token: cancelling it shuts the instance down.
-    cancel: CancellationToken,
-    /// Canonical events, in memory for now.
-    events: Vec<Event>,
-    queue: VecDeque<Queued>,
-    waiters: HashMap<SubmissionId, Vec<oneshot::Sender<Result<Reply>>>>,
-    current_run: Option<Run>,
-}
-
-impl InstanceTask {
-    fn spawn(agent: Agent, shutdown: &CancellationToken) -> mpsc::Sender<Command> {
-        let (inbox_tx, inbox) = mpsc::channel(64);
-        let task = Self {
-            agent,
-            inbox,
-            cancel: shutdown.child_token(),
-            events: Vec::new(),
-            queue: VecDeque::new(),
-            waiters: HashMap::new(),
-            current_run: None,
-        };
-        tokio::spawn(task.run());
-        inbox_tx
-    }
-
-    async fn run(mut self) {
-        loop {
-            select! {
-                biased;
-                // 1. A kill always wins: the run in flight and everything queued abort.
-                () = self.cancel.cancelled() => {
-                    self.abort_all();
-                    return;
-                }
-                // 2. Dispatch and Read, in order.
-                command = self.inbox.recv() => match command {
-                    Some(command) => self.handle(command),
-                    // Every handle is gone; nobody can read what is left.
-                    None => return,
-                },
-                // 3. The run in flight settles.
-                (submission_id, result) = settle(&mut self.current_run) => {
-                    self.current_run = None;
-                    self.record(submission_id, result);
-                    self.start_next();
-                }
-            }
-        }
-    }
-
-    fn handle(&mut self, command: Command) {
-        match command {
-            Command::Dispatch {
-                submission_id,
-                text,
-            } => {
-                self.queue.push_back(Queued {
-                    submission_id,
-                    text,
-                });
-                self.start_next();
-            }
-            Command::Read {
-                submission_id,
-                respond_to,
-            } => {
-                if let Some(result) = self.settled(submission_id) {
-                    let _ = respond_to.send(result);
-                } else if self.is_pending(submission_id) {
-                    self.waiters
-                        .entry(submission_id)
-                        .or_default()
-                        .push(respond_to);
-                } else {
-                    let _ = respond_to.send(Err(Error::SubmissionNotFound(submission_id)));
-                }
-            }
-        }
-    }
-
-    /// Starts the next queued dispatch unless one is running: one run at a time.
-    fn start_next(&mut self) {
-        if self.current_run.is_some() {
-            return;
-        }
-        let Some(Queued {
-            submission_id,
-            text,
-        }) = self.queue.pop_front()
-        else {
-            return;
-        };
-        let history = self
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                Event::Message(message) => Some(message.clone()),
-                Event::Settled { .. } => None,
-            })
-            .collect();
-        self.current_run = Some(Run {
-            submission_id,
-            future: Box::pin(driver::run(self.agent.clone(), text, history)),
-        });
-    }
-
-    /// Records how a run settled and answers its waiters.
-    fn record(
-        &mut self,
-        submission_id: SubmissionId,
-        result: std::result::Result<Settled, String>,
-    ) {
-        let result = match result {
-            Ok(Settled { reply, messages }) => {
-                self.events.extend(messages.into_iter().map(Event::Message));
-                Ok(reply)
-            }
-            Err(reason) => Err(Outcome::Failed { reason }),
-        };
-        self.settle_with(submission_id, result);
-    }
-
-    fn settle_with(
-        &mut self,
-        submission_id: SubmissionId,
-        result: std::result::Result<String, Outcome>,
-    ) {
-        for waiter in self.waiters.remove(&submission_id).unwrap_or_default() {
-            let _ = waiter.send(answer(submission_id, &result));
-        }
-        self.events.push(Event::Settled {
-            submission_id,
-            result,
-        });
-    }
-
-    /// Settles the run in flight and every queued dispatch as aborted.
-    fn abort_all(&mut self) {
-        // Dropping the run's future stops its model call.
-        let current = self.current_run.take().map(|run| run.submission_id);
-        let queued: Vec<_> = self.queue.drain(..).map(|q| q.submission_id).collect();
-        for submission_id in current.into_iter().chain(queued) {
-            self.settle_with(submission_id, Err(Outcome::Aborted));
-        }
-    }
-
-    fn settled(&self, submission_id: SubmissionId) -> Option<Result<Reply>> {
-        self.events.iter().find_map(|event| match event {
-            Event::Settled {
-                submission_id: id,
-                result,
-            } if *id == submission_id => Some(answer(submission_id, result)),
-            _ => None,
-        })
-    }
-
-    fn is_pending(&self, submission_id: SubmissionId) -> bool {
-        self.current_run
-            .as_ref()
-            .is_some_and(|run| run.submission_id == submission_id)
-            || self.queue.iter().any(|q| q.submission_id == submission_id)
-    }
-}
-
-/// Waits for the run in flight; never resolves when there is none.
-async fn settle(run: &mut Option<Run>) -> (SubmissionId, std::result::Result<Settled, String>) {
-    match run {
-        Some(run) => (run.submission_id, run.future.as_mut().await),
-        None => std::future::pending().await,
-    }
-}
-
-/// What a read of a settled submission gets.
-fn answer(
-    submission_id: SubmissionId,
-    result: &std::result::Result<String, Outcome>,
-) -> Result<Reply> {
-    match result {
-        Ok(text) => Ok(Reply {
-            text: text.clone(),
-            submission_id,
-        }),
-        Err(outcome) => Err(Error::Run {
-            outcome: outcome.clone(),
-            submission_id,
-        }),
     }
 }
 
@@ -421,8 +198,8 @@ impl Receipt {
 /// The settled outcome of one dispatched message.
 #[derive(Debug, Clone)]
 pub struct Reply {
-    text: String,
-    submission_id: SubmissionId,
+    pub(crate) text: String,
+    pub(crate) submission_id: SubmissionId,
 }
 
 impl Reply {
