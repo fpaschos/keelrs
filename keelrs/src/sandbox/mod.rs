@@ -163,7 +163,7 @@ impl ContentHash {
     /// The hash of `bytes`.
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        Self(rig_core::tool::content_hash(bytes).0)
+        Self(local::content_hash(bytes))
     }
 
     /// The hash as lowercase hex.

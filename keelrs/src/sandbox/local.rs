@@ -317,6 +317,12 @@ impl SandboxBackend for LocalBackend {
     }
 }
 
+/// The SHA-256 of `bytes` as lowercase hex, as rig-tools hashes what `write_if` compares, so
+/// [`ContentHash`] stays in step with it.
+pub(super) fn content_hash(bytes: &[u8]) -> String {
+    rig_core::tool::content_hash(bytes).0
+}
+
 /// How a process that exited ended: its code, or the signal that ended it.
 fn exit_of(status: std::process::ExitStatus) -> Exit {
     use std::os::unix::process::ExitStatusExt as _;
