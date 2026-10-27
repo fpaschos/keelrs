@@ -11,6 +11,7 @@ description = "A Flue-style agent harness for Rust"
 workspace = true
 
 [dependencies]
+base64.workspace = true
 futures.workspace = true
 include_dir.workspace = true
 rig-agent.workspace = true

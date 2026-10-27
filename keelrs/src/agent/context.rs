@@ -3,13 +3,7 @@
 use crate::{Model, Skill, Tool};
 
 /// Tool names keelrs keeps for its built-in tools, with or without skills.
-const RESERVED_TOOL_NAMES: [&str; 5] = [
-    "activate_skill",
-    "read_skill_resource",
-    "task",
-    "finish",
-    "give_up",
-];
+const RESERVED_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
 
 /// What an agent function receives to make its declarations for the current turn.
 #[derive(Debug, Default)]

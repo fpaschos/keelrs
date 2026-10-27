@@ -603,3 +603,80 @@ async fn a_discovered_skill_never_reads_a_secret() {
         "`.env` is not a file of skill \"lint\"; its files: references/rules.md, scripts/run.sh"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_discovered_skill_lists_a_symlink_that_stays_in_its_folder() {
+    let folder = lint();
+    std::os::unix::fs::symlink(folder.0.join("lint/references"), folder.0.join("lint/docs"))
+        .unwrap();
+    let skill = folder.skill().await;
+    let agent = agent(move |cx| cx.use_skill(skill.clone()));
+    let results = one_call(&agent, "activate_skill", json!({"name": "lint"})).await;
+    assert!(
+        results[0].0.ends_with(
+            "<skill_resources>\n- docs/rules.md\n- references/rules.md\n- scripts/run.sh\n</skill_resources>"
+        ),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tool_may_take_a_name_keelrs_has_no_builtin_for() {
+    for name in ["task", "finish", "give_up"] {
+        let tool = Tool::new(name, "Mine.", async |_: ToolCall<()>| {
+            Ok::<_, Infallible>("ran")
+        });
+        let agent = agent(move |cx| cx.use_tool(tool.clone()));
+        let results = one_call(&agent, name, json!({})).await;
+        assert_eq!(results, [("ran".to_owned(), false)], "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_single_line_wider_than_50_kb_is_cut() {
+    let skill = with_file("x".repeat(60 * 1024));
+    let text = read(skill, json!({"skill": "haiku", "path": "references/file"})).await;
+    assert_eq!(
+        text,
+        format!(
+            "{}\n\n[Line 1 is cut at 51200 of 61440 bytes.]",
+            "x".repeat(50 * 1024)
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_file_path_with_dot_segments_is_stored_and_read_normalized() {
+    let skill = haiku().file("./refs//a/./b.md", "B").unwrap();
+    let agent = agent({
+        let skill = skill.clone();
+        move |cx| cx.use_skill(skill.clone())
+    });
+    let results = one_call(&agent, "activate_skill", json!({"name": "haiku"})).await;
+    assert!(
+        results[0]
+            .0
+            .ends_with("<skill_resources>\n- refs/a/b.md\n</skill_resources>"),
+        "{results:?}"
+    );
+    for path in ["refs/a/b.md", "./refs/a/b.md", "refs//a/./b.md"] {
+        let text = read(skill.clone(), json!({"skill": "haiku", "path": path})).await;
+        assert_eq!(text, "B", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_multi_line_description_is_one_catalog_line() {
+    let agent = agent(|cx| {
+        cx.use_skill(Skill::new("haiku", "Write a haiku.\nShort ones.\n", "Body.").unwrap());
+    });
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert!(
+        preamble(&requests[0])
+            .unwrap()
+            .ends_with("\n\n- **haiku** — Write a haiku. Short ones."),
+        "{:?}",
+        preamble(&requests[0])
+    );
+}

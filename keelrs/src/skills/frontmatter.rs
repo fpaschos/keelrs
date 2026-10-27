@@ -22,27 +22,17 @@ impl Frontmatter {
     }
 }
 
-/// Splits a `SKILL.md` into its frontmatter and its body, trimmed.
+/// Splits a `SKILL.md` into its frontmatter and its body, trimmed. On a YAML
+/// error it retries once with unquoted values that hold `": "` quoted, as Claude
+/// Code skills often write `description: Use when: …`.
 pub(super) fn parse(source: &str) -> Result<(Frontmatter, &str), String> {
-    parse_as(source, false)
-}
-
-/// Like [`parse`], but on a YAML error retries once with unquoted values that
-/// hold `": "` quoted, as Claude Code skills often write `description: Use when: …`.
-pub(super) fn parse_lenient(source: &str) -> Result<(Frontmatter, &str), String> {
-    parse_as(source, true)
-}
-
-fn parse_as(source: &str, lenient: bool) -> Result<(Frontmatter, &str), String> {
     let (yaml, body) = split(source).ok_or_else(|| {
         "`SKILL.md` must start with YAML frontmatter between `---` lines".to_owned()
     })?;
     let frontmatter: Frontmatter = match serde_saphyr::from_str(yaml) {
         Ok(frontmatter) => frontmatter,
-        Err(error) => lenient
-            .then(|| serde_saphyr::from_str(&quote_colons(yaml)).ok())
-            .flatten()
-            .ok_or_else(|| format!("frontmatter: {error}"))?,
+        Err(error) => serde_saphyr::from_str(&quote_colons(yaml))
+            .map_err(|_| format!("frontmatter: {error}"))?,
     };
     frontmatter.check()?;
     Ok((frontmatter, body.trim()))

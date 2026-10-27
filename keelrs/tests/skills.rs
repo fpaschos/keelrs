@@ -27,13 +27,7 @@ fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
 
 #[tokio::test]
 async fn a_tool_with_a_reserved_name_fails() {
-    for name in [
-        "activate_skill",
-        "read_skill_resource",
-        "task",
-        "finish",
-        "give_up",
-    ] {
+    for name in ["activate_skill", "read_skill_resource"] {
         let agent = agent(move |cx| {
             cx.use_tool(Tool::new(name, "Mine.", async |_: ToolCall<()>| {
                 Ok::<_, Infallible>("")
@@ -70,6 +64,22 @@ fn an_embedded_skill_reads_its_name_and_description() {
 fn frontmatter_fields_beyond_name_and_description_are_ignored() {
     let skill: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/extra-field");
     assert_eq!(skill.description(), "Has fields keelrs does not read.");
+}
+
+#[test]
+fn an_embedded_skill_reads_an_unquoted_value_with_a_colon_as_text() {
+    let skill: Skill =
+        keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/colon-description");
+    assert_eq!(
+        skill.description(),
+        "Review code. Use when: the user asks for a review."
+    );
+}
+
+#[test]
+fn an_embedded_skill_may_hold_templates_named_like_secrets() {
+    let skill: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/with-templates");
+    assert_eq!(skill.description(), "Set up a project's environment.");
 }
 
 /// Why mounting the embedded `skill` fails its dispatch.

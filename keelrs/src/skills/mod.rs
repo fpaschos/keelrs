@@ -103,11 +103,15 @@ fn forbidden(name: &str) -> bool {
     secret(name) || clutter(name)
 }
 
-/// A file or folder name that may hold a secret.
+/// A file or folder name that may hold a secret. Templates (`.env.example`,
+/// `.env.sample`, `.env.template`) and Markdown about secrets do not.
 fn secret(name: &str) -> bool {
+    let template = [".example", ".sample", ".template"]
+        .iter()
+        .any(|suffix| name.ends_with(suffix));
     name == ".ssh"
-        || name.starts_with("secrets")
-        || name.starts_with(".env")
+        || (name.starts_with("secrets") && !name.ends_with(".md"))
+        || (name.starts_with(".env") && !template)
         || name.ends_with(".pem")
         || name.ends_with(".key")
 }
@@ -204,7 +208,8 @@ impl Skill {
                 ));
             }
         };
-        check_path(&path).map_err(|reason| SkillError::new(&parsed.frontmatter.name, reason))?;
+        let path =
+            normalize(&path).map_err(|reason| SkillError::new(&parsed.frontmatter.name, reason))?;
         if let Files::Memory(files) = &mut Arc::make_mut(&mut parsed).files {
             files.insert(path, bytes.into());
         }
@@ -285,17 +290,23 @@ impl fmt::Debug for Skill {
     }
 }
 
-/// A supporting file's path must stay inside the skill's folder.
-fn check_path(path: &str) -> Result<(), String> {
-    let relative = Path::new(path)
-        .components()
-        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
-    if path.is_empty() || !relative {
-        return Err(format!(
-            "file path `{path}` must be relative to the skill's folder, without `..`"
-        ));
+/// A supporting file's path, which must stay inside the skill's folder, in the
+/// form files are listed by: `/`-separated, without `.` or empty segments.
+fn normalize(path: &str) -> Result<String, String> {
+    let refusal =
+        || format!("file path `{path}` must be relative to the skill's folder, without `..`");
+    let mut segments = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(segment) => segments.push(segment.to_string_lossy()),
+            Component::CurDir => {}
+            _ => return Err(refusal()),
+        }
     }
-    Ok(())
+    if segments.is_empty() {
+        return Err(refusal());
+    }
+    Ok(segments.join("/"))
 }
 
 /// Whether a [`skill!`](crate::skill!) path starts at the crate root.
@@ -324,8 +335,9 @@ pub const fn from_manifest_dir(path: &str) -> bool {
 /// mounts the skill, and a broken skill settles that dispatch as
 /// [`Outcome::Failed`](crate::Outcome::Failed): a missing `SKILL.md`, an empty
 /// `name` or `description`, or a file that must not ship inside a binary
-/// (`.git`, `.ssh`, `node_modules`, `dist`, `target`, `secrets*`, `.env*`,
-/// `*.pem`, `*.key`). Symlinks are followed at compile time.
+/// (`.git`, `.ssh`, `node_modules`, `dist`, `target`, `secrets*` but Markdown,
+/// `.env*` but `.example`, `.sample` and `.template`, `*.pem`, `*.key`). Symlinks
+/// are followed at compile time.
 ///
 /// ```ignore
 /// static REVIEW: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/skills/review");

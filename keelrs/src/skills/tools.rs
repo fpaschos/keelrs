@@ -2,9 +2,12 @@
 //! [`Tool`]s built each render over that render's skills, so they run on the
 //! same tool loop as `use_tool` tools and are pinned with them.
 
+use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -95,11 +98,11 @@ async fn resource(skills: &[Skill], read: &Read) -> String {
         Ok(skill) => skill,
         Err(miss) => return miss,
     };
-    let path = read.path.strip_prefix("./").unwrap_or(&read.path);
-    if let Err(refusal) = super::check_path(path) {
-        return refusal;
-    }
-    let bytes = match skill.read(path).await {
+    let path = match super::normalize(&read.path) {
+        Ok(path) => path,
+        Err(refusal) => return refusal,
+    };
+    let bytes = match skill.read(&path).await {
         Some(Ok(bytes)) => bytes,
         Some(Err(refusal)) => return refusal,
         None => {
@@ -111,7 +114,10 @@ async fn resource(skills: &[Skill], read: &Read) -> String {
             );
         }
     };
-    let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| base64(&bytes));
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(base64(&bytes)),
+    };
     page(&text, read.offset.unwrap_or(1).max(1), read.limit)
 }
 
@@ -126,15 +132,27 @@ fn page(text: &str, offset: usize, limit: Option<usize>) -> String {
     let limit = limit.unwrap_or(MAX_LINES).clamp(1, MAX_LINES);
     let mut shown = Vec::new();
     let mut bytes = 0;
+    let mut cut = None;
     for line in lines.iter().skip(offset - 1).take(limit) {
         bytes += line.len() + 1;
-        if bytes > MAX_BYTES && !shown.is_empty() {
+        if bytes > MAX_BYTES {
+            if shown.is_empty() {
+                // One line wider than a page: show its start rather than all of it.
+                cut = Some(line.len());
+                shown.push(&line[..line.floor_char_boundary(MAX_BYTES)]);
+            }
             break;
         }
         shown.push(*line);
     }
     let end = offset - 1 + shown.len();
     let mut page = shown.join("\n");
+    if let Some(width) = cut {
+        page.push_str(&format!(
+            "\n\n[Line {offset} is cut at {} of {width} bytes.]",
+            page.len()
+        ));
+    }
     if end < total {
         page.push_str(&format!(
             "\n\n[Showing lines {offset}-{end} of {total}. Use offset={} to continue.]",
@@ -146,21 +164,7 @@ fn page(text: &str, offset: usize, limit: Option<usize>) -> String {
 
 /// Standard base64 (RFC 4648, padded), wrapped at 76 columns.
 fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::new();
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, byte)| n | u32::from(*byte) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                encoded.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
-            } else {
-                encoded.push('=');
-            }
-        }
-    }
+    let encoded = STANDARD.encode(bytes);
     let lines: Vec<_> = encoded
         .as_bytes()
         .chunks(76)
@@ -181,25 +185,4 @@ fn find<'a>(skills: &'a [Skill], name: &str) -> Result<&'a Skill, String> {
                 names.join(", ")
             )
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::base64;
-
-    #[test]
-    fn base64_matches_the_rfc_4648_test_vectors() {
-        let vectors = [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ];
-        for (input, encoded) in vectors {
-            assert_eq!(base64(input.as_bytes()), encoded, "{input:?}");
-        }
-    }
 }

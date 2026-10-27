@@ -125,7 +125,12 @@ async fn a_secret_file_is_left_out_with_a_problem_and_clutter_silently() {
         .write("skills/deploy/.env.local", "TOKEN=1")
         .write("skills/deploy/keys/server.pem", "-----BEGIN")
         .write("skills/deploy/node_modules/left-pad/index.js", "")
-        .write("skills/deploy/.git/HEAD", "ref: main");
+        .write("skills/deploy/.git/HEAD", "ref: main")
+        .write("skills/deploy/templates/.env.example", "API_KEY=")
+        .write(
+            "skills/deploy/references/secrets-handling.md",
+            "Use the env.",
+        );
     let discovered = discover(Discover::new().root(fixture.path("skills"))).await;
     assert_eq!(found(&discovered), [("deploy", "Deploy the app.")]);
     let reason = "may hold a secret; left out of the skill's files".to_owned();
@@ -183,6 +188,31 @@ async fn a_discovered_skill_is_found_by_name() {
     assert!(discovered.get("sonnet").is_none());
     let names: Vec<&str> = (&discovered).into_iter().map(Skill::name).collect();
     assert_eq!(names, ["haiku"]);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_that_leaves_the_skill_folder_is_left_out_with_a_problem() {
+    let fixture = Fixture::new();
+    fixture
+        .skill("skills", "lint", "lint", "Lint code.")
+        .write("shared/rules.md", "Shared.");
+    std::os::unix::fs::symlink(fixture.path("shared"), fixture.path("skills/lint/shared")).unwrap();
+    std::os::unix::fs::symlink(
+        fixture.path("skills/lint"),
+        fixture.path("skills/lint/loop"),
+    )
+    .unwrap();
+    let discovered = discover(Discover::new().root(fixture.path("skills"))).await;
+    assert_eq!(found(&discovered), [("lint", "Lint code.")]);
+    assert_eq!(
+        discovered.problems,
+        [SkillProblem {
+            path: fixture.path("skills/lint/shared"),
+            reason: "a symlink that leaves the skill's folder; left out of the skill's files"
+                .to_owned(),
+        }]
+    );
 }
 
 #[tokio::test]

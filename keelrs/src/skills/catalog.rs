@@ -10,7 +10,11 @@ pub(crate) fn catalog(skills: &[Skill]) -> Option<String> {
     }
     let lines: Vec<String> = skills
         .iter()
-        .map(|skill| format!("- **{}** — {}", skill.name(), skill.description()))
+        .map(|skill| {
+            // One line per skill, whatever YAML block style the description used.
+            let description: Vec<&str> = skill.description().split_whitespace().collect();
+            format!("- **{}** — {}", skill.name(), description.join(" "))
+        })
         .collect();
     Some(format!(
         "## Available Skills\n\n\

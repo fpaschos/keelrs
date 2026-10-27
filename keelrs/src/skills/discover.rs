@@ -3,13 +3,14 @@
 //! Each root holds skill folders one level deep (`<root>/<name>/SKILL.md`). A folder
 //! that cannot be a skill is skipped with a [`SkillProblem`]; discovery never fails.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::fs;
 
-use super::{Files, Parsed, Skill, Source, clutter, frontmatter, secret};
+use super::frontmatter::{self, Frontmatter};
+use super::{Files, Parsed, Skill, Source, clutter, secret};
 
 /// Where [`discover`] looks for skill folders: roots in order, the first found wins.
 #[derive(Debug, Clone, Default)]
@@ -100,8 +101,8 @@ pub async fn discover(discover: Discover) -> Discovered {
         }
         folders.sort();
         for folder in folders {
-            let (skill, problems) = match load(&folder).await {
-                Ok(Some(found)) => found,
+            let (frontmatter, instructions) = match parse(&folder).await {
+                Ok(Some(parsed)) => parsed,
                 Ok(None) => continue,
                 Err(reason) => {
                     discovered.problems.push(SkillProblem {
@@ -111,10 +112,10 @@ pub async fn discover(discover: Discover) -> Discovered {
                     continue;
                 }
             };
-            if let Some(first) = seen.get(skill.name()) {
+            if let Some(first) = seen.get(&frontmatter.name) {
                 let reason = format!(
                     "skill `{}` is already discovered at `{}`",
-                    skill.name(),
+                    frontmatter.name,
                     first.display()
                 );
                 discovered.problems.push(SkillProblem {
@@ -123,17 +124,22 @@ pub async fn discover(discover: Discover) -> Discovered {
                 });
                 continue;
             }
-            seen.insert(skill.name().to_owned(), folder);
-            discovered.skills.push(skill);
+            let (paths, problems) = files(&folder).await;
+            seen.insert(frontmatter.name.clone(), folder.clone());
+            discovered.skills.push(Skill(Source::Owned(Arc::new(Parsed {
+                frontmatter,
+                instructions,
+                files: Files::Disk { folder, paths },
+            }))));
             discovered.problems.extend(problems);
         }
     }
     discovered
 }
 
-/// The skill in `folder` and the files it left out, `None` without a `SKILL.md`,
-/// or why it is not a valid one.
-async fn load(folder: &Path) -> Result<Option<(Skill, Vec<SkillProblem>)>, String> {
+/// The frontmatter and body of `folder`'s `SKILL.md`, `None` without one, or why
+/// it is not a valid one.
+async fn parse(folder: &Path) -> Result<Option<(Frontmatter, String)>, String> {
     let path = folder.join("SKILL.md");
     if !fs::metadata(&path).await.is_ok_and(|m| m.is_file()) {
         return Ok(None);
@@ -141,24 +147,20 @@ async fn load(folder: &Path) -> Result<Option<(Skill, Vec<SkillProblem>)>, Strin
     let source = fs::read_to_string(&path)
         .await
         .map_err(|e| format!("`SKILL.md` cannot be read: {e}"))?;
-    let (frontmatter, body) = frontmatter::parse_lenient(&source)?;
-    let (paths, problems) = files(folder).await;
-    let skill = Skill(Source::Owned(Arc::new(Parsed {
-        frontmatter,
-        instructions: body.to_owned(),
-        files: Files::Disk {
-            folder: folder.to_owned(),
-            paths,
-        },
-    })));
-    Ok(Some((skill, problems)))
+    let (frontmatter, body) = frontmatter::parse(&source)?;
+    Ok(Some((frontmatter, body.to_owned())))
 }
 
 /// The supporting files under `folder` by path relative to it, `/`-separated
-/// and sorted, `SKILL.md` aside, and the secrets left out. Clutter is skipped
-/// unread.
+/// and sorted, `SKILL.md` aside, and what was left out: secrets and symlinks
+/// that leave the folder. Clutter is skipped unread; a symlinked folder is
+/// walked once.
 async fn files(folder: &Path) -> (Vec<String>, Vec<SkillProblem>) {
     let (mut paths, mut problems) = (Vec::new(), Vec::new());
+    let Ok(root) = fs::canonicalize(folder).await else {
+        return (paths, problems);
+    };
+    let mut followed = HashSet::from([root.clone()]);
     let mut pending = vec![String::new()];
     while let Some(dir) = pending.pop() {
         let Ok(mut entries) = fs::read_dir(folder.join(&dir)).await else {
@@ -183,10 +185,31 @@ async fn files(folder: &Path) -> (Vec<String>, Vec<SkillProblem>) {
                 });
                 continue;
             }
-            match entry.file_type().await {
-                Ok(kind) if kind.is_dir() => pending.push(path),
-                Ok(kind) if kind.is_file() && path != "SKILL.md" => paths.push(path),
-                _ => {}
+            let Ok(mut kind) = entry.file_type().await else {
+                continue;
+            };
+            if kind.is_symlink() {
+                let target = fs::canonicalize(entry.path()).await.ok();
+                let Some(target) = target.filter(|target| target.starts_with(&root)) else {
+                    problems.push(SkillProblem {
+                        path: folder.join(&path),
+                        reason: "a symlink that leaves the skill's folder; left out of the skill's files"
+                            .to_owned(),
+                    });
+                    continue;
+                };
+                let Ok(metadata) = fs::metadata(&target).await else {
+                    continue;
+                };
+                if metadata.is_dir() && !followed.insert(target) {
+                    continue;
+                }
+                kind = metadata.file_type();
+            }
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() && path != "SKILL.md" {
+                paths.push(path);
             }
         }
     }
