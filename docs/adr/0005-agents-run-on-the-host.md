@@ -5,4 +5,6 @@ keelrs runs every agent on the host, as many concurrent actors, and gives them s
 ## Consequences
 
 - Isolation is the sandbox's: host tools are trusted code, and keelrs cannot stop one from touching the host.
+- keelrs's own code reaches the host's files and processes only in `sandbox::local`, and `keelrs/clippy.toml` enforces it; an application can opt its own tools in to the same rule.
+- Commands in a local sandbox start from an allowlist of host variables, never the whole environment, so secrets in the host's env stay with the agent.
 - Network egress is controlled later by proxies, one inside the sandbox for commands and one in the agent for host tools, not by moving the agent.
