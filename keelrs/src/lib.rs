@@ -9,6 +9,11 @@ pub mod runtime;
 pub mod sandbox;
 pub mod skills;
 
+#[doc(hidden)]
+pub mod __private {
+    pub use include_dir;
+}
+
 mod error;
 mod event;
 mod tool;

@@ -10,6 +10,7 @@ repository = "https://github.com/fpaschos/keelrs"
 
 [workspace.dependencies]
 futures = "=0.3.34"
+include_dir = "=0.7.4"
 rig-agent = "=0.46.0-rc.1"
 rig-core = "=0.46.0-rc.1"
 schemars = "=1.2.3"

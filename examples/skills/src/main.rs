@@ -1,9 +1,9 @@
 //! Flow: skills from two sources, one dispatch each, answered by a real model.
 //!
 //! 1. `greeting` is embedded at compile time with `skill!`, like Flue's
-//!    `import greeting from './SKILL.md'`, with `references/tone.md` that its
-//!    instructions tell the model to read: the model calls `activate_skill`,
-//!    then `read_skill_resource`.
+//!    `import greeting from './SKILL.md'`: the whole folder, so also
+//!    `references/tone.md`, which its instructions tell the model to read. The
+//!    model calls `activate_skill`, then `read_skill_resource`.
 //! 2. `haiku` is built in code with `Skill::new`, like Flue's `defineSkill`,
 //!    and mounted with `use_skills` beside `greeting`.
 //!
@@ -16,8 +16,8 @@
 
 use keelrs::{Agent, AgentContext, Runtime, Skill};
 
-/// Embedded at compile time; the folder is relative to this file.
-static GREETING: Skill = keelrs::skill!("../skills/greeting", files: ["references/tone.md"]);
+/// The whole folder, embedded at compile time; a broken skill fails its first dispatch.
+static GREETING: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/skills/greeting");
 
 fn greeter(cx: &mut AgentContext) -> String {
     cx.use_model("anthropic/claude-sonnet-5-5");
@@ -27,8 +27,6 @@ fn greeter(cx: &mut AgentContext) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Catches a broken frontmatter before the first dispatch would.
-    GREETING.validate()?;
     let haiku = Skill::new(
         "haiku",
         "Write a haiku about a subject. Use when asked for a haiku or a very short poem.",

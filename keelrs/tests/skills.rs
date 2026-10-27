@@ -58,47 +58,70 @@ async fn two_skills_with_one_name_fail() {
     );
 }
 
+static REVIEW: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/review");
+
+#[test]
+fn an_embedded_skill_reads_its_name_and_description() {
+    assert_eq!(REVIEW.name(), "review");
+    assert_eq!(REVIEW.description(), "Review a change for style.");
+}
+
+#[test]
+fn frontmatter_fields_beyond_name_and_description_are_ignored() {
+    let skill: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/extra-field");
+    assert_eq!(skill.description(), "Has fields keelrs does not read.");
+}
+
+/// Why mounting the embedded `skill` fails its dispatch.
+async fn mount_failure(skill: &'static Skill) -> String {
+    failure_reason(agent(move |cx| cx.use_skill(skill))).await
+}
+
 #[tokio::test]
-async fn an_invalid_embedded_skill_fails_its_dispatch() {
-    static EXTRA: Skill = keelrs::skill!("fixtures/skills/extra-field");
-    let agent = agent(|cx| cx.use_skill(&EXTRA));
-    let reason = failure_reason(agent).await;
-    assert!(reason.starts_with("skill `extra-field`: "), "{reason}");
+async fn an_embedded_folder_without_skill_md_fails_its_dispatch() {
+    static NONE: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/no-skill-md");
+    assert_eq!(
+        mount_failure(&NONE).await,
+        "skill `no-skill-md`: the folder has no `SKILL.md`"
+    );
 }
 
-#[test]
-fn a_code_built_skill_exposes_its_frontmatter() {
-    let skill = Skill::new("haiku", "Write a haiku.", "Three lines: 5, 7, 5.").unwrap();
-    assert_eq!(skill.name(), "haiku");
-    assert_eq!(skill.description(), "Write a haiku.");
-    assert_eq!(skill.license(), None);
-    assert!(skill.metadata().is_empty());
-    assert_eq!(skill.allowed_tools().count(), 0);
-    assert_eq!(skill.validate(), Ok(()));
-}
-
-/// Why `Skill::new(name, …)` refuses, as text.
-fn refused_name(name: &str) -> String {
-    Skill::new(name, "Something.", "Body.")
-        .unwrap_err()
-        .to_string()
-}
-
-#[test]
-fn a_code_built_skill_name_follows_the_spec() {
-    let long = "a".repeat(65);
-    for name in ["", "Haiku", "-haiku", "haiku-", "hai--ku", "hai_ku", &long] {
+#[tokio::test]
+async fn an_embedded_folder_with_a_secret_or_clutter_fails_its_dispatch() {
+    static SECRET: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/with-secret");
+    static CLUTTER: Skill =
+        keelrs::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/with-clutter");
+    for (skill, path) in [(&SECRET, "secrets.txt"), (&CLUTTER, "node_modules")] {
+        let reason = mount_failure(skill).await;
         assert!(
-            refused_name(name).contains("`name`"),
-            "{name:?} was accepted"
+            reason.contains(&format!("`{path}` would be embedded into the binary")),
+            "{reason}"
         );
     }
 }
 
 #[test]
-fn a_code_built_skill_needs_a_description() {
-    let error = Skill::new("haiku", "  ", "Body.").unwrap_err().to_string();
-    assert_eq!(error, "skill `haiku`: `description` must not be empty");
+fn a_code_built_skill_reads_its_name_and_description() {
+    let skill = Skill::new("haiku", "Write a haiku.", "Three lines: 5, 7, 5.").unwrap();
+    assert_eq!(skill.name(), "haiku");
+    assert_eq!(skill.description(), "Write a haiku.");
+}
+
+#[test]
+fn a_code_built_skill_needs_a_name_and_a_description() {
+    let error = |name, description| {
+        Skill::new(name, description, "Body.")
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        error(" ", "Write a haiku."),
+        "skill ` `: `name` must not be empty"
+    );
+    assert_eq!(
+        error("haiku", ""),
+        "skill `haiku`: `description` must not be empty"
+    );
 }
 
 #[test]
@@ -114,34 +137,4 @@ fn a_code_built_skill_file_stays_inside_its_folder() {
         assert!(skill().file(path, "x").is_err(), "{path:?} was accepted");
     }
     assert!(skill().file("references/forms.md", "x").is_ok());
-}
-
-static REVIEW: Skill = keelrs::skill!("fixtures/skills/review", files: ["references/style.md"]);
-
-#[test]
-fn an_embedded_skill_exposes_all_six_fields() {
-    assert_eq!(REVIEW.validate(), Ok(()));
-    assert_eq!(REVIEW.name(), "review");
-    assert_eq!(REVIEW.description(), "Review a change for style.");
-    assert_eq!(REVIEW.license(), Some("MIT"));
-    assert_eq!(REVIEW.compatibility(), Some("Needs nothing."));
-    assert_eq!(REVIEW.metadata()["author"], "keelrs");
-    assert_eq!(REVIEW.allowed_tools().collect::<Vec<_>>(), ["read", "grep"]);
-}
-
-#[test]
-fn an_embedded_skill_with_a_field_beyond_the_spec_is_invalid() {
-    let skill: Skill = keelrs::skill!("fixtures/skills/extra-field");
-    let error = skill.validate().unwrap_err().to_string();
-    assert!(error.contains("argument-hint"), "{error}");
-    assert_eq!(skill.name(), "extra-field");
-}
-
-#[test]
-fn an_embedded_skill_name_must_match_its_folder() {
-    let skill: Skill = keelrs::skill!("fixtures/skills/wrong-folder");
-    assert_eq!(
-        skill.validate().unwrap_err().to_string(),
-        "skill `wrong-folder`: `name` is `right-name` but the folder is `wrong-folder`; they must match"
-    );
 }

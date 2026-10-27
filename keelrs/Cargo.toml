@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 futures.workspace = true
+include_dir.workspace = true
 rig-agent.workspace = true
 rig-core = { workspace = true, features = ["reqwest"] }
 schemars.workspace = true

@@ -18,5 +18,5 @@ set -a; source .env; set +a; cargo run -p example-hello-world
 |---|---|
 | [`hello-world`](hello-world) | Smallest agent: one turn, no tools, a real reply from Claude Sonnet 5.5 |
 | [`instructions`](instructions) | Templated returned instructions plus a static `use_instruction` style guide, a real reply |
-| [`skills`](skills) | Skills embedded with `skill!` (with a resource the model reads) and built with `Skill::new`, real replies |
+| [`skills`](skills) | A skill folder embedded with `skill!` (with a resource the model reads) and one built with `Skill::new`, real replies |
 | [`dogfood`](dogfood) | keelrs on keelrs: pick the next `agent-ready` issue, implement it in this checkout, review it, loop back; nothing is committed (needs `gh`) |

@@ -406,6 +406,26 @@ async fn a_short_resource_is_read_whole() {
     assert_eq!(text, "Petrarchan or Shakespearean.");
 }
 
+static REVIEW: Skill = crate::skill!("$CARGO_MANIFEST_DIR/tests/fixtures/skills/review");
+
+#[tokio::test]
+async fn an_embedded_skill_lists_and_reads_the_files_in_its_folder() {
+    let agent = agent(|cx| cx.use_skill(&REVIEW));
+    let results = one_call(&agent, "activate_skill", json!({"name": "review"})).await;
+    assert!(
+        results[0]
+            .0
+            .ends_with("<skill_resources>\n- references/style.md\n</skill_resources>"),
+        "{results:?}"
+    );
+    let text = read(
+        REVIEW.clone(),
+        json!({"skill": "review", "path": "references/style.md"}),
+    )
+    .await;
+    assert_eq!(text, "# Style\n\nShort sentences.");
+}
+
 #[tokio::test]
 async fn a_resource_is_paged_by_offset_and_limit() {
     let skill = with_file("one\ntwo\nthree\nfour\nfive\n");

@@ -1,7 +1,9 @@
 ---
 name: extra-field
-description: Has a field the spec does not define.
+description: Has fields keelrs does not read.
 argument-hint: "[file]"
+model: claude-sonnet-5-5
+license: MIT
 ---
 
 Body.

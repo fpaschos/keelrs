@@ -11,6 +11,7 @@ use std::path::{Component, Path};
 use std::sync::{Arc, OnceLock};
 
 use frontmatter::Frontmatter;
+use include_dir::{Dir, DirEntry};
 
 pub(crate) mod catalog;
 mod frontmatter;
@@ -28,52 +29,82 @@ enum Source {
     Built(Arc<Parsed>),
 }
 
-/// A skill embedded by [`skill!`](crate::skill!), parsed on first use.
+/// A skill folder embedded by [`skill!`](crate::skill!), parsed on first use.
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct Embedded {
-    dir: &'static str,
-    source: &'static str,
-    files: &'static [(&'static str, &'static [u8])],
+    path: &'static str,
+    dir: &'static Dir<'static>,
     parsed: OnceLock<Result<Parsed, SkillError>>,
 }
 
 impl Embedded {
     #[doc(hidden)]
     #[must_use]
-    pub const fn new(
-        dir: &'static str,
-        source: &'static str,
-        files: &'static [(&'static str, &'static [u8])],
-    ) -> Self {
+    pub const fn new(path: &'static str, dir: &'static Dir<'static>) -> Self {
         Self {
+            path,
             dir,
-            source,
-            files,
             parsed: OnceLock::new(),
         }
     }
 
     fn parsed(&self) -> &Result<Parsed, SkillError> {
         self.parsed.get_or_init(|| {
-            let folder = folder_name(self.dir);
-            let (frontmatter, body) = frontmatter::parse(self.source)
-                .map_err(|reason| SkillError::new(folder, reason))?;
-            frontmatter
-                .check(Some(folder))
-                .map_err(|reason| SkillError::new(folder, reason))?;
-            let mut files = BTreeMap::new();
-            for (path, bytes) in self.files {
-                check_path(path).map_err(|reason| SkillError::new(folder, reason))?;
-                files.insert((*path).to_owned(), bytes.to_vec());
-            }
-            Ok(Parsed {
-                frontmatter,
-                instructions: body.to_owned(),
-                files,
-            })
+            let folder = self
+                .path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or(self.path);
+            self.parse()
+                .map_err(|reason| SkillError::new(folder, reason))
         })
     }
+
+    fn parse(&self) -> Result<Parsed, String> {
+        let mut files = BTreeMap::new();
+        collect(self.dir, &mut files)?;
+        let source = files
+            .remove("SKILL.md")
+            .ok_or_else(|| "the folder has no `SKILL.md`".to_owned())?;
+        let source = String::from_utf8(source).map_err(|_| "`SKILL.md` is not UTF-8".to_owned())?;
+        let (frontmatter, body) = frontmatter::parse(&source)?;
+        Ok(Parsed {
+            frontmatter,
+            instructions: body.to_owned(),
+            files,
+        })
+    }
+}
+
+/// Every file under `dir` by its path from the skill's folder, refusing files
+/// that must not ship inside a binary.
+fn collect(dir: &Dir<'_>, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+    for entry in dir.entries() {
+        let path = entry.path().to_string_lossy();
+        if path.split('/').any(forbidden) {
+            return Err(format!(
+                "`{path}` would be embedded into the binary; remove it from the skill's folder"
+            ));
+        }
+        match entry {
+            DirEntry::Dir(dir) => collect(dir, files)?,
+            DirEntry::File(file) => {
+                files.insert(path.into_owned(), file.contents().to_vec());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Secrets and build or VCS clutter, after Flue's packaging rules.
+fn forbidden(name: &str) -> bool {
+    matches!(name, ".git" | ".ssh" | "node_modules" | "dist" | "target")
+        || name.starts_with("secrets")
+        || name.starts_with(".env")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
 }
 
 /// A valid skill: its frontmatter, `SKILL.md` body and other files by relative path.
@@ -84,7 +115,8 @@ struct Parsed {
     files: BTreeMap<String, Vec<u8>>,
 }
 
-/// Why a skill is invalid: a frontmatter rule it breaks, or a bad file path.
+/// Why a skill is invalid: an empty `name` or `description`, a bad file path or
+/// an embedded folder that cannot be a skill.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("skill `{skill}`: {reason}")]
 pub struct SkillError {
@@ -109,11 +141,11 @@ impl Skill {
     }
 
     /// A skill built in code, like Flue's `defineSkill`: `instructions` is the
-    /// `SKILL.md` body. `name` and `description` follow the Agent Skills spec.
+    /// `SKILL.md` body.
     ///
     /// # Errors
     ///
-    /// When `name` or `description` breaks the spec.
+    /// When `name` or `description` is empty.
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -122,10 +154,9 @@ impl Skill {
         let frontmatter = Frontmatter {
             name: name.into(),
             description: description.into(),
-            ..Frontmatter::default()
         };
         frontmatter
-            .check(None)
+            .check()
             .map_err(|reason| SkillError::new(&frontmatter.name, reason))?;
         Ok(Self(Source::Built(Arc::new(Parsed {
             frontmatter,
@@ -148,7 +179,7 @@ impl Skill {
         let Source::Built(mut parsed) = self.0 else {
             return Err(SkillError::new(
                 self.name(),
-                "an embedded skill's files are listed in `skill!`".to_owned(),
+                "an embedded skill's files come from its folder".to_owned(),
             ));
         };
         check_path(&path).map_err(|reason| SkillError::new(&parsed.frontmatter.name, reason))?;
@@ -156,14 +187,8 @@ impl Skill {
         Ok(Self(Source::Built(parsed)))
     }
 
-    /// Checks the skill against the Agent Skills spec, strictly: an embedded
-    /// skill that fails it settles its first dispatch as
-    /// [`Outcome::Failed`](crate::Outcome::Failed).
-    ///
-    /// # Errors
-    ///
-    /// The first rule the skill breaks.
-    pub fn validate(&self) -> Result<(), SkillError> {
+    /// Why the skill cannot be mounted, if it cannot.
+    pub(crate) fn validate(&self) -> Result<(), SkillError> {
         self.parsed().map(|_| ()).map_err(SkillError::clone)
     }
 
@@ -180,33 +205,6 @@ impl Skill {
     #[must_use]
     pub fn description(&self) -> &str {
         self.valid().map_or("", |p| &p.frontmatter.description)
-    }
-
-    /// `license` from the frontmatter.
-    #[must_use]
-    pub fn license(&self) -> Option<&str> {
-        self.valid()?.frontmatter.license.as_deref()
-    }
-
-    /// `compatibility` from the frontmatter.
-    #[must_use]
-    pub fn compatibility(&self) -> Option<&str> {
-        self.valid()?.frontmatter.compatibility.as_deref()
-    }
-
-    /// `metadata` from the frontmatter.
-    #[must_use]
-    pub fn metadata(&self) -> &BTreeMap<String, String> {
-        static EMPTY: BTreeMap<String, String> = BTreeMap::new();
-        self.valid().map_or(&EMPTY, |p| &p.frontmatter.metadata)
-    }
-
-    /// `allowed-tools` from the frontmatter, split on whitespace; kept, not enforced.
-    pub fn allowed_tools(&self) -> impl Iterator<Item = &str> {
-        self.valid()
-            .and_then(|p| p.frontmatter.allowed_tools.as_deref())
-            .unwrap_or("")
-            .split_whitespace()
     }
 
     /// The `SKILL.md` body, frontmatter stripped.
@@ -249,11 +247,6 @@ impl fmt::Debug for Skill {
     }
 }
 
-/// The last component of an embedded skill's folder path.
-fn folder_name(dir: &str) -> &str {
-    dir.trim_end_matches('/').rsplit('/').next().unwrap_or(dir)
-}
-
 /// A supporting file's path must stay inside the skill's folder.
 fn check_path(path: &str) -> Result<(), String> {
     let relative = Path::new(path)
@@ -270,23 +263,49 @@ fn check_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Embeds the skill in the folder `dir` (relative to the calling file) as a
-/// [`Skill`]: its `SKILL.md` and each file listed in `files`, relative to `dir`.
+/// Whether a [`skill!`](crate::skill!) path starts at the crate root.
+#[doc(hidden)]
+#[must_use]
+pub const fn from_manifest_dir(path: &str) -> bool {
+    let (path, prefix) = (path.as_bytes(), b"$CARGO_MANIFEST_DIR/");
+    if path.len() < prefix.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < prefix.len() {
+        if path[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Embeds the whole skill folder at `path` as a [`Skill`]: its `SKILL.md` and
+/// every other file in it, subfolders included.
+///
+/// `path` starts at the crate root, as `"$CARGO_MANIFEST_DIR/skills/review"`.
+/// A missing folder fails to compile. The rest is checked when an agent first
+/// mounts the skill, and a broken skill settles that dispatch as
+/// [`Outcome::Failed`](crate::Outcome::Failed): a missing `SKILL.md`, an empty
+/// `name` or `description`, or a file that must not ship inside a binary
+/// (`.git`, `.ssh`, `node_modules`, `dist`, `target`, `secrets*`, `.env*`,
+/// `*.pem`, `*.key`). Symlinks are followed at compile time.
 ///
 /// ```ignore
-/// static REVIEW: Skill = keelrs::skill!("../skills/review", files: ["references/style.md"]);
+/// static REVIEW: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/skills/review");
 /// ```
-///
-/// A listed file that does not exist fails to compile; the frontmatter is
-/// checked on first use (see [`Skill::validate`]).
 #[macro_export]
 macro_rules! skill {
-    ($dir:literal $(, files: [$($file:literal),* $(,)?])? $(,)?) => {{
-        static EMBEDDED: $crate::skills::Embedded = $crate::skills::Embedded::new(
-            $dir,
-            include_str!(concat!($dir, "/SKILL.md")),
-            &[$($(($file, include_bytes!(concat!($dir, "/", $file)))),*)?],
+    // `tt`, not `literal`: `include_dir!` rejects a literal wrapped in a macro group.
+    ($path:tt) => {{
+        use $crate::__private::include_dir;
+        const _: () = assert!(
+            $crate::skills::from_manifest_dir($path),
+            "`skill!` paths start at the crate root: \"$CARGO_MANIFEST_DIR/<folder>\""
         );
+        static DIR: include_dir::Dir<'static> = include_dir::include_dir!($path);
+        static EMBEDDED: $crate::skills::Embedded = $crate::skills::Embedded::new($path, &DIR);
         $crate::Skill::embedded(&EMBEDDED)
     }};
 }
