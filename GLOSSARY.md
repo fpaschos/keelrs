@@ -55,6 +55,11 @@ A folder of instructions (`SKILL.md`, following the Agent Skills spec) and suppo
 files on demand.
 _Avoid_: Plugin, prompt pack
 
+**Skill discovery**:
+Finding skills on disk in conventional folders (project before user) before the runtime starts, so agents can mount
+them like embedded ones.
+_Avoid_: Skill scan, auto-loading
+
 **Read**:
 Waiting for a dispatched message to settle and taking its reply.
 _Avoid_: Await, poll

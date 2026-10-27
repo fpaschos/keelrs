@@ -51,7 +51,7 @@ fn activation(skills: &[Skill], name: &str) -> String {
         "Run the skill named \"{name}\".\n\n<skill_instructions>\n{}\n</skill_instructions>",
         skill.instructions()
     );
-    let resources: Vec<String> = skill.files().map(|(path, _)| format!("- {path}")).collect();
+    let resources: Vec<String> = skill.files().map(|path| format!("- {path}")).collect();
     if !resources.is_empty() {
         text.push_str(&format!(
             "\n\nSupporting skill resources are available but are not loaded into context unless needed:\n\
@@ -83,12 +83,14 @@ fn read_skill_resource(skills: Arc<[Skill]>) -> Tool {
     Tool::new(
         "read_skill_resource",
         "Read a supporting file of an activated skill, paged by line.",
-        move |call: ToolCall<Read>| async move { Ok::<_, Infallible>(resource(&skills, &call.data)) },
+        move |call: ToolCall<Read>| async move {
+            Ok::<_, Infallible>(resource(&skills, &call.data).await)
+        },
     )
 }
 
 /// The requested page of a skill's file, or why it cannot be read.
-fn resource(skills: &[Skill], read: &Read) -> String {
+async fn resource(skills: &[Skill], read: &Read) -> String {
     let skill = match find(skills, &read.skill) {
         Ok(skill) => skill,
         Err(miss) => return miss,
@@ -97,15 +99,19 @@ fn resource(skills: &[Skill], read: &Read) -> String {
     if let Err(refusal) = super::check_path(path) {
         return refusal;
     }
-    let Some((_, bytes)) = skill.files().find(|(file, _)| *file == path) else {
-        let files: Vec<&str> = skill.files().map(|(file, _)| file).collect();
-        return format!(
-            "`{path}` is not a file of skill \"{}\"; its files: {}",
-            read.skill,
-            files.join(", ")
-        );
+    let bytes = match skill.read(path).await {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(refusal)) => return refusal,
+        None => {
+            let files: Vec<&str> = skill.files().collect();
+            return format!(
+                "`{path}` is not a file of skill \"{}\"; its files: {}",
+                read.skill,
+                files.join(", ")
+            );
+        }
     };
-    let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| base64(bytes));
+    let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| base64(&bytes));
     page(&text, read.offset.unwrap_or(1).max(1), read.limit)
 }
 

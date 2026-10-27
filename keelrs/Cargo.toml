@@ -20,7 +20,7 @@ serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "fs"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

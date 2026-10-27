@@ -2,31 +2,36 @@
 //!
 //! A [`Skill`] is a `SKILL.md` (Agent Skills spec) plus supporting files, resolved
 //! before the agent function runs: embedded at compile time with [`skill!`](crate::skill!)
-//! or built in code with [`Skill::new`]. The model sees the catalog line and reads
+//! built in code with [`Skill::new`], or found on disk with [`discover`]. The model sees the catalog line and reads
 //! the rest through the built-in `activate_skill` and `read_skill_resource` tools.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use frontmatter::Frontmatter;
 use include_dir::{Dir, DirEntry};
 
 pub(crate) mod catalog;
+mod discover;
 mod frontmatter;
 pub(crate) mod tools;
 
+pub use discover::{Discover, Discovered, SkillProblem, discover};
+
 /// A skill an agent mounts with [`AgentContext::use_skill`](crate::AgentContext::use_skill).
 ///
-/// Cheap to clone: it holds an embedded skill by `&'static` or a built one by `Arc`.
+/// Cheap to clone: it holds an embedded skill by `&'static`, a built or
+/// discovered one by `Arc`.
 #[derive(Clone)]
 pub struct Skill(Source);
 
 #[derive(Clone)]
 enum Source {
     Embedded(&'static Embedded),
-    Built(Arc<Parsed>),
+    Owned(Arc<Parsed>),
 }
 
 /// A skill folder embedded by [`skill!`](crate::skill!), parsed on first use.
@@ -68,7 +73,7 @@ impl Embedded {
         Ok(Parsed {
             frontmatter,
             instructions: body.to_owned(),
-            files,
+            files: Files::Memory(files),
         })
     }
 }
@@ -95,19 +100,38 @@ fn collect(dir: &Dir<'_>, files: &mut BTreeMap<String, Vec<u8>>) -> Result<(), S
 
 /// Secrets and build or VCS clutter, after Flue's packaging rules.
 fn forbidden(name: &str) -> bool {
-    matches!(name, ".git" | ".ssh" | "node_modules" | "dist" | "target")
+    secret(name) || clutter(name)
+}
+
+/// A file or folder name that may hold a secret.
+fn secret(name: &str) -> bool {
+    name == ".ssh"
         || name.starts_with("secrets")
         || name.starts_with(".env")
         || name.ends_with(".pem")
         || name.ends_with(".key")
 }
 
-/// A valid skill: its frontmatter, `SKILL.md` body and other files by relative path.
+/// A build or VCS folder.
+fn clutter(name: &str) -> bool {
+    matches!(name, ".git" | "node_modules" | "dist" | "target")
+}
+
+/// A valid skill: its frontmatter, `SKILL.md` body and other files.
 #[derive(Debug, Clone)]
 struct Parsed {
     frontmatter: Frontmatter,
     instructions: String,
-    files: BTreeMap<String, Vec<u8>>,
+    files: Files,
+}
+
+/// A skill's supporting files by path relative to its folder.
+#[derive(Debug, Clone)]
+enum Files {
+    /// Embedded or built in code: the bytes.
+    Memory(BTreeMap<String, Vec<u8>>),
+    /// Discovered: the paths found in `folder`, read on request.
+    Disk { folder: PathBuf, paths: Vec<String> },
 }
 
 /// Why a skill is invalid: an empty `name` or `description`, a bad file path or
@@ -153,10 +177,10 @@ impl Skill {
         frontmatter
             .check()
             .map_err(|reason| SkillError::new(&frontmatter.name, reason))?;
-        Ok(Self(Source::Built(Arc::new(Parsed {
+        Ok(Self(Source::Owned(Arc::new(Parsed {
             frontmatter,
             instructions: instructions.into(),
-            files: BTreeMap::new(),
+            files: Files::Memory(BTreeMap::new()),
         }))))
     }
 
@@ -171,15 +195,20 @@ impl Skill {
         bytes: impl Into<Vec<u8>>,
     ) -> Result<Self, SkillError> {
         let path = path.into();
-        let Source::Built(mut parsed) = self.0 else {
-            return Err(SkillError::new(
-                self.name(),
-                "an embedded skill's files come from its folder".to_owned(),
-            ));
+        let mut parsed = match self.0 {
+            Source::Owned(parsed) if matches!(parsed.files, Files::Memory(_)) => parsed,
+            _ => {
+                return Err(SkillError::new(
+                    self.name(),
+                    "an embedded or discovered skill's files come from its folder".to_owned(),
+                ));
+            }
         };
         check_path(&path).map_err(|reason| SkillError::new(&parsed.frontmatter.name, reason))?;
-        Arc::make_mut(&mut parsed).files.insert(path, bytes.into());
-        Ok(Self(Source::Built(parsed)))
+        if let Files::Memory(files) = &mut Arc::make_mut(&mut parsed).files {
+            files.insert(path, bytes.into());
+        }
+        Ok(Self(Source::Owned(parsed)))
     }
 
     /// Why the skill cannot be mounted, if it cannot.
@@ -207,19 +236,33 @@ impl Skill {
         self.valid().map_or("", |p| &p.instructions)
     }
 
-    /// The supporting files by relative path, sorted.
-    pub(crate) fn files(&self) -> impl Iterator<Item = (&str, &[u8])> {
-        self.valid().into_iter().flat_map(|p| {
-            p.files
-                .iter()
-                .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
-        })
+    /// The supporting files' paths relative to the skill's folder, sorted.
+    pub(crate) fn files(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        match self.valid().map(|p| &p.files) {
+            Some(Files::Memory(files)) => Box::new(files.keys().map(String::as_str)),
+            Some(Files::Disk { paths, .. }) => Box::new(paths.iter().map(String::as_str)),
+            None => Box::new(std::iter::empty()),
+        }
+    }
+
+    /// The bytes of the supporting file `path`, one of [`files`](Self::files);
+    /// `None` when it is not one. A discovered skill's file is read from disk now.
+    pub(crate) async fn read(&self, path: &str) -> Option<Result<Cow<'_, [u8]>, String>> {
+        match &self.valid()?.files {
+            Files::Memory(files) => files.get(path).map(|bytes| Ok(Cow::from(bytes.as_slice()))),
+            Files::Disk { folder, paths } => {
+                if !paths.iter().any(|file| file == path) {
+                    return None;
+                }
+                Some(discover::read(folder, path).await.map(Cow::from))
+            }
+        }
     }
 
     fn parsed(&self) -> Result<&Parsed, &SkillError> {
         match &self.0 {
             Source::Embedded(embedded) => embedded.parsed().as_ref(),
-            Source::Built(parsed) => Ok(parsed),
+            Source::Owned(parsed) => Ok(parsed),
         }
     }
 

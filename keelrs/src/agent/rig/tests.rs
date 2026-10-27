@@ -5,9 +5,10 @@
 //! public API exposes (Rig types stay in this module, ADR 0004).
 
 use std::convert::Infallible;
-use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+use std::{fs, io};
 
 use rig_core::completion::AssistantContent;
 use rig_core::message::{ToolFunction, ToolResultContent, UserContent};
@@ -18,6 +19,7 @@ use serde_json::json;
 use tokio::sync::Barrier;
 
 use super::*;
+use crate::skills::{Discover, discover};
 use crate::{AgentContext, Skill, Tool, ToolCall};
 
 /// Runs `agent` on one message against a model that replies with `turns`.
@@ -494,5 +496,110 @@ async fn a_path_outside_the_skill_or_not_in_it_is_refused() {
     assert_eq!(
         text,
         "skill \"limerick\" is not available; available skills: sonnet"
+    );
+}
+
+// Discovered skills: files listed at discovery, read from disk on request.
+
+/// A temp folder of skill folders, removed on drop.
+struct Folder(PathBuf);
+
+impl Folder {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("keelrs-rig-{}-{n}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    /// Writes `contents` at `relative`, creating its folders.
+    fn write(&self, relative: &str, contents: &str) -> &Self {
+        let path = self.0.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+        self
+    }
+
+    /// The one skill discovered in this folder.
+    async fn skill(&self) -> Skill {
+        let discovered = discover(Discover::new().root(&self.0)).await;
+        let [skill] = <[Skill; 1]>::try_from(discovered.skills).unwrap();
+        skill
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A folder holding the skill `lint` with two supporting files.
+fn lint() -> Folder {
+    let folder = Folder::new();
+    folder
+        .write(
+            "lint/SKILL.md",
+            "---\nname: lint\ndescription: Lint code.\n---\nRun the linter.\n",
+        )
+        .write("lint/references/rules.md", "No unused imports.")
+        .write("lint/scripts/run.sh", "cargo clippy");
+    folder
+}
+
+#[tokio::test]
+async fn a_discovered_skill_lists_the_files_in_its_folder() {
+    let folder = lint();
+    let skill = folder.skill().await;
+    let agent = agent(move |cx| cx.use_skill(skill.clone()));
+    let results = one_call(&agent, "activate_skill", json!({"name": "lint"})).await;
+    assert!(
+        results[0].0.ends_with(
+            "<skill_resources>\n- references/rules.md\n- scripts/run.sh\n</skill_resources>"
+        ),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_discovered_skill_reads_a_file_from_disk_on_request() {
+    let folder = lint();
+    let skill = folder.skill().await;
+    folder.write("lint/references/rules.md", "No unused imports. Edited.");
+    let text = read(
+        skill,
+        json!({"skill": "lint", "path": "references/rules.md"}),
+    )
+    .await;
+    assert_eq!(text, "No unused imports. Edited.");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_discovered_skill_refuses_a_symlink_that_leaves_its_folder() {
+    let folder = lint();
+    let skill = folder.skill().await;
+    folder.write("outside.md", "Not the skill's.");
+    let rules = folder.0.join("lint/references/rules.md");
+    fs::remove_file(&rules).unwrap();
+    std::os::unix::fs::symlink(folder.0.join("outside.md"), &rules).unwrap();
+    let text = read(
+        skill,
+        json!({"skill": "lint", "path": "references/rules.md"}),
+    )
+    .await;
+    assert_eq!(text, "`references/rules.md` leaves the skill's folder");
+}
+
+#[tokio::test]
+async fn a_discovered_skill_never_reads_a_secret() {
+    let folder = lint();
+    folder.write("lint/.env", "TOKEN=1");
+    let skill = folder.skill().await;
+    let text = read(skill, json!({"skill": "lint", "path": ".env"})).await;
+    assert_eq!(
+        text,
+        "`.env` is not a file of skill \"lint\"; its files: references/rules.md, scripts/run.sh"
     );
 }
