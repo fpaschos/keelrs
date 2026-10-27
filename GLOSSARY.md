@@ -49,6 +49,12 @@ _Avoid_: Function, action
 One request from the model to run a tool with arguments; its result goes back to the model.
 _Avoid_: Invocation
 
+**Skill**:
+A folder of instructions (`SKILL.md`, following the Agent Skills spec) and supporting files that the agent mounts with
+`use_skill`; the model sees only its name and description until it activates the skill by name, and reads the other
+files on demand.
+_Avoid_: Plugin, prompt pack
+
 **Read**:
 Waiting for a dispatched message to settle and taking its reply.
 _Avoid_: Await, poll

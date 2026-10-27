@@ -23,6 +23,8 @@ use rig_core::tool::{ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
 use crate::model::Thinking;
+use crate::skills::catalog::catalog;
+use crate::skills::tools::builtin;
 use crate::{Agent, Model, Tool};
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
@@ -83,7 +85,9 @@ async fn run_with(
                 let (cx, returned) = agent.declare();
                 let declared = cx.model()?;
                 let instructions = cx.instructions(&returned)?;
-                let tools = cx.tools()?;
+                let skills = cx.skills()?;
+                // The built-in skill tools follow the declared ones and are pinned with them.
+                let tools: Vec<Tool> = cx.tools()?.iter().cloned().chain(builtin(skills)).collect();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
                     None => connected.insert((connect(declared)?, declared.thinking)),
@@ -106,7 +110,13 @@ async fn run_with(
                     .collect();
 
                 let mut spec = RunSpec::new();
-                spec.preamble = instructions;
+                // The skill catalog follows the instructions (How a skill reaches the model).
+                spec.preamble = match (instructions, catalog(skills)) {
+                    (Some(instructions), Some(catalog)) => {
+                        Some(format!("{instructions}\n\n{catalog}"))
+                    }
+                    (instructions, catalog) => instructions.or(catalog),
+                };
                 if let Some(thinking) = thinking {
                     spec.options = GenerationOptions::default().reasoning(reasoning(*thinking));
                 }

@@ -18,7 +18,7 @@ use serde_json::json;
 use tokio::sync::Barrier;
 
 use super::*;
-use crate::{AgentContext, Tool, ToolCall};
+use crate::{AgentContext, Skill, Tool, ToolCall};
 
 /// Runs `agent` on one message against a model that replies with `turns`.
 async fn scripted(
@@ -244,4 +244,235 @@ async fn reaching_the_turn_cap_fails_the_run() {
     .await
     .unwrap_err();
     assert_eq!(reason, "turn limit (2) reached");
+}
+
+// Skills: the catalog and the built-in `activate_skill` and `read_skill_resource`.
+
+/// Runs `agent` like [`scripted`] and returns every request the model got.
+async fn sent(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> (Settled, Vec<CompletionRequest>) {
+    let model = MockCompletionModel::from_turns(turns);
+    let settled = run_with(agent.clone(), "Go".to_owned(), Vec::new(), |_| {
+        Ok(model.clone().erase())
+    })
+    .await
+    .unwrap();
+    (settled, model.requests())
+}
+
+/// The preamble a request carried.
+fn preamble(request: &CompletionRequest) -> Option<&str> {
+    match request.chat_history.first()?.as_ref() {
+        RigMessage::System { content } => Some(content),
+        _ => None,
+    }
+}
+
+/// The names of the tools a request declared.
+fn tool_names(request: &CompletionRequest) -> Vec<String> {
+    request
+        .tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect()
+}
+
+fn haiku() -> Skill {
+    Skill::new("haiku", "Write a haiku.", "Three lines: 5, 7, 5.").unwrap()
+}
+
+fn sonnet() -> Skill {
+    Skill::new("sonnet", "Write a sonnet.", "Fourteen lines.")
+        .unwrap()
+        .file("references/forms.md", "Petrarchan or Shakespearean.")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_catalog_follows_the_instructions_in_use_skill_order() {
+    let agent = Agent::new("poet", |cx: &mut AgentContext| {
+        cx.use_model("mock/model");
+        cx.use_skills([sonnet(), haiku()]);
+        "Write poems.".into()
+    });
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(
+        preamble(&requests[0]),
+        Some(
+            "Write poems.\n\n\
+             ## Available Skills\n\n\
+             When a task matches a skill description, call the `activate_skill` tool with \
+             that skill name before proceeding so its full instructions are loaded.\n\n\
+             - **sonnet** — Write a sonnet.\n\
+             - **haiku** — Write a haiku."
+        )
+    );
+}
+
+#[tokio::test]
+async fn activate_skill_is_declared_with_skills_and_read_skill_resource_with_files() {
+    let without_files = agent(|cx| cx.use_skill(haiku()));
+    let (_, requests) = sent(&without_files, [MockTurn::text("Done.")]).await;
+    assert_eq!(tool_names(&requests[0]), ["activate_skill"]);
+
+    let with_files = agent(|cx| {
+        cx.use_tool(clock());
+        cx.use_skills([haiku(), sonnet()]);
+    });
+    let (_, requests) = sent(&with_files, [MockTurn::text("Done.")]).await;
+    assert_eq!(
+        tool_names(&requests[0]),
+        ["current_time", "activate_skill", "read_skill_resource"]
+    );
+}
+
+#[tokio::test]
+async fn activating_a_skill_returns_its_instructions_and_lists_its_resources() {
+    let agent = agent(|cx| cx.use_skills([haiku(), sonnet()]));
+    let results = one_call(&agent, "activate_skill", json!({"name": "sonnet"})).await;
+    assert_eq!(
+        results,
+        [(
+            "Run the skill named \"sonnet\".\n\n\
+             <skill_instructions>\nFourteen lines.\n</skill_instructions>\n\n\
+             Supporting skill resources are available but are not loaded into context unless needed:\n\
+             <skill_resources>\n- references/forms.md\n</skill_resources>"
+                .to_owned(),
+            false
+        )]
+    );
+}
+
+#[tokio::test]
+async fn activating_a_skill_without_files_lists_no_resources() {
+    let agent = agent(|cx| cx.use_skill(haiku()));
+    let results = one_call(&agent, "activate_skill", json!({"name": "haiku"})).await;
+    assert_eq!(
+        results,
+        [(
+            "Run the skill named \"haiku\".\n\n\
+             <skill_instructions>\nThree lines: 5, 7, 5.\n</skill_instructions>"
+                .to_owned(),
+            false
+        )]
+    );
+}
+
+#[tokio::test]
+async fn activating_an_unknown_skill_names_the_available_ones() {
+    let agent = agent(|cx| cx.use_skills([haiku(), sonnet()]));
+    let results = one_call(&agent, "activate_skill", json!({"name": "limerick"})).await;
+    assert_eq!(
+        results,
+        [(
+            "skill \"limerick\" is not available; available skills: haiku, sonnet".to_owned(),
+            false
+        )]
+    );
+}
+
+#[tokio::test]
+async fn no_skills_no_catalog_and_no_skill_tools() {
+    let agent = agent(|cx| cx.use_tool(clock()));
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(preamble(&requests[0]), None);
+    assert_eq!(tool_names(&requests[0]), ["current_time"]);
+}
+
+/// A skill with one file at `references/file` holding `bytes`.
+fn with_file(bytes: impl Into<Vec<u8>>) -> Skill {
+    haiku().file("references/file", bytes).unwrap()
+}
+
+/// What `read_skill_resource` returns for `arguments`, with `skill` mounted.
+async fn read(skill: Skill, arguments: Value) -> String {
+    let agent = agent(move |cx| cx.use_skill(skill.clone()));
+    let results = one_call(&agent, "read_skill_resource", arguments).await;
+    let [(text, false)] = results.as_slice() else {
+        panic!("expected one ordinary result, got {results:?}");
+    };
+    text.clone()
+}
+
+#[tokio::test]
+async fn a_short_resource_is_read_whole() {
+    let text = read(
+        sonnet(),
+        json!({"skill": "sonnet", "path": "references/forms.md"}),
+    )
+    .await;
+    assert_eq!(text, "Petrarchan or Shakespearean.");
+}
+
+#[tokio::test]
+async fn a_resource_is_paged_by_offset_and_limit() {
+    let skill = with_file("one\ntwo\nthree\nfour\nfive\n");
+    let arguments = json!({"skill": "haiku", "path": "references/file", "offset": 2, "limit": 2});
+    assert_eq!(
+        read(skill, arguments).await,
+        "two\nthree\n\n[Showing lines 2-3 of 5. Use offset=4 to continue.]"
+    );
+}
+
+#[tokio::test]
+async fn a_long_resource_stops_at_2000_lines() {
+    let lines: Vec<String> = (1..=2001).map(|n| n.to_string()).collect();
+    let skill = with_file(lines.join("\n"));
+    let text = read(skill, json!({"skill": "haiku", "path": "references/file"})).await;
+    assert!(text.starts_with("1\n2\n"), "{text}");
+    assert!(
+        text.ends_with("2000\n\n[Showing lines 1-2000 of 2001. Use offset=2001 to continue.]"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_wide_resource_stops_at_50_kb() {
+    // 100 lines of 1023 characters plus a newline: 50 fit in 51 200 bytes.
+    let line = "x".repeat(1023);
+    let skill = with_file(vec![line.as_str(); 100].join("\n"));
+    let text = read(skill, json!({"skill": "haiku", "path": "references/file"})).await;
+    assert!(
+        text.ends_with("\n\n[Showing lines 1-50 of 100. Use offset=51 to continue.]"),
+        "{}",
+        &text[text.len() - 80..]
+    );
+}
+
+#[tokio::test]
+async fn a_binary_resource_is_base64_wrapped_at_76_columns() {
+    let text = read(
+        with_file([0xff; 60]),
+        json!({"skill": "haiku", "path": "references/file"}),
+    )
+    .await;
+    assert_eq!(text, format!("{}\n////", "/".repeat(76)));
+}
+
+#[tokio::test]
+async fn a_path_outside_the_skill_or_not_in_it_is_refused() {
+    for (path, refusal) in [
+        (
+            "/references/forms.md",
+            "must be relative to the skill's folder",
+        ),
+        (
+            "../haiku/SKILL.md",
+            "must be relative to the skill's folder",
+        ),
+        (
+            "references/missing.md",
+            "is not a file of skill \"sonnet\"; its files: references/forms.md",
+        ),
+    ] {
+        let text = read(sonnet(), json!({"skill": "sonnet", "path": path})).await;
+        assert!(text.contains(refusal), "{path}: {text}");
+    }
+    let text = read(sonnet(), json!({"skill": "limerick", "path": "x"})).await;
+    assert_eq!(
+        text,
+        "skill \"limerick\" is not available; available skills: sonnet"
+    );
 }
