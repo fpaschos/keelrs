@@ -49,6 +49,26 @@ _Avoid_: Function, action
 One request from the model to run a tool with arguments; its result goes back to the model.
 _Avoid_: Invocation
 
+**Host tool**:
+A tool whose code acts on the machine the agent runs on; it is trusted, and it is where secrets are used, so the model sees only its arguments and result.
+_Avoid_: Local tool, unsafe tool
+
+**Sandboxed tool**:
+A tool that acts only through the sandbox its turn declares.
+_Avoid_: Harness tool, remote tool
+
+**Sandbox**:
+Where sandboxed tools read files and run commands: this machine, or a container, microVM or remote host. The application owns it and may share one between many agents; the agent itself always runs outside it.
+_Avoid_: Workspace, environment, box
+
+**Sandbox key**:
+The name the application gives a sandbox so it can be found again, such as one key for every agent working on one task.
+_Avoid_: Sandbox id, run id
+
+**Work dir**:
+The directory inside a sandbox that one agent works in: relative paths start there and file tools cannot leave it.
+_Avoid_: Cwd, working directory, mount
+
 **Skill**:
 A folder of instructions (`SKILL.md`, following the Agent Skills spec) and supporting files that the agent mounts with
 `use_skill`; the model sees only its name and description until it activates the skill by name, and reads the other
