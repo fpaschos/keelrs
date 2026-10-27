@@ -2,6 +2,9 @@
 
 use crate::{Model, Skill, Tool};
 
+/// Tool names keelrs keeps for its built-in tools, with or without skills.
+const RESERVED_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
+
 /// What an agent function receives to make its declarations for the current turn.
 #[derive(Debug, Default)]
 pub struct AgentContext {
@@ -9,7 +12,7 @@ pub struct AgentContext {
     models: Vec<Model>,
     instructions: Vec<String>,
     tools: Vec<Tool>,
-    pub(crate) skills: Vec<Skill>,
+    skills: Vec<Skill>,
 }
 
 impl AgentContext {
@@ -36,11 +39,24 @@ impl AgentContext {
         self.tools.push(tool.into());
     }
 
-    /// Mounts an already-resolved skill; nothing is read here.
+    /// Mounts a skill this turn, in call order: the model sees its name and
+    /// description and activates it by name with the built-in `activate_skill`.
     ///
-    /// STUB: accepted and ignored until the skill design is decided.
-    pub fn use_skill(&mut self, skill: Skill) {
-        self.skills.push(skill);
+    /// An invalid embedded skill, or two skills with one name, settle the
+    /// dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
+    pub fn use_skill(&mut self, skill: impl Into<Skill>) {
+        self.skills.push(skill.into());
+    }
+
+    /// Mounts each skill with [`use_skill`](Self::use_skill), in order.
+    pub fn use_skills<I>(&mut self, skills: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<Skill>,
+    {
+        for skill in skills {
+            self.use_skill(skill);
+        }
     }
 
     /// The one model this render declared, or why the run fails.
@@ -61,6 +77,12 @@ impl AgentContext {
     /// The tools this render declared, or why the run fails.
     pub(crate) fn tools(&self) -> Result<&[Tool], String> {
         for (i, tool) in self.tools.iter().enumerate() {
+            if RESERVED_TOOL_NAMES.contains(&&*tool.name) {
+                return Err(format!(
+                    "`{}` is reserved for keelrs's built-in tool",
+                    tool.name
+                ));
+            }
             if self.tools[..i].iter().any(|other| other.name == tool.name) {
                 return Err(format!(
                     "two tools are named `{}`; tool names must be unique",
@@ -75,6 +97,23 @@ impl AgentContext {
             }
         }
         Ok(&self.tools)
+    }
+
+    /// The skills this render mounted, or why the run fails.
+    pub(crate) fn skills(&self) -> Result<&[Skill], String> {
+        for (i, skill) in self.skills.iter().enumerate() {
+            skill.validate().map_err(|e| e.to_string())?;
+            if self.skills[..i]
+                .iter()
+                .any(|other| other.name() == skill.name())
+            {
+                return Err(format!(
+                    "two skills are named `{}`; skill names must be unique",
+                    skill.name()
+                ));
+            }
+        }
+        Ok(&self.skills)
     }
 
     /// This turn's instructions: the returned text, then each `use_instruction`
