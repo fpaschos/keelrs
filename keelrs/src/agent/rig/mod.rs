@@ -111,12 +111,8 @@ async fn run_with(
 
                 let mut spec = RunSpec::new();
                 // The skill catalog follows the instructions (How a skill reaches the model).
-                spec.preamble = match (instructions, catalog(skills)) {
-                    (Some(instructions), Some(catalog)) => {
-                        Some(format!("{instructions}\n\n{catalog}"))
-                    }
-                    (instructions, catalog) => instructions.or(catalog),
-                };
+                let parts: Vec<String> = instructions.into_iter().chain(catalog(skills)).collect();
+                spec.preamble = (!parts.is_empty()).then(|| parts.join("\n\n"));
                 if let Some(thinking) = thinking {
                     spec.options = GenerationOptions::default().reasoning(reasoning(*thinking));
                 }

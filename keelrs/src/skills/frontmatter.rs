@@ -1,15 +1,13 @@
 //! A `SKILL.md`'s frontmatter: the Agent Skills spec's six fields and their rules.
 //!
-//! Strict for embedded and code-built skills: any broken rule or extra field is
-//! an error. [`Frontmatter::check`] returns the first broken rule so that
-//! discovery can treat the same rules leniently.
+//! Strict for embedded and code-built skills: any broken rule or extra field is an error.
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
 /// The spec's six fields, as written in `SKILL.md`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(super) struct Frontmatter {
     pub(super) name: String,
@@ -22,18 +20,6 @@ pub(super) struct Frontmatter {
 }
 
 impl Frontmatter {
-    /// Only the two required fields, for a skill built in code.
-    pub(super) fn new(name: String, description: String) -> Self {
-        Self {
-            name,
-            description,
-            license: None,
-            compatibility: None,
-            metadata: BTreeMap::new(),
-            allowed_tools: None,
-        }
-    }
-
     /// The first spec rule this frontmatter breaks; `folder` is the skill's
     /// folder name, which `name` must match.
     pub(super) fn check(&self, folder: Option<&str>) -> Result<(), String> {

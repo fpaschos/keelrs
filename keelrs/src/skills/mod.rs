@@ -119,7 +119,11 @@ impl Skill {
         description: impl Into<String>,
         instructions: impl Into<String>,
     ) -> Result<Self, SkillError> {
-        let frontmatter = Frontmatter::new(name.into(), description.into());
+        let frontmatter = Frontmatter {
+            name: name.into(),
+            description: description.into(),
+            ..Frontmatter::default()
+        };
         frontmatter
             .check(None)
             .map_err(|reason| SkillError::new(&frontmatter.name, reason))?;
@@ -141,14 +145,11 @@ impl Skill {
         bytes: impl Into<Vec<u8>>,
     ) -> Result<Self, SkillError> {
         let path = path.into();
-        let mut parsed = match self.0 {
-            Source::Built(parsed) => parsed,
-            Source::Embedded(_) => {
-                return Err(SkillError::new(
-                    self.name(),
-                    "an embedded skill's files are listed in `skill!`".to_owned(),
-                ));
-            }
+        let Source::Built(mut parsed) = self.0 else {
+            return Err(SkillError::new(
+                self.name(),
+                "an embedded skill's files are listed in `skill!`".to_owned(),
+            ));
         };
         check_path(&path).map_err(|reason| SkillError::new(&parsed.frontmatter.name, reason))?;
         Arc::make_mut(&mut parsed).files.insert(path, bytes.into());
