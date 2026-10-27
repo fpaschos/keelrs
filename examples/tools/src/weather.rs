@@ -39,7 +39,7 @@ struct Current {
 }
 
 pub(crate) fn get_weather(http: reqwest::Client) -> Tool {
-    Tool::new(
+    Tool::host(
         "get_weather",
         "The current temperature and wind in a city.",
         async move |call: ToolCall<GetWeather>| {

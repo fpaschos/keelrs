@@ -23,6 +23,7 @@ use rig_core::tool::{ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
 use crate::model::Thinking;
+use crate::sandbox::Sandbox;
 use crate::skills::catalog::catalog;
 use crate::skills::tools::builtin;
 use crate::{Agent, Model, Tool};
@@ -69,6 +70,7 @@ async fn run_with(
     let mut connected = None;
     // The last render's tools, by name, for the `CallTools` step after its model call.
     let mut pinned = HashMap::new();
+    let mut sandbox = None;
     loop {
         let step = match run.next_step() {
             Ok(step) => step,
@@ -88,6 +90,8 @@ async fn run_with(
                 let skills = cx.skills()?;
                 // The built-in skill tools follow the declared ones and are pinned with them.
                 let tools: Vec<Tool> = cx.tools()?.iter().cloned().chain(builtin(skills)).collect();
+                // Pinned with the tools: their calls get this render's sandbox.
+                sandbox = cx.sandbox()?.cloned();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
                     None => connected.insert((connect(declared)?, declared.thinking)),
@@ -151,10 +155,14 @@ async fn run_with(
             }
             AgentRunStep::CallTools { calls } => {
                 // One reply's calls run concurrently; Rig commits them in call order.
-                let answers = join_all(calls.into_iter().map(|call| answer(call, &pinned)))
-                    .await
-                    .into_iter()
-                    .collect::<Result<Vec<_>, _>>()?;
+                let answers = join_all(
+                    calls
+                        .into_iter()
+                        .map(|call| answer(call, &pinned, sandbox.as_ref())),
+                )
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
                 run.answer_all(answers).map_err(|e| e.to_string())?;
             }
             AgentRunStep::Done(response) => {
@@ -176,6 +184,7 @@ async fn run_with(
 async fn answer(
     call: PendingToolCall,
     tools: &HashMap<String, Tool>,
+    sandbox: Option<&Sandbox>,
 ) -> Result<ToolAnswer, String> {
     let call = match call {
         PendingToolCall::Execute(call) => call,
@@ -191,7 +200,11 @@ async fn answer(
         let refused = ToolExecutionError::invalid_args(refusal);
         return Ok(call.answer(ToolResult::failed(refused)));
     }
-    let running = (tool.run)(call.arguments(), call.id().wire().into_owned());
+    let running = (tool.run)(
+        call.arguments(),
+        call.id().wire().into_owned(),
+        sandbox.filter(|_| tool.sandboxed).cloned(),
+    );
     let called = match tool.timeout {
         Some(limit) => tokio::time::timeout(limit, running)
             .await

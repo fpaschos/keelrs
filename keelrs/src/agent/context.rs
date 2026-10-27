@@ -1,5 +1,6 @@
 //! What an agent function declares for the current turn.
 
+use crate::sandbox::Sandbox;
 use crate::{Model, Skill, Tool};
 
 /// Tool names keelrs keeps for its built-in tools, with or without skills.
@@ -13,6 +14,9 @@ pub struct AgentContext {
     instructions: Vec<String>,
     tools: Vec<Tool>,
     skills: Vec<Skill>,
+    /// The first `use_sandbox` sandbox, and how many calls this render made.
+    sandbox: Option<Sandbox>,
+    sandbox_calls: usize,
 }
 
 impl AgentContext {
@@ -37,6 +41,18 @@ impl AgentContext {
     /// object, settle the dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
     pub fn use_tool(&mut self, tool: impl Into<Tool>) {
         self.tools.push(tool.into());
+    }
+
+    /// Declares the sandbox this turn's sandboxed tools act through
+    /// ([`Tool::sandbox`]); keelrs holds it only for this dispatch.
+    ///
+    /// Optional, and at most once per render: a second call, or a sandboxed
+    /// tool with no sandbox declared, settles the dispatch as
+    /// [`Outcome::Failed`](crate::Outcome::Failed). keelrs never falls back
+    /// to the host.
+    pub fn use_sandbox(&mut self, sandbox: Sandbox) {
+        self.sandbox_calls += 1;
+        self.sandbox.get_or_insert(sandbox);
     }
 
     /// Mounts a skill this turn, in call order: the model sees its name and
@@ -97,6 +113,25 @@ impl AgentContext {
             }
         }
         Ok(&self.tools)
+    }
+
+    /// The sandbox this render declared, if any, or why the run fails.
+    pub(crate) fn sandbox(&self) -> Result<Option<&Sandbox>, String> {
+        if self.sandbox_calls > 1 {
+            return Err(format!(
+                "`use_sandbox` was called {} times in one render; call it at most once",
+                self.sandbox_calls
+            ));
+        }
+        if self.sandbox.is_none()
+            && let Some(tool) = self.tools.iter().find(|tool| tool.sandboxed)
+        {
+            return Err(format!(
+                "`{}` is a sandboxed tool, but no sandbox was declared; call `use_sandbox`",
+                tool.name
+            ));
+        }
+        Ok(self.sandbox.as_ref())
     }
 
     /// The skills this render mounted, or why the run fails.

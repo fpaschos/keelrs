@@ -43,7 +43,7 @@ struct LookupOrder {
 
 /// Defined once and declared every turn, as Flue's `defineTool`.
 pub(crate) fn lookup_order(store: Store) -> Tool {
-    Tool::new(
+    Tool::host(
         "lookup_order",
         "Look up one order by id and return its status, total and refunds.",
         async move |call: ToolCall<LookupOrder>| store.get(&call.data.order_id),
@@ -58,7 +58,7 @@ struct IssueRefund {
 }
 
 pub(crate) fn issue_refund(store: Store) -> Tool {
-    Tool::new(
+    Tool::host(
         "issue_refund",
         "Refund part or all of an order. Needs an operator approval first.",
         async move |call: ToolCall<IssueRefund>| {

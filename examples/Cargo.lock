@@ -1045,6 +1045,7 @@ dependencies = [
  "include_dir",
  "rig-agent",
  "rig-core",
+ "rig-tools",
  "schemars",
  "serde",
  "serde-saphyr",

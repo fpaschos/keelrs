@@ -1,5 +1,7 @@
 //! Discovering skill folders on disk, through the public API, over temp-dir fixtures.
 
+#![allow(clippy::disallowed_methods)] // skill folders are set up on the host
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fs, process};

@@ -33,7 +33,7 @@ struct ConvertCurrency {
 }
 
 pub(crate) fn convert_currency() -> Tool {
-    Tool::new(
+    Tool::host(
         "convert_currency",
         "Convert an amount between currencies at fixed rates.",
         async |call: ToolCall<ConvertCurrency>| {

@@ -36,7 +36,7 @@ where
     /// The tool that fills the report; a second call replaces the first.
     pub fn tool(&self, description: &str) -> Tool {
         let slot = self.slot.clone();
-        Tool::new(
+        Tool::host(
             self.name,
             description,
             move |call: ToolCall<T>| async move {

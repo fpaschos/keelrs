@@ -15,7 +15,7 @@ struct RecordApproval {
 }
 
 pub(crate) fn record_approval(approved: Arc<AtomicBool>) -> Tool {
-    Tool::new(
+    Tool::host(
         "record_approval",
         "Record an operator approval code; refunds become available once it is valid.",
         async move |call: ToolCall<RecordApproval>| {

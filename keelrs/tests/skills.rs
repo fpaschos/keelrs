@@ -29,7 +29,7 @@ fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
 async fn a_tool_with_a_reserved_name_fails() {
     for name in ["activate_skill", "read_skill_resource"] {
         let agent = agent(move |cx| {
-            cx.use_tool(Tool::new(name, "Mine.", async |_: ToolCall<()>| {
+            cx.use_tool(Tool::host(name, "Mine.", async |_: ToolCall<()>| {
                 Ok::<_, Infallible>("")
             }));
         });

@@ -35,7 +35,7 @@ struct Activate {
 }
 
 fn activate_skill(skills: Arc<[Skill]>) -> Tool {
-    Tool::new(
+    Tool::builtin(
         "activate_skill",
         "Load a skill's full instructions by name before doing a task it describes.",
         move |call: ToolCall<Activate>| async move {
@@ -83,7 +83,7 @@ struct Read {
 }
 
 fn read_skill_resource(skills: Arc<[Skill]>) -> Tool {
-    Tool::new(
+    Tool::builtin(
         "read_skill_resource",
         "Read a supporting file of an activated skill, paged by line.",
         move |call: ToolCall<Read>| async move {

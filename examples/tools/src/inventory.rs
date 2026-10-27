@@ -13,7 +13,7 @@ struct CheckInventory {
 }
 
 pub(crate) fn check_inventory() -> Tool {
-    Tool::new(
+    Tool::host(
         "check_inventory",
         "How many units of a product are in stock.",
         async |call: ToolCall<CheckInventory>| match call.data.sku.as_str() {

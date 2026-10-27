@@ -14,6 +14,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::sandbox::Sandbox;
+
 /// What one call of a tool receives: the model's arguments and the call's id.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -27,7 +29,9 @@ pub struct ToolCall<Args> {
 /// What a tool's call settles to: its value, or the message the model reads.
 type Called = Result<Value, String>;
 
-type Run = dyn Fn(Value, String) -> Pin<Box<dyn Future<Output = Called> + Send>> + Send + Sync;
+type Run = dyn Fn(Value, String, Option<Sandbox>) -> Pin<Box<dyn Future<Output = Called> + Send>>
+    + Send
+    + Sync;
 
 /// A named function the model may call during a turn, declared with
 /// [`AgentContext::use_tool`](crate::AgentContext::use_tool).
@@ -40,13 +44,21 @@ pub struct Tool {
     /// The JSON schema of the arguments, sent to the model.
     pub(crate) schema: Arc<Value>,
     pub(crate) timeout: Option<Duration>,
-    /// Runs one call with the model's arguments and the call's id.
+    /// Whether it acts through the turn's sandbox ([`Tool::sandbox`]).
+    pub(crate) sandboxed: bool,
+    /// Runs one call with the model's arguments, the call's id and the turn's sandbox.
     pub(crate) run: Arc<Run>,
 }
 
 impl Tool {
-    /// A tool named `name` that the model reads `description` of and calls with
-    /// arguments of type `Args`, running `run`.
+    /// A **host tool** named `name` that the model reads `description` of
+    /// and calls with arguments of type `Args`, running `run` on the host.
+    ///
+    /// A host tool is trusted code: it runs outside any sandbox, and is
+    /// where secrets are used (a credential proxy that returns only
+    /// results). keelrs cannot stop it from touching the host; a tool that
+    /// reads files or runs commands for the model is a
+    /// [`sandbox`](Self::sandbox) tool instead.
     ///
     /// `Args`'s schema (schemars, field docs become descriptions) must be a
     /// JSON object; `ToolCall<()>` takes no arguments. `run` is cloned before
@@ -56,7 +68,7 @@ impl Tool {
     ///
     /// A call is cancelled by dropping its future (a timeout, or the instance
     /// stopping): work a tool spawns outside that future needs a drop guard.
-    pub fn new<Args, F, Fut, T, E>(
+    pub fn host<Args, F, Fut, T, E>(
         name: impl Into<String>,
         description: impl Into<String>,
         run: F,
@@ -68,15 +80,83 @@ impl Tool {
         T: Serialize + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
+        Self::erased(name, description, false, move |call, _| run(call))
+    }
+
+    /// A **sandboxed tool**: as [`host`](Self::host), but `run` also
+    /// receives the [`Sandbox`] its turn declared with
+    /// [`AgentContext::use_sandbox`](crate::AgentContext::use_sandbox),
+    /// and acts only through it.
+    ///
+    /// keelrs guarantees which sandbox it gets: the declared one, as
+    /// narrowed to its work dir. A turn that declares a sandboxed tool but
+    /// no sandbox settles the dispatch as
+    /// [`Outcome::Failed`](crate::Outcome::Failed); keelrs never falls back
+    /// to the host.
+    pub fn sandbox<Args, F, Fut, T, E>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        run: F,
+    ) -> Self
+    where
+        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: Serialize + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::erased(
+            name,
+            description,
+            true,
+            move |call, sandbox: Option<Sandbox>| {
+                let sandbox =
+                    sandbox.expect("a sandboxed tool runs only in a turn that declared a sandbox");
+                run(call, sandbox)
+            },
+        )
+    }
+
+    /// keelrs's own tools, such as `activate_skill`: host tools that only
+    /// keelrs may name with a reserved name.
+    pub(crate) fn builtin<Args, F, Fut, T, E>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        run: F,
+    ) -> Self
+    where
+        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: Serialize + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::host(name, description, run)
+    }
+
+    /// A tool around `run`, which gets the turn's sandbox when `sandboxed`.
+    fn erased<Args, F, Fut, T, E>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        sandboxed: bool,
+        run: F,
+    ) -> Self
+    where
+        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        F: FnOnce(ToolCall<Args>, Option<Sandbox>) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: Serialize + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let name: Arc<str> = name.into().into();
         let tool_name = name.clone();
-        let run = move |arguments: Value, id: String| {
+        let run = move |arguments: Value, id: String, sandbox: Option<Sandbox>| {
             let run = run.clone();
             let name = tool_name.clone();
             Box::pin(async move {
                 let data = arguments_into::<Args>(arguments)
                     .map_err(|e| format!("`{name}`'s arguments do not fit: {e}"))?;
-                let value = run(ToolCall { data, id })
+                let value = run(ToolCall { data, id }, sandbox)
                     .await
                     .map_err(|e| e.to_string())?;
                 serde_json::to_value(value).map_err(|e| e.to_string())
@@ -87,6 +167,7 @@ impl Tool {
             description: description.into().into(),
             schema: Arc::new(crate::agent::rig::args_schema::<Args>()),
             timeout: None,
+            sandboxed,
             run: Arc::new(run),
         }
     }
@@ -117,6 +198,7 @@ impl fmt::Debug for Tool {
         f.debug_struct("Tool")
             .field("name", &self.name)
             .field("timeout", &self.timeout)
+            .field("sandboxed", &self.sandboxed)
             .finish_non_exhaustive()
     }
 }

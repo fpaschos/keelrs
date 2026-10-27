@@ -16,6 +16,7 @@ futures.workspace = true
 include_dir.workspace = true
 rig-agent.workspace = true
 rig-core = { workspace = true, features = ["reqwest"] }
+rig-tools.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }

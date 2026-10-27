@@ -1,0 +1,28 @@
+# keelrs touches the host's files and processes only in `sandbox::local`; tools
+# go through a `Sandbox` (see the `sandbox` module docs). Tests set up temp dirs
+# with `#[allow(clippy::disallowed_methods)]`.
+disallowed-methods = [
+  { path = "std::fs::canonicalize", reason = "go through the Sandbox" },
+  { path = "std::fs::copy", reason = "go through the Sandbox" },
+  { path = "std::fs::create_dir", reason = "go through the Sandbox" },
+  { path = "std::fs::create_dir_all", reason = "go through the Sandbox" },
+  { path = "std::fs::hard_link", reason = "go through the Sandbox" },
+  { path = "std::fs::metadata", reason = "go through the Sandbox" },
+  { path = "std::fs::read", reason = "go through the Sandbox" },
+  { path = "std::fs::read_dir", reason = "go through the Sandbox" },
+  { path = "std::fs::read_link", reason = "go through the Sandbox" },
+  { path = "std::fs::read_to_string", reason = "go through the Sandbox" },
+  { path = "std::fs::remove_dir", reason = "go through the Sandbox" },
+  { path = "std::fs::remove_dir_all", reason = "go through the Sandbox" },
+  { path = "std::fs::remove_file", reason = "go through the Sandbox" },
+  { path = "std::fs::rename", reason = "go through the Sandbox" },
+  { path = "std::fs::set_permissions", reason = "go through the Sandbox" },
+  { path = "std::fs::symlink_metadata", reason = "go through the Sandbox" },
+  { path = "std::fs::write", reason = "go through the Sandbox" },
+  { path = "std::process::Command::new", reason = "go through Sandbox::exec" },
+]
+disallowed-types = [
+  { path = "std::fs::File", reason = "go through the Sandbox" },
+  { path = "std::fs::OpenOptions", reason = "go through the Sandbox" },
+  { path = "std::process::Command", reason = "go through Sandbox::exec" },
+]

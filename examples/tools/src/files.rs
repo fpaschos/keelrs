@@ -15,7 +15,7 @@ struct ListFiles {
 }
 
 pub(crate) fn list_files() -> Tool {
-    Tool::new(
+    Tool::host(
         "list_files",
         "List the files in a directory under the current one, with `ls`.",
         async |call: ToolCall<ListFiles>| {

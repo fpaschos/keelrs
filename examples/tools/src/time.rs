@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use keelrs::{Tool, ToolCall};
 
 pub(crate) fn current_time() -> Tool {
-    Tool::new(
+    Tool::host(
         "current_time",
         "The current time, as seconds since the Unix epoch (UTC).",
         async |_: ToolCall<()>| {

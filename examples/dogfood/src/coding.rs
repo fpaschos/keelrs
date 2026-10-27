@@ -54,7 +54,7 @@ where
     T::Error: Send + Sync,
 {
     let description = tool.description();
-    Tool::new(
+    Tool::host(
         T::NAME,
         description,
         move |call: ToolCall<T::Args>| async move {

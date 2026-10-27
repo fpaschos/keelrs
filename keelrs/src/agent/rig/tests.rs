@@ -4,6 +4,8 @@
 //! `run_with` and read Rig's messages from `Settled`, neither of which the
 //! public API exposes (Rig types stay in this module, ADR 0004).
 
+#![allow(clippy::disallowed_methods)] // skill folders are set up on the host
+
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -19,6 +21,7 @@ use serde_json::json;
 use tokio::sync::Barrier;
 
 use super::*;
+use crate::sandbox::Sandbox;
 use crate::skills::{Discover, discover};
 use crate::{AgentContext, Skill, Tool, ToolCall};
 
@@ -68,7 +71,7 @@ fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
 }
 
 fn clock() -> Tool {
-    Tool::new(
+    Tool::host(
         "current_time",
         "The current time.",
         async |_: ToolCall<()>| Ok::<_, Infallible>("noon"),
@@ -89,6 +92,29 @@ async fn a_tool_result_reaches_the_model_and_the_run_settles() {
     .unwrap();
     assert_eq!(settled.reply, "It is noon.");
     assert_eq!(results(&settled), [("noon".to_owned(), false)]);
+}
+
+#[tokio::test]
+async fn a_sandboxed_tool_gets_the_sandbox_its_turn_declared() {
+    let root = crate::sandbox::local()
+        .root(std::env::temp_dir())
+        .open()
+        .await
+        .unwrap();
+    let declared = root.work_dir("keelrs-declared");
+    let expected = json!({"id": declared.id().to_string(), "dir": declared.dir().to_string()});
+    let agent = agent(move |cx| {
+        cx.use_sandbox(declared.clone());
+        cx.use_tool(Tool::sandbox(
+            "where_am_i",
+            "Where the tool runs.",
+            async |_: ToolCall<()>, sb: Sandbox| {
+                Ok::<_, Infallible>(json!({"id": sb.id().to_string(), "dir": sb.dir().to_string()}))
+            },
+        ));
+    });
+    let results = one_call(&agent, "where_am_i", json!({})).await;
+    assert_eq!(results, [(expected.to_string(), false)]);
 }
 
 /// One tool call, then the reply "Done.", and the results the run accepted.
@@ -113,7 +139,7 @@ struct Order {
 #[tokio::test]
 async fn a_value_reaches_the_model_as_json_and_a_call_gets_its_id() {
     let agent = agent(|cx| {
-        cx.use_tool(Tool::new(
+        cx.use_tool(Tool::host(
             "lookup_order",
             "Look up an order.",
             async |call: ToolCall<Order>| {
@@ -131,7 +157,7 @@ async fn a_value_reaches_the_model_as_json_and_a_call_gets_its_id() {
 #[tokio::test]
 async fn an_err_reaches_the_model_as_its_message() {
     let agent = agent(|cx| {
-        cx.use_tool(Tool::new(
+        cx.use_tool(Tool::host(
             "lookup_order",
             "Look up an order.",
             async |call: ToolCall<Order>| {
@@ -150,7 +176,7 @@ async fn arguments_that_break_the_schema_are_refused_and_the_tool_does_not_run()
         let ran = ran.clone();
         move |cx| {
             let ran = ran.clone();
-            cx.use_tool(Tool::new(
+            cx.use_tool(Tool::host(
                 "lookup_order",
                 "Look up an order.",
                 async move |_: ToolCall<Order>| {
@@ -172,7 +198,7 @@ async fn arguments_that_break_the_schema_are_refused_and_the_tool_does_not_run()
 async fn a_call_past_its_timeout_reaches_the_model_as_timed_out() {
     let agent = agent(|cx| {
         cx.use_tool(
-            Tool::new("slow", "Never finishes.", async |_: ToolCall<()>| {
+            Tool::host("slow", "Never finishes.", async |_: ToolCall<()>| {
                 std::future::pending::<Result<(), Infallible>>().await
             })
             .timeout(Duration::from_millis(10)),
@@ -205,7 +231,7 @@ async fn one_replys_calls_run_concurrently_and_are_committed_in_call_order() {
     let agent = agent(move |cx| {
         for name in ["first", "second"] {
             let barrier = barrier.clone();
-            cx.use_tool(Tool::new(
+            cx.use_tool(Tool::host(
                 name,
                 "Waits for the other.",
                 async move |_: ToolCall<()>| {
@@ -624,7 +650,7 @@ async fn a_discovered_skill_lists_a_symlink_that_stays_in_its_folder() {
 #[tokio::test]
 async fn a_tool_may_take_a_name_keelrs_has_no_builtin_for() {
     for name in ["task", "finish", "give_up"] {
-        let tool = Tool::new(name, "Mine.", async |_: ToolCall<()>| {
+        let tool = Tool::host(name, "Mine.", async |_: ToolCall<()>| {
             Ok::<_, Infallible>("ran")
         });
         let agent = agent(move |cx| cx.use_tool(tool.clone()));

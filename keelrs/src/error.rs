@@ -1,6 +1,7 @@
 //! Errors returned by keelrs.
 
 use crate::SubmissionId;
+use crate::sandbox::SandboxError;
 
 /// Something keelrs could not do.
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +20,9 @@ pub enum Error {
         /// The message that settled.
         submission_id: SubmissionId,
     },
+    /// A sandbox could not do what was asked.
+    #[error(transparent)]
+    Sandbox(#[from] SandboxError),
 }
 
 /// How a dispatched message settled when it produced no reply.
