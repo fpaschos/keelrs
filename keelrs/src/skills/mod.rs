@@ -51,12 +51,7 @@ impl Embedded {
 
     fn parsed(&self) -> &Result<Parsed, SkillError> {
         self.parsed.get_or_init(|| {
-            let folder = self
-                .path
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or(self.path);
+            let folder = self.path.rsplit('/').next().unwrap_or(self.path);
             self.parse()
                 .map_err(|reason| SkillError::new(folder, reason))
         })
@@ -169,7 +164,7 @@ impl Skill {
     ///
     /// # Errors
     ///
-    /// When `path` is empty, absolute, contains `..` or is `SKILL.md`.
+    /// When `path` is empty, absolute or contains `..`.
     pub fn file(
         self,
         path: impl Into<String>,
@@ -256,9 +251,6 @@ fn check_path(path: &str) -> Result<(), String> {
         return Err(format!(
             "file path `{path}` must be relative to the skill's folder, without `..`"
         ));
-    }
-    if path == "SKILL.md" {
-        return Err("`SKILL.md` is the skill's instructions, not a supporting file".to_owned());
     }
     Ok(())
 }

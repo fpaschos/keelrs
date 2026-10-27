@@ -127,13 +127,7 @@ fn a_code_built_skill_needs_a_name_and_a_description() {
 #[test]
 fn a_code_built_skill_file_stays_inside_its_folder() {
     let skill = || Skill::new("haiku", "Write a haiku.", "Body.").unwrap();
-    for path in [
-        "/etc/passwd",
-        "../secret.md",
-        "references/../../x",
-        "",
-        "SKILL.md",
-    ] {
+    for path in ["/etc/passwd", "../secret.md", "references/../../x", ""] {
         assert!(skill().file(path, "x").is_err(), "{path:?} was accepted");
     }
     assert!(skill().file("references/forms.md", "x").is_ok());
