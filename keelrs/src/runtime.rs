@@ -41,7 +41,8 @@ impl Runtime {
         }
     }
 
-    /// Addresses `agent` on this runtime; pick the instance with [`Init::id`].
+    /// Addresses `agent` on this runtime; pick the instance with [`Init::id`],
+    /// or get a new one with [`Init::fresh`].
     ///
     /// Never fails: an unknown agent errors on [`Init::id`].
     #[must_use]
@@ -87,5 +88,13 @@ impl Init {
             .or_insert_with(|| AgentInstance::spawn(agent.clone(), id, &self.runtime.shutdown))
             .clone();
         Ok(instance)
+    }
+
+    /// A new instance with a generated id: a UUIDv7, unique across restarts
+    /// and ordered by time. Read it back with [`AgentInstance::id`].
+    ///
+    /// Fails as [`id`](Self::id) does.
+    pub fn fresh(self) -> Result<AgentInstance> {
+        self.id(uuid::Uuid::now_v7().to_string())
     }
 }

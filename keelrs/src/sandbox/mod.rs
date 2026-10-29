@@ -50,80 +50,13 @@ use tokio_util::sync::CancellationToken;
 use crate::Result;
 
 mod local;
+mod path;
 
 pub use local::{LocalBuilder, local};
+pub use path::SandboxPath;
 
 /// How much of each stream [`Execution::run`] keeps: the last 64 MiB.
 const KEPT_OUTPUT: usize = 64 * 1024 * 1024;
-
-/// A path inside a sandbox: UTF-8, POSIX (`/`-separated) and absolute,
-/// with `.` and `..` folded away. It serialises as its text.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
-#[serde(transparent)]
-pub struct SandboxPath(String);
-
-impl SandboxPath {
-    /// `path` folded, or `None` when it is not absolute.
-    #[must_use]
-    pub fn new(path: &str) -> Option<Self> {
-        path.starts_with('/').then(|| Self::fold(path))
-    }
-
-    /// The path as text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// `path` joined onto this one when relative, as it is when absolute,
-    /// then folded.
-    #[must_use]
-    pub fn join(&self, path: &str) -> Self {
-        if path.starts_with('/') {
-            Self::fold(path)
-        } else {
-            Self::fold(&format!("{}/{path}", self.0))
-        }
-    }
-
-    /// Whether this path is `base` or lies below it, part by part.
-    #[must_use]
-    pub fn starts_with(&self, base: &Self) -> bool {
-        base.0 == "/"
-            || self.0 == base.0
-            || self
-                .0
-                .strip_prefix(&base.0)
-                .is_some_and(|rest| rest.starts_with('/'))
-    }
-
-    /// An absolute path with `.`, `..` and empty parts folded; `..` stops at `/`.
-    fn fold(path: &str) -> Self {
-        let mut parts: Vec<&str> = Vec::new();
-        for part in path.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    parts.pop();
-                }
-                part => parts.push(part),
-            }
-        }
-        Self(format!("/{}", parts.join("/")))
-    }
-}
-
-impl fmt::Display for SandboxPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl fmt::Debug for SandboxPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
-    }
-}
 
 /// What a path is, its links followed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,81 +185,100 @@ impl fmt::Display for SandboxId {
 /// canonical [`SandboxPath`]s that [`Sandbox`] has already confined to its
 /// work dir.
 ///
-/// Implement it for a new kind of sandbox and wrap it with [`Sandbox::new`].
+/// Implement it for a new kind of sandbox with
+/// [`#[keelrs::async_trait]`](crate::async_trait) and wrap it with
+/// [`Sandbox::new`]:
+///
+/// ```
+/// use keelrs::Result;
+/// use keelrs::sandbox::{
+///     Contents, ExecRequest, Execution, SandboxBackend, SandboxError, SandboxPath, Stat,
+/// };
+///
+/// /// A sandbox with nothing in it.
+/// struct Empty;
+///
+/// #[keelrs::async_trait]
+/// impl SandboxBackend for Empty {
+///     async fn stat(&self, _path: &SandboxPath) -> Result<Stat> {
+///         Ok(Stat::Missing)
+///     }
+///
+///     async fn read(&self, _path: &SandboxPath, _limit: u64) -> Result<Contents> {
+///         Err(SandboxError::Unsupported { operation: "read" }.into())
+///     }
+///     // …write, remove, rename, list, canonical and exec alike
+/// #   async fn write(&self, _: &SandboxPath, _: Vec<u8>) -> Result<()> { Ok(()) }
+/// #   async fn remove(&self, _: &SandboxPath, _: bool) -> Result<()> { Ok(()) }
+/// #   async fn rename(&self, _: &SandboxPath, _: &SandboxPath) -> Result<()> { Ok(()) }
+/// #   async fn list(&self, _: &SandboxPath, _: Option<&str>) -> Result<Vec<SandboxPath>> { Ok(vec![]) }
+/// #   async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> { Ok(path.clone()) }
+/// #   async fn exec(&self, _: ExecRequest) -> Result<Execution> {
+/// #       Err(SandboxError::Unsupported { operation: "exec" }.into())
+/// #   }
+/// }
+///
+/// let sb = keelrs::sandbox::Sandbox::new(Empty, SandboxPath::new("/").unwrap());
+/// ```
+#[async_trait::async_trait]
 pub trait SandboxBackend: Send + Sync + 'static {
     /// What `path` is; nothing there is [`Stat::Missing`], not an error.
-    fn stat<'a>(&'a self, path: &'a SandboxPath) -> BoxFuture<'a, Result<Stat>>;
+    async fn stat(&self, path: &SandboxPath) -> Result<Stat>;
 
     /// Up to `limit` bytes of the regular file `path`, and its whole size.
-    fn read<'a>(&'a self, path: &'a SandboxPath, limit: u64) -> BoxFuture<'a, Result<Contents>>;
+    async fn read(&self, path: &SandboxPath, limit: u64) -> Result<Contents>;
 
     /// Replaces the file `path` with `bytes` in one step, creating its directory.
-    fn write<'a>(&'a self, path: &'a SandboxPath, bytes: Vec<u8>) -> BoxFuture<'a, Result<()>>;
+    async fn write(&self, path: &SandboxPath, bytes: Vec<u8>) -> Result<()>;
 
     /// Removes the file `path`; a directory only when empty, or with `recursive`.
-    fn remove<'a>(&'a self, path: &'a SandboxPath, recursive: bool) -> BoxFuture<'a, Result<()>>;
+    async fn remove(&self, path: &SandboxPath, recursive: bool) -> Result<()>;
 
     /// Moves the file `from` to `to`, creating `to`'s directory and replacing a file there.
-    fn rename<'a>(
-        &'a self,
-        from: &'a SandboxPath,
-        to: &'a SandboxPath,
-    ) -> BoxFuture<'a, Result<()>>;
+    async fn rename(&self, from: &SandboxPath, to: &SandboxPath) -> Result<()>;
 
     /// The regular files under `root`, only those matching `glob` (such as
     /// `*.rs`) when it is given.
-    fn list<'a>(
-        &'a self,
-        root: &'a SandboxPath,
-        glob: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<Vec<SandboxPath>>>;
+    async fn list(&self, root: &SandboxPath, glob: Option<&str>) -> Result<Vec<SandboxPath>>;
 
     /// `path` with its links followed and `..` folded, so two spellings of
     /// one file come out alike; a missing tail is kept as it is.
-    fn canonical<'a>(&'a self, path: &'a SandboxPath) -> BoxFuture<'a, Result<SandboxPath>>;
+    async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath>;
 
     /// Starts `request`, whose `cwd` is absolute.
-    fn exec(&self, request: ExecRequest) -> BoxFuture<'_, Result<Execution>>;
+    async fn exec(&self, request: ExecRequest) -> Result<Execution>;
 
     /// [`write`](Self::write)s `bytes` to `path` only while it holds the
     /// content hashed as `held`: `None` when it did, and otherwise what it
     /// holds instead. By default it reads, compares, then writes, which is
     /// not atomic.
-    fn write_if<'a>(
-        &'a self,
-        path: &'a SandboxPath,
+    async fn write_if(
+        &self,
+        path: &SandboxPath,
         bytes: Vec<u8>,
         held: ContentHash,
-    ) -> BoxFuture<'a, Result<Option<Contents>>> {
-        Box::pin(async move {
-            let now = self.read(path, u64::MAX).await?;
-            if ContentHash::of(&now.bytes) != held {
-                return Ok(Some(now));
-            }
-            self.write(path, bytes).await?;
-            Ok(None)
-        })
+    ) -> Result<Option<Contents>> {
+        let now = self.read(path, u64::MAX).await?;
+        if ContentHash::of(&now.bytes) != held {
+            return Ok(Some(now));
+        }
+        self.write(path, bytes).await?;
+        Ok(None)
     }
 
     /// The whole content of each of `paths` that is a regular file of at
     /// most `limit` bytes, in order; `None` for any other. By default one
     /// [`read`](Self::read) each.
-    fn read_files<'a>(
-        &'a self,
-        paths: &'a [SandboxPath],
-        limit: u64,
-    ) -> BoxFuture<'a, Vec<Option<Vec<u8>>>> {
-        Box::pin(async move {
-            let mut files = Vec::with_capacity(paths.len());
-            for path in paths {
-                let file = match self.read(path, limit.saturating_add(1)).await {
-                    Ok(contents) if contents.size <= limit => Some(contents.bytes),
-                    _ => None,
-                };
-                files.push(file);
-            }
-            files
-        })
+    async fn read_files(&self, paths: &[SandboxPath], limit: u64) -> Vec<Option<Vec<u8>>> {
+        let mut files = Vec::with_capacity(paths.len());
+        for path in paths {
+            let file = match self.read(path, limit.saturating_add(1)).await {
+                Ok(contents) if contents.size <= limit => Some(contents.bytes),
+                _ => None,
+            };
+            files.push(file);
+        }
+        files
     }
 
     /// Which operations it supports.
@@ -335,8 +287,8 @@ pub trait SandboxBackend: Send + Sync + 'static {
     }
 
     /// Removes the sandbox and what runs in it; nothing by default.
-    fn close(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
+    async fn close(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -494,7 +446,7 @@ impl Sandbox {
     pub async fn exec(&self, mut request: ExecRequest) -> Result<Execution> {
         supports("exec", self.capabilities().exec)?;
         let cwd = self.work_dir.join(request.cwd.as_deref().unwrap_or("."));
-        request.cwd = Some(cwd.0);
+        request.cwd = Some(cwd.to_string());
         self.race("exec", self.backend.exec(request)).await
     }
 
