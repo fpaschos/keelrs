@@ -1,19 +1,23 @@
-//! [`local()`]: this machine as a sandbox, on rig-tools' [`Local`]
-//! workspace and [`Launcher`] (ADR 0004, rule 2). Rig types stay in this
-//! module; each call runs on a blocking thread.
+//! [`local()`]: this machine as a sandbox. Files go through rig-tools'
+//! [`Local`] workspace (ADR 0004, rule 2) on a blocking thread, and Rig
+//! types stay in this module. Commands run on `tokio::process`, each in a
+//! session of its own.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)] // the one place keelrs touches the host
 
-use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::process::Stdio;
+use std::time::Duration;
 
+use futures::SinkExt as _;
 use futures::channel::{mpsc, oneshot};
-use rig_tools::process::{Ended, KillOnDrop, Launcher, OutputLine, Spawn};
+use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessSession};
 use rig_tools::workspace::{Listing, Local, Workspace as _};
+use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWriteExt as _, BufReader};
+use tokio::net::unix::pipe;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     Chunk, Command, ContentHash, Contents, ExecRequest, Execution, Exit, Sandbox, SandboxBackend,
@@ -25,6 +29,18 @@ use crate::Result;
 const ENV_ALLOWLIST: [&str; 10] = [
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TERM", "TMPDIR", "LC_ALL",
 ];
+
+/// How long a stopped command has between SIGTERM and SIGKILL.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// How long what a command left in its group may hold its output open.
+const LEFTOVER: Duration = Duration::from_millis(100);
+
+/// The longest piece of output sent at once, when a line runs longer.
+const CHUNK: usize = 64 * 1024;
+
+/// How many pieces of output wait for a reader before the command blocks.
+const QUEUED_CHUNKS: usize = 64;
 
 /// Starts a [`LocalBuilder`]: this machine as a sandbox.
 ///
@@ -47,7 +63,7 @@ pub fn local() -> LocalBuilder {
 #[derive(Debug, Default)]
 pub struct LocalBuilder {
     root: Option<PathBuf>,
-    env: Vec<(String, String)>,
+    env: Vec<(String, Option<String>)>,
 }
 
 impl LocalBuilder {
@@ -61,10 +77,18 @@ impl LocalBuilder {
 
     /// Sets `name` to `value` for every command, over the allowlisted host
     /// variables (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
-    /// `LC_*`, `TZ`, `TERM`, `TMPDIR`).
+    /// `LC_*`, `TZ`, `TERM`, `TMPDIR`) and the default
+    /// `GIT_TERMINAL_PROMPT=0`.
     #[must_use]
     pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.push((name.into(), value.into()));
+        self.env.push((name.into(), Some(value.into())));
+        self
+    }
+
+    /// Removes `name` from every command's variables.
+    #[must_use]
+    pub fn env_remove(mut self, name: impl Into<String>) -> Self {
+        self.env.push((name.into(), None));
         self
     }
 
@@ -73,10 +97,10 @@ impl LocalBuilder {
     pub async fn open(self) -> Result<Sandbox> {
         let root = self.root.unwrap_or_else(|| PathBuf::from("."));
         let shown = root.display().to_string();
-        let root = blocking("open", shown.clone(), move || {
+        let (root, shell) = blocking("open", shown.clone(), move || {
             let root = Local.canonical(&root);
             if Local.stat(&root)? == rig_tools::workspace::Stat::Dir {
-                Ok(root)
+                Ok((root, find_shell()))
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::NotADirectory,
@@ -86,14 +110,13 @@ impl LocalBuilder {
         })
         .await?;
         let root = sandbox_path("open", &root)?;
+        let shell = sandbox_path("open", &shell)?;
         let mut env: Vec<(String, String)> = std::env::vars()
             .filter(|(name, _)| ENV_ALLOWLIST.contains(&name.as_str()) || name.starts_with("LC_"))
             .collect();
-        for (name, value) in self.env {
-            env.retain(|(other, _)| *other != name);
-            env.push((name, value));
-        }
-        Ok(Sandbox::new(LocalBackend { env }, root))
+        env.push(("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()));
+        apply(&mut env, self.env);
+        Ok(Sandbox::new(LocalBackend { env, shell }, root))
     }
 }
 
@@ -101,6 +124,8 @@ impl LocalBuilder {
 struct LocalBackend {
     /// What every command starts from, read once at `open`.
     env: Vec<(String, String)>,
+    /// What runs [`Command::Shell`] lines, found at `open`.
+    shell: SandboxPath,
 }
 
 #[async_trait::async_trait]
@@ -213,9 +238,13 @@ impl SandboxBackend for LocalBackend {
         .unwrap_or_else(|_| vec![None; count])
     }
 
+    fn shell(&self) -> Option<&SandboxPath> {
+        Some(&self.shell)
+    }
+
     async fn exec(&self, request: ExecRequest) -> Result<Execution> {
         let (program, args) = match request.command {
-            Command::Shell(line) => ("sh".to_owned(), vec!["-c".to_owned(), line]),
+            Command::Shell(line) => (self.shell.to_string(), vec!["-c".to_owned(), line]),
             Command::Argv(argv) => {
                 let mut argv = argv.into_iter();
                 let Some(program) = argv.next() else {
@@ -230,72 +259,171 @@ impl SandboxBackend for LocalBackend {
                 (program, argv.collect())
             }
         };
-        // `env -i` starts the command from these variables alone, never the host's.
         let mut vars = self.env.clone();
-        vars.push(("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()));
-        for (name, value) in request.env {
-            vars.retain(|(other, _)| *other != name);
-            if let Some(value) = value {
-                vars.push((name, value));
-            }
-        }
-        let prefix = ["/usr/bin/env".to_owned(), "-i".to_owned()]
-            .into_iter()
-            .chain(
-                vars.into_iter()
-                    .map(|(name, value)| format!("{name}={value}")),
-            );
-        let launcher = Launcher::default().wrapped(prefix);
-        let cwd = PathBuf::from(request.cwd.unwrap_or_else(|| "/".to_owned()));
-        let how = Spawn {
-            stdin: request.stdin,
-            merge_stderr: request.merge_stderr,
-        };
-        let timeout = request.timeout;
+        apply(&mut vars, request.env);
         let shown = program.clone();
-        let mut process = blocking("exec", shown, move || {
-            let args: Vec<OsString> = args.into_iter().map(OsString::from).collect();
-            Local.spawn(&launcher, Some(&cwd), program.as_ref(), &args, how)
-        })
-        .await?;
-
-        let (send_output, output) = mpsc::unbounded();
-        let (send_exit, exit) = oneshot::channel();
-        let killed = Arc::new(AtomicBool::new(false));
-        let group = process.group();
-        let was_killed = killed.clone();
-        tokio::task::spawn_blocking(move || {
-            let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
-            let ended = process.run(deadline, |line| {
-                let chunk = match line {
-                    OutputLine::Out(text) => Chunk::Out(text),
-                    OutputLine::Err(text) => Chunk::Err(text),
-                };
-                // Unread output is dropped; the command keeps running.
-                send_output.unbounded_send(chunk).ok();
-                true
+        let failed = move |e: io::Error| io_error("exec", shown.clone(), &e);
+        let mut command = tokio::process::Command::new(&program);
+        command
+            .args(&args)
+            .current_dir(request.cwd.unwrap_or_else(|| "/".to_owned()))
+            .env_clear()
+            .envs(vars)
+            .stdin(if request.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
             });
-            drop(send_output);
-            let exit = ended
-                .map(|ended| match ended {
-                    _ if was_killed.load(Ordering::SeqCst) => Exit::Killed,
-                    Ended::Exited(status) => exit_of(status),
-                    Ended::TimedOut => Exit::TimedOut,
-                    Ended::Stopped => Exit::Killed,
-                })
-                .map_err(|e| io_error("exec", String::new(), &e));
-            send_exit.send(exit).ok();
+        // Both streams on one pipe keep their order.
+        let merged = if request.merge_stderr {
+            let (reader, writer) = io::pipe().map_err(&failed)?;
+            command
+                .stderr(writer.try_clone().map_err(&failed)?)
+                .stdout(writer);
+            Some(pipe::Receiver::from_owned_fd(reader.into()).map_err(&failed)?)
+        } else {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            None
+        };
+        let mut command = CommandWrap::from(command);
+        command.wrap(ProcessSession);
+        let mut child = command.spawn().map_err(&failed)?;
+        drop(command); // closes our end of a merged pipe
+
+        let (send, output) = mpsc::channel(QUEUED_CHUNKS);
+        let cut = CancellationToken::new();
+        let mut pumps = Vec::new();
+        if let Some(reader) = merged {
+            pumps.push(tokio::spawn(pump(
+                reader,
+                Chunk::Out,
+                send.clone(),
+                cut.clone(),
+            )));
+        }
+        if let Some(stdout) = child.stdout().take() {
+            pumps.push(tokio::spawn(pump(
+                stdout,
+                Chunk::Out,
+                send.clone(),
+                cut.clone(),
+            )));
+        }
+        if let Some(stderr) = child.stderr().take() {
+            pumps.push(tokio::spawn(pump(stderr, Chunk::Err, send, cut.clone())));
+        }
+        if let (Some(mut stdin), Some(bytes)) = (child.stdin().take(), request.stdin) {
+            tokio::spawn(async move { stdin.write_all(&bytes).await.ok() });
+        }
+
+        let (stop, stopped) = oneshot::channel();
+        let (send_exit, exit) = oneshot::channel();
+        tokio::spawn(async move {
+            let exit = drive(child, pumps, cut, request.timeout, stopped).await;
+            send_exit.send(exit.map_err(failed)).ok();
         });
         let exit = async move {
             exit.await
                 .unwrap_or_else(|_| Err(SandboxError::Died { operation: "exec" }.into()))
         };
-        let kill = move || {
-            killed.store(true, Ordering::SeqCst);
-            // SIGTERM now, SIGKILL after two seconds if it still runs.
-            drop(KillOnDrop(group));
+        Ok(Execution::new(output, exit, move || {
+            stop.send(()).ok();
+        }))
+    }
+}
+
+/// Sets (`Some`) or removes (`None`) each variable in `changes`, in order.
+fn apply(vars: &mut Vec<(String, String)>, changes: Vec<(String, Option<String>)>) {
+    for (name, value) in changes {
+        vars.retain(|(other, _)| *other != name);
+        if let Some(value) = value {
+            vars.push((name, value));
+        }
+    }
+}
+
+/// Waits for `child` to end, or stops it at its `timeout` or once `stopped`:
+/// SIGTERM to its group, then SIGKILL [`GRACE`] later or once it exited.
+/// Whatever is left in its group then has [`LEFTOVER`] to close the pipes
+/// before it is killed and the pumps are `cut`. A stop that comes while it
+/// ends still ends it as [`Exit::Killed`].
+async fn drive(
+    mut child: Box<dyn ChildWrapper>,
+    pumps: Vec<JoinHandle<()>>,
+    cut: CancellationToken,
+    timeout: Option<Duration>,
+    mut stopped: oneshot::Receiver<()>,
+) -> io::Result<Exit> {
+    let ended = tokio::select! {
+        status = child.wait() => Ok(status),
+        () = tokio::time::sleep(timeout.unwrap_or(Duration::MAX)) => Err(Exit::TimedOut),
+        _ = &mut stopped => Err(Exit::Killed),
+    };
+    // Signals fail once the group is gone, which is what they are for.
+    let mut exit = match ended {
+        Ok(Ok(status)) => exit_of(status),
+        Ok(Err(e)) => {
+            child.start_kill().ok();
+            cut.cancel();
+            return Err(e);
+        }
+        Err(exit) => {
+            child.signal(libc::SIGTERM).ok();
+            tokio::time::timeout(GRACE, child.wait()).await.ok();
+            child.start_kill().ok();
+            child.wait().await.ok();
+            exit
+        }
+    };
+    let mut pumps = futures::future::join_all(pumps);
+    if tokio::time::timeout(LEFTOVER, &mut pumps).await.is_err() {
+        child.start_kill().ok();
+        cut.cancel();
+        pumps.await;
+    }
+    if stopped.try_recv() == Ok(Some(())) {
+        exit = Exit::Killed;
+    }
+    Ok(exit)
+}
+
+/// Sends what `pipe` prints a line, or at most [`CHUNK`] bytes, at a time.
+/// Once nobody reads, it still drains the pipe so the command never blocks;
+/// once `cut`, it stops at the first read that would wait.
+async fn pump(
+    pipe: impl AsyncRead + Unpin,
+    chunk: fn(String) -> Chunk,
+    mut send: mpsc::Sender<Chunk>,
+    cut: CancellationToken,
+) {
+    let mut pipe = BufReader::new(pipe);
+    let mut line = Vec::new();
+    loop {
+        let read = tokio::select! {
+            biased;
+            read = pipe.fill_buf() => read.unwrap_or_default(),
+            () = cut.cancelled() => &[],
         };
-        Ok(Execution::new(output, exit, kill))
+        let done = read.is_empty();
+        let (len, ended) = read
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or((read.len(), false), |at| (at + 1, true));
+        line.extend_from_slice(&read[..len]);
+        pipe.consume(len);
+        if (ended || done || line.len() >= CHUNK) && !line.is_empty() {
+            // A line split for length keeps a character cut in two for the next piece.
+            let whole = match std::str::from_utf8(&line) {
+                Err(e) if !(ended || done) && e.error_len().is_none() => e.valid_up_to(),
+                _ => line.len(),
+            };
+            let text = String::from_utf8_lossy(&line[..whole]).into_owned();
+            line.drain(..whole);
+            send.send(chunk(text)).await.ok();
+        }
+        if done {
+            return;
+        }
     }
 }
 
@@ -313,6 +441,26 @@ fn exit_of(status: std::process::ExitStatus) -> Exit {
         (None, Some(signal)) => Exit::Signaled(signal),
         (None, None) => Exit::Code(-1),
     }
+}
+
+/// `bash` on the host's `PATH`, else `sh`, by absolute path; `/bin/sh`
+/// when neither is there.
+fn find_shell() -> PathBuf {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|dir| dir.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default();
+    ["bash", "sh"]
+        .into_iter()
+        .find_map(|name| {
+            dirs.iter()
+                .map(|dir| dir.join(name))
+                .find(|at| at.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
 }
 
 /// `path` as this machine names it.
