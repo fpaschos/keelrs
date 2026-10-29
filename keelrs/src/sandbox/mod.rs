@@ -281,9 +281,11 @@ pub trait SandboxBackend: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// The whole content of each of `paths` that is a regular file of at
-    /// most `limit` bytes, in order; `None` for any other. By default one
-    /// [`read`](Self::read) each.
+    /// The whole content of each of `paths`: one entry per path, in the
+    /// same order, so `paths[i]` pairs with the `i`th entry. `None` for a
+    /// path that is not a regular file of at most `limit` bytes, such as a
+    /// missing one. By default one [`read`](Self::read) each; a remote
+    /// backend reads them all in one round trip.
     async fn read_files(&self, paths: &[SandboxPath], limit: u64) -> Vec<Option<Vec<u8>>> {
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
@@ -391,9 +393,22 @@ impl Sandbox {
         self.race("read", self.backend.read(&path, limit)).await
     }
 
-    /// The whole content of each of `paths` that is a regular file of at
-    /// most `limit` bytes, in order; `None` for any other, and for one
-    /// outside the work dir.
+    /// The whole content of each of `paths`: one entry per path, in the
+    /// same order, so zipping `paths` with the result pairs each path with
+    /// its content. An entry is `None` when its path is not a regular file
+    /// of at most `limit` bytes (missing, a directory, too big) or leads
+    /// outside the work dir; [`read`](Self::read) that path to learn why.
+    /// `Err` only when the whole call fails, such as a closed sandbox.
+    ///
+    /// ```no_run
+    /// # async fn f(sb: keelrs::sandbox::Sandbox) -> keelrs::Result<()> {
+    /// let paths = ["a.rs", "b.rs"];
+    /// for (path, bytes) in paths.iter().zip(sb.read_files(&paths, 1 << 20).await?) {
+    ///     let Some(bytes) = bytes else { continue }; // unreadable: skip it
+    ///     println!("{path}: {} bytes", bytes.len());
+    /// }
+    /// # Ok(()) }
+    /// ```
     pub async fn read_files<P: AsRef<str>>(
         &self,
         paths: &[P],
