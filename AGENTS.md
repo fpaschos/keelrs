@@ -18,8 +18,10 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, shared by al
 
 Judge every API-shaping change on two metrics, before and after, and report both:
 
-- **Example readability**: `examples/` is what an end user reads first; each example stays short and plain, with the API doing the work.
-- **Lean code**: fewer lines and fewer concepts in `keelrs` and `examples/`; count the lines.
+- **Example readability**: `examples/` is what an end user reads first. Count each example's **boilerplate**: lines every user's program would repeat (adapters, wrappers, wiring), which belong in the API.
+- **Lean code**: count the code lines (`tokei keelrs/src` and `tokei examples`, the Code column) and the **public surface**: `pub` items in `keelrs` plus the `keelrs` names an example must use.
+
+When they conflict, examples win: move boilerplate into `keelrs` as long as its public surface grows less than the boilerplate shrinks.
 
 ## Cargo
 
