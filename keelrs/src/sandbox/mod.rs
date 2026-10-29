@@ -254,11 +254,10 @@ pub trait SandboxBackend: Send + Sync + 'static {
     /// Each of `paths` [`canonical`](Self::canonical), in order. By default
     /// one call each; a remote backend answers them in one round trip.
     async fn canonical_all(&self, paths: &[SandboxPath]) -> Vec<Result<SandboxPath>> {
-        let mut canonical = Vec::with_capacity(paths.len());
-        for path in paths {
-            canonical.push(self.canonical(path).await);
-        }
-        canonical
+        futures::stream::iter(paths)
+            .then(|path| self.canonical(path))
+            .collect()
+            .await
     }
 
     /// Starts `request`, whose `cwd` is absolute.

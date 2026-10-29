@@ -4,7 +4,8 @@
 //! nothing here touches the host.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -13,13 +14,8 @@ use ignore::overrides::{Override, OverrideBuilder};
 use super::{SandboxError, SandboxPath};
 use crate::Result;
 
-/// A directory's ignore file that wins over its `.gitignore`.
 const IGNORE: &str = ".ignore";
-
-/// A directory's git ignore file.
 const GITIGNORE: &str = ".gitignore";
-
-/// The work dir's own git excludes, below its `.gitignore`s.
 const EXCLUDE: &str = ".git/info/exclude";
 
 /// Which files [`Sandbox::list`](super::Sandbox::list) lists.
@@ -78,8 +74,8 @@ pub(super) fn glob(root: &SandboxPath, glob: &str) -> Result<Override> {
 }
 
 /// The rule files that may apply to `all`, the files under `root`: those
-/// among them, those in `root` and its parents down to `work_dir`, and the
-/// work dir's git excludes.
+/// among them, those in `root`'s parents down to `work_dir`, and the work
+/// dir's git excludes.
 pub(super) fn rule_files(
     all: &[SandboxPath],
     work_dir: &SandboxPath,
@@ -87,28 +83,21 @@ pub(super) fn rule_files(
 ) -> Vec<SandboxPath> {
     let mut files: Vec<SandboxPath> = all
         .iter()
-        .filter(|path| matches!(name(path.as_str()), IGNORE | GITIGNORE))
+        .filter(|path| matches!(name(path), Some(IGNORE | GITIGNORE)))
         .cloned()
         .collect();
-    for dir in ancestors(root.as_str()).filter(|dir| below(dir, work_dir.as_str()).is_some()) {
-        let dir = work_dir.join(dir);
+    let above = Path::new(root.as_str()).ancestors().skip(1);
+    for dir in above.take_while(|dir| dir.starts_with(work_dir.as_str())) {
+        let dir = work_dir.join(&dir.to_string_lossy());
         files.extend([dir.join(IGNORE), dir.join(GITIGNORE)]);
     }
     files.push(work_dir.join(EXCLUDE));
-    files.sort();
-    files.dedup();
     files
 }
 
-/// The ignore rules of a work dir, from its rule files.
-pub(super) struct Rules {
-    /// Each directory's `.ignore`, by the directory.
-    ignore: HashMap<String, Gitignore>,
-    /// Each directory's `.gitignore`, by the directory.
-    gitignore: HashMap<String, Gitignore>,
-    /// The work dir's git excludes.
-    exclude: Option<Gitignore>,
-}
+/// The ignore rules of a work dir: each directory's `.ignore`s, then
+/// `.gitignore`s, then the work dir's git excludes, by the directory.
+pub(super) struct Rules([HashMap<PathBuf, Gitignore>; 3]);
 
 impl Rules {
     /// The rules in `files`, whose content is `texts` (`None` when missing).
@@ -117,32 +106,24 @@ impl Rules {
         texts: Vec<Option<Vec<u8>>>,
         work_dir: &SandboxPath,
     ) -> Self {
-        let mut rules = Self {
-            ignore: HashMap::new(),
-            gitignore: HashMap::new(),
-            exclude: None,
-        };
+        let mut rules = Self(Default::default());
         let exclude = work_dir.join(EXCLUDE);
         for (file, text) in files.iter().zip(texts) {
             let Some(text) = text else { continue };
-            let file = file.as_str();
-            let dir = if file == exclude.as_str() {
-                work_dir.as_str()
-            } else {
-                parent(file)
+            let (rank, dir) = match name(file) {
+                _ if *file == exclude => (2, work_dir.as_str()),
+                Some(IGNORE) => (0, parent(file)),
+                _ => (1, parent(file)),
             };
             let mut builder = GitignoreBuilder::new(dir);
             // A line that is not a glob is skipped, as git skips it.
             for line in String::from_utf8_lossy(&text).lines() {
-                builder.add_line(Some(PathBuf::from(file)), line).ok();
+                builder
+                    .add_line(Some(PathBuf::from(file.as_str())), line)
+                    .ok();
             }
-            let Ok(matcher) = builder.build() else {
-                continue;
-            };
-            match name(file) {
-                _ if file == exclude.as_str() => rules.exclude = Some(matcher),
-                IGNORE => _ = rules.ignore.insert(dir.to_owned(), matcher),
-                _ => _ = rules.gitignore.insert(dir.to_owned(), matcher),
+            if let Ok(matcher) = builder.build() {
+                rules.0[rank].insert(PathBuf::from(dir), matcher);
             }
         }
         rules
@@ -158,64 +139,44 @@ impl Rules {
         listing: Listing,
         glob: Option<&Override>,
     ) -> bool {
-        let path = path.as_str();
-        let Some(rest) = below(path, root.as_str()) else {
+        let (path, root) = (Path::new(path.as_str()), Path::new(root.as_str()));
+        let Some(rest) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
             return false;
         };
-        let start = path.len() - rest.len();
         listing.keeps(rest)
             && glob.is_none_or(|glob| glob.matched(path, false).is_whitelist())
-            && !rest
-                .match_indices('/')
-                .any(|(at, _)| self.ignored(&path[..start + at], true))
+            && !path
+                .ancestors()
+                .skip(1)
+                .take_while(|dir| *dir != root)
+                .any(|dir| self.ignored(dir, true))
             && !self.ignored(path, false)
     }
 
-    /// Whether the rules leave `path` out: the deepest `.ignore` that
-    /// matches decides, else the deepest `.gitignore`, else the excludes.
-    fn ignored(&self, path: &str, is_dir: bool) -> bool {
-        let decide = |matcher: &Gitignore| match matcher.matched(path, is_dir) {
-            Match::None => None,
-            matched => Some(matched.is_ignore()),
-        };
-        let deepest = |rules: &HashMap<String, Gitignore>| {
-            ancestors(path)
-                .skip(1)
-                .find_map(|dir| rules.get(dir).and_then(decide))
-        };
-        deepest(&self.ignore)
-            .or_else(|| deepest(&self.gitignore))
-            .or_else(|| self.exclude.as_ref().and_then(decide))
+    /// Whether the rules leave `path` out: of the first rank with a match,
+    /// the deepest directory's rules decide.
+    fn ignored(&self, path: &Path, is_dir: bool) -> bool {
+        self.0
+            .iter()
+            .find_map(|rules| {
+                path.ancestors().skip(1).find_map(|dir| {
+                    match rules.get(dir)?.matched(path, is_dir) {
+                        Match::None => None,
+                        matched => Some(matched.is_ignore()),
+                    }
+                })
+            })
             .unwrap_or(false)
     }
 }
 
-/// `path`, then each of its parents up to `/`.
-fn ancestors(path: &str) -> impl Iterator<Item = &str> {
-    std::iter::successors(Some(path), |path| (*path != "/").then(|| parent(path)))
-}
-
-/// The directory `path` is in; `/` for `/`.
-fn parent(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(0) | None => "/",
-        Some(at) => &path[..at],
-    }
+/// The directory `path` is in.
+fn parent(path: &SandboxPath) -> &str {
+    let parent = Path::new(path.as_str()).parent();
+    parent.and_then(Path::to_str).unwrap_or("/")
 }
 
 /// The last part of `path`.
-fn name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-/// What of `path` lies below `dir`: empty when they are one, `None` when
-/// `path` is not in it.
-fn below<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
-    if dir == "/" {
-        return path.strip_prefix('/');
-    }
-    match path.strip_prefix(dir)? {
-        "" => Some(""),
-        rest => rest.strip_prefix('/'),
-    }
+fn name(path: &SandboxPath) -> Option<&str> {
+    Path::new(path.as_str()).file_name().and_then(OsStr::to_str)
 }
