@@ -14,6 +14,13 @@ Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-hu
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, shared by all crates. See `docs/agents/domain.md`.
 
+## Success metrics
+
+Judge every API-shaping change on two metrics, before and after, and report both:
+
+- **Example readability**: `examples/` is what an end user reads first; each example stays short and plain, with the API doing the work.
+- **Lean code**: fewer lines and fewer concepts in `keelrs` and `examples/`; count the lines.
+
 ## Cargo
 
 Change manifests and dependencies only through `cargo`, never by hand-editing `Cargo.toml` or `Cargo.lock`.
