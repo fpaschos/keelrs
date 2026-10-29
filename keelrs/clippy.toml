@@ -25,4 +25,5 @@ disallowed-types = [
   { path = "std::fs::File", reason = "go through the Sandbox" },
   { path = "std::fs::OpenOptions", reason = "go through the Sandbox" },
   { path = "std::process::Command", reason = "go through Sandbox::exec" },
+  { path = "tokio::process::Command", reason = "go through Sandbox::exec" },
 ]

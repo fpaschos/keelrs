@@ -286,6 +286,12 @@ pub trait SandboxBackend: Send + Sync + 'static {
         Capabilities::ALL
     }
 
+    /// The shell that runs [`Command::Shell`] lines, by its path in the
+    /// sandbox; `None` when the backend does not say.
+    fn shell(&self) -> Option<&SandboxPath> {
+        None
+    }
+
     /// Removes the sandbox and what runs in it; nothing by default.
     async fn close(&self) -> Result<()> {
         Ok(())
@@ -345,6 +351,13 @@ impl Sandbox {
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         self.backend.capabilities()
+    }
+
+    /// The shell that runs [`Command::Shell`] lines, as its backend names
+    /// it; `None` when the backend does not say.
+    #[must_use]
+    pub fn shell(&self) -> Option<&SandboxPath> {
+        self.backend.shell()
     }
 
     /// What `path` is; nothing there is [`Stat::Missing`].
@@ -508,7 +521,7 @@ impl fmt::Debug for Sandbox {
 /// What a command runs: a shell line or a program with its arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// A line for `sh -c`.
+    /// A line for the sandbox's [shell](Sandbox::shell), run with `-c`.
     Shell(String),
     /// A program, then its arguments.
     Argv(Vec<String>),
@@ -534,7 +547,7 @@ pub struct ExecRequest {
 }
 
 impl ExecRequest {
-    /// Runs `line` with `sh -c`.
+    /// Runs `line` with the sandbox's [shell](Sandbox::shell) and `-c`.
     #[must_use]
     pub fn shell(line: impl Into<String>) -> Self {
         Self::of(Command::Shell(line.into()))
@@ -673,8 +686,9 @@ impl Execution {
         }
     }
 
-    /// Waits for it to end, leaving any output unread.
+    /// Waits for it to end; output left unread is discarded.
     pub async fn wait(mut self) -> Result<Exit> {
+        self.output = futures::stream::empty().boxed();
         let exit = (&mut self.exit).await;
         self.kill = None;
         exit

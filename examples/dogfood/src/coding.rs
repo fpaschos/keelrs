@@ -98,7 +98,7 @@ where
     )
 }
 
-/// `shell` through the sandbox: `sh -c` in the work dir, stderr merged into stdout, and the
+/// `shell` through the sandbox: its shell's `-c` in the work dir, stderr merged into stdout, and the
 /// last [`SHOWN_LINES`] lines or [`SHOWN_BYTES`] of the output shown, with how it ended.
 fn shell() -> Tool {
     Tool::sandbox(
