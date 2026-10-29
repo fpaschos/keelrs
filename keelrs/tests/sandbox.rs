@@ -1,13 +1,19 @@
-//! The local sandbox, through the public API, on a temp dir.
+//! The local sandbox, through the public API, on a temp dir; and a backend
+//! of our own behind the same handle.
 
 #![allow(clippy::disallowed_methods)] // the test sets up its dir on the host
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use keelrs::Error;
-use keelrs::sandbox::{self, ContentHash, ExecRequest, Exit, Sandbox, SandboxError};
+use keelrs::sandbox::{
+    self, Capabilities, ContentHash, Contents, ExecRequest, Execution, Exit, Sandbox,
+    SandboxBackend, SandboxError, SandboxPath, Stat,
+};
+use keelrs::{Error, Result};
 
 /// A fresh dir under the system temp dir, removed on drop.
 struct TempDir(PathBuf);
@@ -169,4 +175,101 @@ async fn a_killed_command_ends_killed() {
     running.kill();
     assert_eq!(running.wait().await.unwrap(), Exit::Killed);
     assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+/// Files in memory: a backend with only the required methods, and no exec.
+#[derive(Default)]
+struct Memory(Mutex<HashMap<SandboxPath, Vec<u8>>>);
+
+#[keelrs::async_trait]
+impl SandboxBackend for Memory {
+    async fn stat(&self, path: &SandboxPath) -> Result<Stat> {
+        Ok(match self.0.lock().unwrap().get(path) {
+            Some(bytes) => Stat::File {
+                size: bytes.len() as u64,
+                read_only: false,
+                modified: None,
+            },
+            None => Stat::Missing,
+        })
+    }
+
+    async fn read(&self, path: &SandboxPath, limit: u64) -> Result<Contents> {
+        let files = self.0.lock().unwrap();
+        let bytes = files.get(path).ok_or_else(|| SandboxError::Io {
+            operation: "read",
+            path: path.to_string(),
+            kind: std::io::ErrorKind::NotFound,
+            message: "no such file".to_owned(),
+        })?;
+        Ok(Contents {
+            bytes: bytes.iter().copied().take(limit as usize).collect(),
+            size: bytes.len() as u64,
+        })
+    }
+
+    async fn write(&self, path: &SandboxPath, bytes: Vec<u8>) -> Result<()> {
+        self.0.lock().unwrap().insert(path.clone(), bytes);
+        Ok(())
+    }
+
+    async fn remove(&self, path: &SandboxPath, _recursive: bool) -> Result<()> {
+        self.0.lock().unwrap().remove(path);
+        Ok(())
+    }
+
+    async fn rename(&self, from: &SandboxPath, to: &SandboxPath) -> Result<()> {
+        let mut files = self.0.lock().unwrap();
+        if let Some(bytes) = files.remove(from) {
+            files.insert(to.clone(), bytes);
+        }
+        Ok(())
+    }
+
+    async fn list(&self, root: &SandboxPath, _glob: Option<&str>) -> Result<Vec<SandboxPath>> {
+        let files = self.0.lock().unwrap();
+        Ok(files
+            .keys()
+            .filter(|path| path.starts_with(root))
+            .cloned()
+            .collect())
+    }
+
+    async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> {
+        Ok(path.clone())
+    }
+
+    async fn exec(&self, _request: ExecRequest) -> Result<Execution> {
+        unreachable!("exec is not a capability")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            exec: false,
+            ..Capabilities::ALL
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_backend_of_our_own_gets_write_if_and_read_files_by_default() {
+    let sb = Sandbox::new(Memory::default(), SandboxPath::new("/work").unwrap());
+    sb.write("a.txt", b"one".to_vec()).await.unwrap();
+
+    let stale = sb
+        .write_if("a.txt", b"two".to_vec(), ContentHash::of(b"zero"))
+        .await
+        .unwrap();
+    assert_eq!(stale.map(|now| now.bytes), Some(b"one".to_vec()));
+    let fresh = sb
+        .write_if("a.txt", b"two".to_vec(), ContentHash::of(b"one"))
+        .await
+        .unwrap();
+    assert_eq!(fresh, None);
+
+    let files = sb
+        .read_files(&["a.txt", "missing.txt"], 1024)
+        .await
+        .unwrap();
+    assert_eq!(files, vec![Some(b"two".to_vec()), None]);
 }

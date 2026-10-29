@@ -21,10 +21,6 @@ use crate::{Agent, Error, Outcome, Result};
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
 const INBOX_CAPACITY: usize = 1024;
 
-/// Submission ids are unique across every instance, so a receipt read on the
-/// wrong instance is never mistaken for one of its own messages.
-static NEXT_SUBMISSION: AtomicU64 = AtomicU64::new(0);
-
 /// One conversation with an agent, addressed by an id.
 ///
 /// A handle to the instance's actor: clones reach the same instance.
@@ -60,7 +56,7 @@ impl AgentInstance {
     /// The message runs after those dispatched before it; a model or connect
     /// error shows up on [`read`](Self::read), not here.
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
-        let submission_id = SubmissionId(NEXT_SUBMISSION.fetch_add(1, Ordering::Relaxed));
+        let submission_id = SubmissionId::next();
         let command = Command::Dispatch {
             submission_id,
             text: message.into(),
@@ -192,9 +188,19 @@ impl InstanceActor {
     }
 }
 
-/// Identifies one dispatched message.
+/// Identifies one dispatched message, unique within this process.
+///
+/// Unique across every instance, so a receipt read on the wrong instance is
+/// never mistaken for one of its own messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubmissionId(u64);
+
+impl SubmissionId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 impl fmt::Display for SubmissionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

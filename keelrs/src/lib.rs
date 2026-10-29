@@ -19,6 +19,8 @@ mod event;
 mod tool;
 
 pub use agent::{Agent, AgentContext, AgentInstance, Receipt, Reply, SubmissionId};
+/// Implements a [`SandboxBackend`](sandbox::SandboxBackend) with `async fn`s.
+pub use async_trait::async_trait;
 pub use error::{Error, Outcome, Result};
 pub use model::{Model, Thinking};
 pub use runtime::{Init, Runtime};

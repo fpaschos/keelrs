@@ -104,3 +104,19 @@ async fn reading_a_receipt_on_another_instance_fails() {
     let result = runtime.init(&agent).id("b").unwrap().read(&receipt).await;
     assert!(matches!(result, Err(Error::SubmissionNotFound(id)) if id == receipt.submission_id()));
 }
+
+#[tokio::test]
+async fn fresh_gives_a_new_instance_with_a_uuid_v7_id_each_time() {
+    let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
+    let runtime = Runtime::start([agent.clone()]);
+    let a = runtime.init(&agent).fresh().unwrap();
+    let b = runtime.init(&agent).fresh().unwrap();
+    assert_ne!(a.id(), b.id());
+    for id in [a.id(), b.id()] {
+        assert_eq!(
+            uuid::Uuid::parse_str(id).unwrap().get_version_num(),
+            7,
+            "{id}"
+        );
+    }
+}
