@@ -4,16 +4,18 @@
 #![allow(clippy::disallowed_methods)] // the test sets up its dir on the host
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use keelrs::sandbox::{
-    self, Capabilities, Chunk, ContentHash, Contents, ExecRequest, Execution, Exit, Sandbox,
-    SandboxBackend, SandboxError, SandboxPath, Stat,
+    self, Capabilities, Chunk, ContentHash, Contents, ExecRequest, Execution, Exit, Listing,
+    Sandbox, SandboxBackend, SandboxError, SandboxPath, Stat,
 };
 use keelrs::{Error, Result};
+use rig_tools::workspace::{Local, Workspace as _};
 
 /// A fresh dir under the system temp dir, removed on drop.
 struct TempDir(PathBuf);
@@ -87,12 +89,80 @@ async fn a_path_out_of_the_work_dir_is_refused() {
             "{path}: {refused:?}"
         );
     }
+    std::fs::write(dir.0.join("inner/own.txt"), "yes").unwrap();
+    let read = sb
+        .read_files(
+            &["../secret.txt", "own.txt", "link.txt", "/etc/hosts"],
+            1024,
+        )
+        .await
+        .unwrap();
+    assert_eq!(read, [None, Some(b"yes".to_vec()), None, None]);
     let write = sb.write("../escaped.txt", b"x".to_vec()).await;
     assert!(matches!(
         write,
         Err(Error::Sandbox(SandboxError::OutsideWorkDir { .. }))
     ));
     assert!(!dir.0.join("escaped.txt").exists());
+}
+
+/// A project with every kind of file a listing leaves out or keeps.
+const PROJECT: [(&str, &str); 17] = [
+    (".git/info/exclude", "excluded.txt\n"),
+    (".gitignore", "*.log\nbuild/\n!keep.log\n"),
+    (".ignore", "!forced.log\n"),
+    (".env", "SECRET=1\n"),
+    (".github/ci.yml", "on: push\n"),
+    ("target/out.txt", "built\n"),
+    ("build/x.txt", "built\n"),
+    ("a.log", "log\n"),
+    ("keep.log", "log\n"),
+    ("forced.log", "log\n"),
+    ("excluded.txt", "x\n"),
+    ("src/main.rs", "fn main() {}\n"),
+    ("src/.gitignore", "gen.rs\n!b.log\n"),
+    ("src/gen.rs", "// generated\n"),
+    ("src/b.log", "log\n"),
+    ("src/inner/c.rs", "// c\n"),
+    ("src/inner/d.log", "log\n"),
+];
+
+#[tokio::test]
+async fn list_leaves_out_what_the_ignore_rules_do_as_rig_tools_lists_it() {
+    let dir = TempDir::new();
+    for (path, text) in PROJECT {
+        let at = dir.0.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, text).unwrap();
+    }
+    let sb = open(&dir).await;
+    for root in [".", "src"] {
+        for (listing, rig) in [
+            (Listing::Visible, rig_tools::workspace::Listing::Visible),
+            (Listing::Hidden, rig_tools::workspace::Listing::Hidden),
+        ] {
+            let mut listed: Vec<String> = sb
+                .list(root, None, listing)
+                .await
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            listed.sort();
+            let mut expected: Vec<String> = Local
+                .files(&dir.0.join(root), None, rig)
+                .unwrap()
+                .iter()
+                .map(|path| {
+                    SandboxPath::new(path.to_str().unwrap())
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            expected.sort();
+            assert_eq!(listed, expected, "{root} {listing:?}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -431,4 +501,126 @@ async fn a_backend_of_our_own_gets_write_if_and_read_files_by_default() {
         .await
         .unwrap();
     assert_eq!(files, vec![Some(b"two".to_vec()), None]);
+}
+
+/// The backend calls a sandbox made, by name.
+type Calls = Arc<Mutex<HashMap<&'static str, usize>>>;
+
+/// [`Memory`], counting the backend calls.
+struct Counting {
+    files: Memory,
+    calls: Calls,
+}
+
+impl Counting {
+    fn count(&self, call: &'static str) {
+        *self.calls.lock().unwrap().entry(call).or_default() += 1;
+    }
+}
+
+#[keelrs::async_trait]
+impl SandboxBackend for Counting {
+    async fn stat(&self, path: &SandboxPath) -> Result<Stat> {
+        self.count("stat");
+        self.files.stat(path).await
+    }
+
+    async fn read(&self, path: &SandboxPath, limit: u64) -> Result<Contents> {
+        self.count("read");
+        self.files.read(path, limit).await
+    }
+
+    async fn write(&self, path: &SandboxPath, bytes: Vec<u8>) -> Result<()> {
+        self.count("write");
+        self.files.write(path, bytes).await
+    }
+
+    async fn remove(&self, path: &SandboxPath, recursive: bool) -> Result<()> {
+        self.count("remove");
+        self.files.remove(path, recursive).await
+    }
+
+    async fn rename(&self, from: &SandboxPath, to: &SandboxPath) -> Result<()> {
+        self.count("rename");
+        self.files.rename(from, to).await
+    }
+
+    async fn list(&self, root: &SandboxPath, glob: Option<&str>) -> Result<Vec<SandboxPath>> {
+        self.count("list");
+        self.files.list(root, glob).await
+    }
+
+    async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> {
+        self.count("canonical");
+        self.files.canonical(path).await
+    }
+
+    async fn canonical_all(&self, paths: &[SandboxPath]) -> Vec<Result<SandboxPath>> {
+        self.count("canonical_all");
+        self.files.canonical_all(paths).await
+    }
+
+    async fn read_files(&self, paths: &[SandboxPath], limit: u64) -> Vec<Option<Vec<u8>>> {
+        self.count("read_files");
+        self.files.read_files(paths, limit).await
+    }
+
+    async fn exec(&self, request: ExecRequest) -> Result<Execution> {
+        self.files.exec(request).await
+    }
+}
+
+/// The backend calls made during `work`, by name.
+async fn counted(calls: &Calls, work: impl Future<Output = ()>) -> Vec<(&'static str, usize)> {
+    calls.lock().unwrap().clear();
+    work.await;
+    let mut made: Vec<_> = calls.lock().unwrap().drain().collect();
+    made.sort_unstable();
+    made
+}
+
+#[tokio::test]
+async fn an_operation_resolves_its_path_once_and_the_work_dir_once_per_handle() {
+    let calls = Calls::default();
+    let counting = Counting {
+        files: Memory::default(),
+        calls: calls.clone(),
+    };
+    let sb = Sandbox::new(counting, SandboxPath::new("/work").unwrap());
+
+    let first = counted(&calls, async {
+        sb.write("a.txt", b"one".to_vec()).await.unwrap();
+    });
+    assert_eq!(first.await, [("canonical", 2), ("write", 1)]);
+
+    let clone = sb.clone();
+    let read = counted(&calls, async {
+        clone.read("a.txt", 1024).await.unwrap();
+    });
+    assert_eq!(read.await, [("canonical", 1), ("read", 1)]);
+    let stat = counted(&calls, async {
+        sb.stat("a.txt").await.unwrap();
+    });
+    assert_eq!(stat.await, [("canonical", 1), ("stat", 1)]);
+    let canonical = counted(&calls, async {
+        sb.canonical("a.txt").await.unwrap();
+    });
+    assert_eq!(canonical.await, [("canonical", 1)]);
+    let write = counted(&calls, async {
+        sb.write("b.txt", b"two".to_vec()).await.unwrap();
+    });
+    assert_eq!(write.await, [("canonical", 1), ("write", 1)]);
+
+    let read_files = counted(&calls, async {
+        sb.read_files(&["a.txt", "b.txt", "c.txt"], 1024)
+            .await
+            .unwrap();
+    });
+    assert_eq!(read_files.await, [("canonical_all", 1), ("read_files", 1)]);
+
+    let narrowed = sb.work_dir("sub");
+    let fresh = counted(&calls, async {
+        narrowed.stat("a.txt").await.unwrap();
+    });
+    assert_eq!(fresh.await, [("canonical", 2), ("stat", 1)]);
 }

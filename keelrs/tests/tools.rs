@@ -71,7 +71,9 @@ fn listing() -> Tool {
     Tool::sandbox(
         "list_files",
         "The files in the work dir.",
-        async |_: ToolCall<()>, sb: Sandbox| sb.list(".", None).await,
+        async |_: ToolCall<()>, sb: Sandbox| {
+            sb.list(".", None, keelrs::sandbox::Listing::Visible).await
+        },
     )
 }
 
