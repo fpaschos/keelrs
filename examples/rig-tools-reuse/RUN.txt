@@ -1,0 +1,253 @@
+
+=== read whole   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | pub fn greet(name: &str) -> String {
+  |     format!(“Hello, {name}”)
+  | }
+  | 
+  | pub fn twice(x: i32) -> i32 {
+  |     x * 2
+  | }
+  | 
+  | pub fn thrice(x: i32) -> i32 {
+  |     x * 3
+  | }
+
+=== read lines 5..2   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | pub fn twice(x: i32) -> i32 {
+  |     x * 2
+  | [5 more lines; read on with offset 7]
+
+=== read missing   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | ERROR: <dir>/nope.rs: no such file
+
+=== read outside work dir   [backend calls: 1 = {"canonical": 1}]
+DIFFER
+--- rig
+  | ERROR: ../ours/src/lib.rs is outside <dir>, the only directory this tool works in
+--- wrapped
+  | ERROR: `/private/var/folders/dv/p57hr92j6pd9p44qkfhvjpl00000gn/T/PROTOTYPE-rig-tools-reuse-28513/rig/src/lib.rs` is outside the work dir `<dir>`
+
+=== read CRLF   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | a
+  | b
+  | c
+
+=== write create   [backend calls: 8 = {"canonical": 6, "read": 1, "write": 1}]
+SAME
+  | Created new/a.txt.
+
+=== write replace   [backend calls: 8 = {"canonical": 6, "read": 1, "write": 1}]
+SAME
+  | Replaced new/a.txt, which had 2 lines.
+
+=== edit exact (seen whole: write_if path)   [backend calls: 5 = {"canonical": 4, "write_if": 1}]
+SAME
+  | Edited src/lib.rs: line 6.
+  | [lines 3-9]
+  | }
+  | 
+  | pub fn twice(x: i32) -> i32 {
+  |     x + x
+  | }
+  | 
+  | pub fn thrice(x: i32) -> i32 {
+
+=== edit fuzzy quotes   [backend calls: 5 = {"canonical": 4, "write_if": 1}]
+SAME
+  | Edited src/lib.rs: line 2.
+  | Note: `old_text` matched only after evening out trailing whitespace and quote, dash or space characters; copy text exactly next time
+  | [lines 1-5]
+  | pub fn greet(name: &str) -> String {
+  |     format!("Hi, {name}")
+  | }
+  | 
+  | pub fn twice(x: i32) -> i32 {
+
+=== edit ambiguous   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | ERROR: `old_text` matches 3 places, starting at lines 1, 5, 9; add the lines around the one to change so it matches once, or set `replace_all` to change every one. `<dir>/src/lib.rs` was not changed; fix the edit and send it again.
+
+=== edit not found   [backend calls: 5 = {"canonical": 4, "read": 1}]
+SAME
+  | ERROR: `old_text` was not found, not even ignoring trailing whitespace, and nothing in the file is close to it; check the path and the text. `<dir>/src/lib.rs` was not changed; fix the edit and send it again.
+
+=== edit replace_all   [backend calls: 5 = {"canonical": 4, "write_if": 1}]
+SAME
+  | Edited src/lib.rs: 4 replacements, lines 5, 9.
+  | [lines 2-11]
+  |     format!("Hi, {name}")
+  | }
+  | 
+  | pub fn twice(x: i64) -> i64 {
+  |     x + x
+  | }
+  | 
+  | pub fn thrice(x: i64) -> i64 {
+  |     x * 3
+  | }
+
+=== edit CRLF kept   [backend calls: 5 = {"canonical": 4, "write_if": 1}]
+SAME
+  | Edited crlf.txt: line 2.
+  | [lines 1-3]
+  | a
+  | B
+  | c
+
+=== edit stale, unrelated change (write_if refuses, falls back)   [backend calls: 8 = {"canonical": 6, "write": 1, "write_if": 1}]
+SAME
+  | Edited src/lib.rs: line 10.
+  | [lines 7-12]
+  | }
+  | 
+  | pub fn thrice(x: i64) -> i64 {
+  |     x + x + x
+  | }
+  | // someone else
+
+=== edit stale, target text changed   [backend calls: 5 = {"canonical": 4, "write_if": 1}]
+DIFFER
+--- rig
+  | ERROR: `old_text` was not found, not even ignoring trailing whitespace: `<dir>/src/lib.rs` changed since it was last read, so read it again and copy `old_text` from what it holds now. `<dir>/src/lib.rs` was not changed; fix the edit and send it again.
+--- wrapped
+  | ERROR: `old_text` was not found, not even ignoring trailing whitespace; copy it from the closest text in the file, shown below. `<dir>/src/lib.rs` was not changed; fix the edit and send it again.
+  | The closest text to the `old_text` is line 6:
+  |     x + x (`<dir>/src/lib.rs` changed since it was last read, so read it again)
+
+=== file after all edits   [backend calls: 0 = {}]
+SAME
+  | pub fn greet(name: &str) -> String {
+  |     format!("Hi, {name}")
+  | }
+  | 
+  | pub fn twice(x: i64) -> i64 {
+  |     x + x
+  | }
+  | 
+  | pub fn thrice(x: i64) -> i64 {
+  |     3 * x
+  | }
+  | // someone else
+
+=== search fn   [backend calls: 22 = {"canonical": 20, "list": 1, "read_files": 1}]
+SAME
+  | src/lib.rs:1: pub fn greet(name: &str) -> String {
+  | src/lib.rs:5: pub fn twice(x: i64) -> i64 {
+  | src/lib.rs:9: pub fn thrice(x: i64) -> i64 {
+  | src/main.rs:1: fn main() {
+
+=== search 'secret' (gitignored, hidden, target files hold it)   [backend calls: 22 = {"canonical": 20, "list": 1, "read_files": 1}]
+DIFFER
+--- rig
+  | No matches.
+--- wrapped
+  | gen/out.txt:1: secret generated
+
+=== search hidden   [backend calls: 28 = {"canonical": 26, "list": 1, "read_files": 1}]
+DIFFER
+--- rig
+  | .hidden/notes.txt:1: secret hidden
+  | target/debug/x.txt:1: secret target
+--- wrapped
+  | .hidden/notes.txt:1: secret hidden
+  | target/debug/x.txt:1: secret target
+  | gen/out.txt:1: secret generated
+
+=== search files, empty pattern   [backend calls: 7 = {"canonical": 6, "list": 1}]
+DIFFER
+--- rig
+  | docs/a/b/deep.md
+  | README.md
+  | new/a.txt
+  | crlf.txt
+  | src/lib.rs
+  | src/main.rs
+--- wrapped
+  | docs/a/b/deep.md
+  | gen/out.txt
+  | README.md
+  | new/a.txt
+  | crlf.txt
+  | src/lib.rs
+  | src/main.rs
+
+=== search in path + glob   [backend calls: 12 = {"canonical": 10, "list": 1, "read_files": 1}]
+SAME
+  | src/lib.rs:5: pub fn twice(x: i64) -> i64 {
+  | src/lib.rs:6:     x + x
+  | src/lib.rs:9: pub fn thrice(x: i64) -> i64 {
+  | src/lib.rs:10:     3 * x
+  | src/main.rs:2:     println!("{}", x());
+
+=== list   [backend calls: 5 = {"canonical": 4, "list": 1}]
+DIFFER
+--- rig
+  | README.md
+  | crlf.txt
+  | docs/a/b/deep.md
+  | new/a.txt
+  | src/lib.rs
+  | src/main.rs
+--- wrapped
+  | README.md
+  | crlf.txt
+  | docs/a/b/deep.md
+  | gen/out.txt
+  | new/a.txt
+  | src/lib.rs
+  | src/main.rs
+
+=== list depth 1   [backend calls: 5 = {"canonical": 4, "list": 1}]
+DIFFER
+--- rig
+  | README.md
+  | crlf.txt
+  | docs/
+  | new/
+  | src/
+--- wrapped
+  | README.md
+  | crlf.txt
+  | docs/
+  | gen/
+  | new/
+  | src/
+
+=== list hidden   [backend calls: 5 = {"canonical": 4, "list": 1}]
+DIFFER
+--- rig
+  | .gitignore
+  | .hidden/notes.txt
+  | README.md
+  | crlf.txt
+  | docs/a/b/deep.md
+  | new/a.txt
+  | src/lib.rs
+  | src/main.rs
+  | target/debug/x.txt
+--- wrapped
+  | .gitignore
+  | .hidden/notes.txt
+  | README.md
+  | crlf.txt
+  | docs/a/b/deep.md
+  | gen/out.txt
+  | new/a.txt
+  | src/lib.rs
+  | src/main.rs
+  | target/debug/x.txt
+
+=== SUMMARY: 16 same, 8 differ: [
+    "read outside work dir",
+    "edit stale, target text changed",
+    "search 'secret' (gitignored, hidden, target files hold it)",
+    "search hidden",
+    "search files, empty pattern",
+    "list",
+    "list depth 1",
+    "list hidden",
+]

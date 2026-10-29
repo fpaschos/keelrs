@@ -1,0 +1,17 @@
+[package]
+name = "prototype-rig-tools-reuse"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+keelrs.workspace = true
+rig-core.workspace = true
+rig-tools.workspace = true
+schemars.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

@@ -1362,6 +1362,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prototype-rig-tools-reuse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "keelrs",
+ "rig-core",
+ "rig-tools",
+ "schemars",
+ "tokio",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
