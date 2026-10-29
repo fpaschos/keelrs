@@ -492,11 +492,10 @@ impl Sandbox {
         operation: &'static str,
         work: impl Future<Output = Result<T>>,
     ) -> Result<T> {
-        tokio::select! {
-            biased;
-            () = self.closed.cancelled() => Err(SandboxError::Died { operation }.into()),
-            done = work => done,
-        }
+        self.closed
+            .run_until_cancelled(work)
+            .await
+            .unwrap_or_else(|| Err(SandboxError::Died { operation }.into()))
     }
 }
 
