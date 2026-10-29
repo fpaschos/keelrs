@@ -59,6 +59,12 @@ impl SandboxPath {
     }
 }
 
+impl AsRef<str> for SandboxPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl fmt::Display for SandboxPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)

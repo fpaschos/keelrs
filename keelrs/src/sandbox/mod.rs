@@ -45,18 +45,24 @@ use std::time::{Duration, SystemTime};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{FutureExt as _, Stream, StreamExt as _};
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use crate::Result;
 
+mod listing;
 mod local;
 mod path;
 
+pub use listing::Listing;
 pub use local::{LocalBuilder, local};
 pub use path::SandboxPath;
 
 /// How much of each stream [`Execution::run`] keeps: the last 64 MiB.
 const KEPT_OUTPUT: usize = 64 * 1024 * 1024;
+
+/// The largest ignore file [`Sandbox::list`] reads: 1 MiB.
+const RULES_LIMIT: u64 = 1024 * 1024;
 
 /// What a path is, its links followed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,6 +251,16 @@ pub trait SandboxBackend: Send + Sync + 'static {
     /// one file come out alike; a missing tail is kept as it is.
     async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath>;
 
+    /// Each of `paths` [`canonical`](Self::canonical), in order. By default
+    /// one call each; a remote backend answers them in one round trip.
+    async fn canonical_all(&self, paths: &[SandboxPath]) -> Vec<Result<SandboxPath>> {
+        let mut canonical = Vec::with_capacity(paths.len());
+        for path in paths {
+            canonical.push(self.canonical(path).await);
+        }
+        canonical
+    }
+
     /// Starts `request`, whose `cwd` is absolute.
     async fn exec(&self, request: ExecRequest) -> Result<Execution>;
 
@@ -310,6 +326,8 @@ pub trait SandboxBackend: Send + Sync + 'static {
 pub struct Sandbox {
     id: SandboxId,
     work_dir: SandboxPath,
+    /// The work dir canonical, resolved on first use and shared by clones.
+    real_work_dir: Arc<OnceCell<SandboxPath>>,
     backend: Arc<dyn SandboxBackend>,
     closed: CancellationToken,
 }
@@ -321,6 +339,7 @@ impl Sandbox {
         Self {
             id: SandboxId::next(),
             work_dir: root,
+            real_work_dir: Arc::default(),
             backend: Arc::new(backend),
             closed: CancellationToken::new(),
         }
@@ -343,6 +362,7 @@ impl Sandbox {
     pub fn work_dir(&self, dir: impl AsRef<str>) -> Self {
         Self {
             work_dir: self.work_dir.join(dir.as_ref()),
+            real_work_dir: Arc::default(),
             ..self.clone()
         }
     }
@@ -380,10 +400,18 @@ impl Sandbox {
         paths: &[P],
         limit: u64,
     ) -> Result<Vec<Option<Vec<u8>>>> {
-        let mut placed = Vec::with_capacity(paths.len());
-        for path in paths {
-            placed.push(self.place(path.as_ref()).await.ok());
-        }
+        let joined: Vec<SandboxPath> = paths
+            .iter()
+            .map(|path| self.work_dir.join(path.as_ref()))
+            .collect();
+        let canonical = self
+            .race("canonical", self.backend.canonical_all(&joined).map(Ok))
+            .await?;
+        let work_dir = self.real_work_dir().await?;
+        let placed: Vec<Option<SandboxPath>> = canonical
+            .into_iter()
+            .map(|path| path.ok().filter(|path| path.starts_with(&work_dir)))
+            .collect();
         let inside: Vec<SandboxPath> = placed.iter().flatten().cloned().collect();
         let mut read = self
             .race(
@@ -437,15 +465,36 @@ impl Sandbox {
         self.race("rename", self.backend.rename(&from, &to)).await
     }
 
-    /// The regular files under `root`, only those matching `glob` (such as
-    /// `*.rs`) when it is given.
+    /// The regular files under `root` that `listing` keeps, only those
+    /// matching `glob` (such as `*.rs`) when it is given. A glob naming a
+    /// hidden file or directory, such as `.github/**`, lists
+    /// [`Hidden`](Listing::Hidden) for [`Visible`](Listing::Visible).
+    ///
+    /// The ignore rules are those in the work dir, read through the sandbox:
+    /// each directory's `.gitignore` and `.ignore` (which wins), the deepest
+    /// first, then `.git/info/exclude`. A glob never brings back a file
+    /// they leave out.
     pub async fn list(
         &self,
         root: impl AsRef<str>,
         glob: Option<&str>,
+        listing: Listing,
     ) -> Result<Vec<SandboxPath>> {
         let root = self.place(root.as_ref()).await?;
-        self.race("list", self.backend.list(&root, glob)).await
+        let listing = listing.for_glob(glob);
+        if listing == Listing::All {
+            return self.race("list", self.backend.list(&root, glob)).await;
+        }
+        let glob = glob.map(|glob| listing::glob(&root, glob)).transpose()?;
+        let all = self.race("list", self.backend.list(&root, None)).await?;
+        let work_dir = self.real_work_dir().await?;
+        let files = listing::rule_files(&all, &work_dir, &root);
+        let texts = self.read_files(&files, RULES_LIMIT).await?;
+        let rules = listing::Rules::new(&files, texts, &work_dir);
+        Ok(all
+            .into_iter()
+            .filter(|path| rules.keeps(path, &root, listing, glob.as_ref()))
+            .collect())
     }
 
     /// `path` from the work dir, its links followed and `..` folded; refused
@@ -476,14 +525,20 @@ impl Sandbox {
         let path = self
             .race("canonical", self.backend.canonical(&joined))
             .await?;
-        let work_dir = self
-            .race("canonical", self.backend.canonical(&self.work_dir))
-            .await?;
+        let work_dir = self.real_work_dir().await?;
         if path.starts_with(&work_dir) {
             Ok(path)
         } else {
             Err(SandboxError::OutsideWorkDir { path, work_dir }.into())
         }
+    }
+
+    /// The work dir, canonical.
+    async fn real_work_dir(&self) -> Result<SandboxPath> {
+        self.real_work_dir
+            .get_or_try_init(|| self.race("canonical", self.backend.canonical(&self.work_dir)))
+            .await
+            .cloned()
     }
 
     /// `operation`, or [`SandboxError::Died`] once the sandbox is closed.
