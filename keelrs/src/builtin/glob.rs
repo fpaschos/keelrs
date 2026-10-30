@@ -3,10 +3,11 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use rig_core::tool::ToolExecutionError;
 use rig_tools::MAX_BYTES;
 
 use super::{Out, fail, fit, listing, place, relative};
-use crate::sandbox::Sandbox;
+use crate::sandbox::{Sandbox, Stat};
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -60,7 +61,13 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
         .collect();
     paths.sort();
     let total = paths.len();
+    // Only an empty listing asks whether the path is there at all.
     if total == 0 {
+        if sb.stat(root.as_str()).await.map_err(|e| fail(sent, e))? == Stat::Missing {
+            return Err(ToolExecutionError::not_found(format!(
+                "{sent}: no such file or directory"
+            )));
+        }
         return Ok("No files found.".to_owned());
     }
     paths.truncate(MAX_PATHS);

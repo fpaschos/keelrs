@@ -527,6 +527,15 @@ async fn glob_stops_at_1000_paths() {
 }
 
 #[tokio::test]
+async fn glob_of_a_missing_path_says_it_is_missing() {
+    let fx = Fixture::new().await;
+    assert_eq!(
+        fx.glob("*.rs", Some("nope"), false).await,
+        "Err: nope: no such file or directory"
+    );
+}
+
+#[tokio::test]
 async fn glob_stops_at_50_kb_of_paths() {
     let fx = Fixture::new().await;
     let deep = "d".repeat(100);
