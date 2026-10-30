@@ -771,7 +771,7 @@ async fn only_keeps_the_named_builtins_in_their_own_order() {
 async fn only_with_no_names_keeps_only_the_declared_tools() {
     let (_folder, sb) = sandboxed().await;
     let agent = agent(move |cx| {
-        cx.use_sandbox(sb.clone()).only::<[&str; 0]>([]);
+        cx.use_sandbox(sb.clone()).only([]);
         cx.use_tool(clock());
     });
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
@@ -807,7 +807,7 @@ async fn a_builtin_name_is_reserved_with_or_without_a_sandbox_or_only() {
             move |cx| cx.use_tool(mine.clone())
         });
         let left_out = agent(move |cx| {
-            cx.use_sandbox(sb.clone()).only::<[&str; 0]>([]);
+            cx.use_sandbox(sb.clone()).only([]);
             cx.use_tool(mine.clone());
         });
         for agent in [without, left_out] {

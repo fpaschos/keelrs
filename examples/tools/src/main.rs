@@ -29,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
 
     let assistant = Agent::new("assistant", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sandbox.clone());
+        // None of keelrs's built-in tools: `pwd` is this example's one sandboxed tool.
+        cx.use_sandbox(sandbox.clone()).only([]);
         cx.use_tool(time::current_time());
         cx.use_tool(weather::get_weather(http.clone()));
         cx.use_tool(pwd::pwd());

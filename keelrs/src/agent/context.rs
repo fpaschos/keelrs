@@ -40,12 +40,8 @@ impl BuiltinTools<'_> {
     /// An unknown name settles the dispatch as
     /// [`Outcome::Failed`](crate::Outcome::Failed). The names left out stay
     /// reserved: no declared tool may take them.
-    pub fn only<I>(self, names: I)
-    where
-        I: IntoIterator,
-        I::Item: Into<String>,
-    {
-        *self.only = Some(names.into_iter().map(Into::into).collect());
+    pub fn only<'n>(self, names: impl IntoIterator<Item = &'n str>) {
+        *self.only = Some(names.into_iter().map(str::to_owned).collect());
     }
 }
 
