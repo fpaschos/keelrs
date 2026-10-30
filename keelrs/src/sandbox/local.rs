@@ -387,7 +387,8 @@ async fn drive(
     Ok(exit)
 }
 
-/// Sends what `pipe` prints a line, or at most [`CHUNK`] bytes, at a time.
+/// Sends what `pipe` prints in whole lines, all those one read brings, or
+/// at most [`CHUNK`] bytes of a longer line, at a time.
 /// Once nobody reads, it still drains the pipe so the command never blocks;
 /// once `cut`, it stops at the first read that would wait.
 async fn pump(
@@ -407,7 +408,7 @@ async fn pump(
         let done = read.is_empty();
         let (len, ended) = read
             .iter()
-            .position(|&byte| byte == b'\n')
+            .rposition(|&byte| byte == b'\n')
             .map_or((read.len(), false), |at| (at + 1, true));
         line.extend_from_slice(&read[..len]);
         pipe.consume(len);

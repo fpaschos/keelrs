@@ -406,6 +406,23 @@ async fn a_long_line_is_split_between_characters() {
     assert_eq!(ran.stdout, format!("a{}", "\u{e9}".repeat(100_000)));
 }
 
+#[tokio::test]
+async fn run_keeps_the_last_64_mib_of_a_larger_output_without_slowing_down() {
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
+    let run = sb
+        .exec(ExecRequest::shell("yes | head -c 80000000"))
+        .await
+        .unwrap()
+        .run();
+    let ran = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("80 MB of output took over 30s")
+        .unwrap();
+    assert_eq!(ran.stdout.len(), 64 * 1024 * 1024);
+    assert!(ran.stdout == "y\n".repeat(32 * 1024 * 1024));
+}
+
 /// Files in memory: a backend with only the required methods, and no exec.
 #[derive(Default)]
 struct Memory(Mutex<HashMap<SandboxPath, Vec<u8>>>);
