@@ -66,8 +66,8 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
         Exit::Code(code) => format!("exit code {code}"),
         Exit::Signaled(signal) => format!("ended by signal {signal}"),
         Exit::TimedOut => format!(
-            "timed out after {:?} and was stopped",
-            timeout.unwrap_or_default()
+            "timed out after {}s and was stopped",
+            args.timeout.unwrap_or_default()
         ),
         Exit::Killed => "killed".to_owned(),
     };

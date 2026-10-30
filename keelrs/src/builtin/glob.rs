@@ -42,9 +42,10 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
     let root = place(sb, shown).await?;
     let work_dir = place(sb, ".").await?;
     // Anchored at the root, so `*.md` is a path glob, not a name at any depth.
-    let pattern = match args.pattern.strip_prefix('/') {
-        Some(_) => args.pattern.clone(),
-        None => format!("/{}", args.pattern),
+    let pattern = args.pattern.trim_start_matches("./");
+    let pattern = match pattern.strip_prefix('/') {
+        Some(_) => pattern.to_owned(),
+        None => format!("/{pattern}"),
     };
     let listed = sb
         .list(root.as_str(), Some(&pattern), listing(args.hidden))

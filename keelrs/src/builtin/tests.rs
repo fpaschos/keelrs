@@ -453,6 +453,10 @@ async fn glob_is_a_path_glob_from_the_searched_directory() {
         fx.glob("*.rs", Some("src"), false).await,
         "src/lib.rs\nsrc/main.rs"
     );
+    assert_eq!(
+        fx.glob("./src/*", None, false).await,
+        "src/lib.rs\nsrc/main.rs"
+    );
 }
 
 #[tokio::test]
@@ -634,6 +638,10 @@ async fn bash_past_its_timeout_is_stopped() {
     assert_eq!(
         fx.bash("echo started; sleep 5", Some(1)).await,
         "started\n[timed out after 1s and was stopped]"
+    );
+    assert_eq!(
+        fx.bash("sleep 1", Some(0)).await,
+        "[timed out after 0s and was stopped]"
     );
 }
 
