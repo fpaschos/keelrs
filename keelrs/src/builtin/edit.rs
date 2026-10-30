@@ -9,7 +9,7 @@ use rig_tools::{Seen, clip};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, key, not_text, place, read_text};
+use super::{Out, fail, key, place, read_text, text_of};
 use crate::sandbox::{ContentHash, Sandbox};
 use crate::{Tool, ToolCall};
 
@@ -73,7 +73,7 @@ pub(crate) async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
             .await
         {
             Ok(None) => return Ok(reply(seen, &key, sent, edits.len(), &applied)),
-            Ok(Some(now)) => held = Some(String::from_utf8(now.bytes).map_err(|_| not_text(sent))?),
+            Ok(Some(now)) => held = Some(text_of(now, sent)?),
             Err(e) => {
                 seen.forget(&key);
                 return Err(fail(sent, e));

@@ -17,7 +17,7 @@ use rig_core::tool::ToolExecutionError;
 use rig_tools::{MAX_FILE_BYTES, Seen};
 
 use crate::Tool;
-use crate::sandbox::{Listing, Sandbox, SandboxError, SandboxId, SandboxPath};
+use crate::sandbox::{Contents, Listing, Sandbox, SandboxError, SandboxId, SandboxPath};
 
 mod bash;
 mod edit;
@@ -110,6 +110,12 @@ async fn read_text(
         .read(path.as_str(), MAX_FILE_BYTES + 1)
         .await
         .map_err(|e| fail(sent, e))?;
+    text_of(contents, sent)
+}
+
+/// `contents` as the whole UTF-8 text of the file `sent`; refused when
+/// that file is over [`MAX_FILE_BYTES`], so `contents` holds only part of it.
+fn text_of(contents: Contents, sent: &str) -> Result<String, ToolExecutionError> {
     if contents.size > MAX_FILE_BYTES {
         return Err(ToolExecutionError::invalid_args(format!(
             "{sent} is larger than {} MB",

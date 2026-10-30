@@ -345,6 +345,20 @@ async fn edit_of_text_changed_since_it_was_read_asks_for_a_new_read() {
     );
 }
 
+#[tokio::test]
+async fn edit_of_a_file_grown_past_16_mb_since_it_was_read_is_refused_and_leaves_it_whole() {
+    let fx = Fixture::new().await;
+    fx.put("big.txt", "keep\n");
+    fx.read("big.txt", None, None).await;
+    let grown = format!("keep\n{}", "x\n".repeat(9 * 1024 * 1024));
+    fx.put("big.txt", &grown);
+    assert_eq!(
+        fx.edit("big.txt", &[("keep", "kept", false)]).await,
+        "Err: big.txt is larger than 16 MB"
+    );
+    assert_eq!(fx.get("big.txt").len(), grown.len());
+}
+
 // delete and move
 
 /// What an `edit` of text not in `path` says when `path` counts as read.
