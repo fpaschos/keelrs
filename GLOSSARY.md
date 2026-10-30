@@ -57,6 +57,10 @@ _Avoid_: Local tool, unsafe tool
 A tool that acts only through the sandbox its turn declares.
 _Avoid_: Harness tool, remote tool
 
+**Built-in tool**:
+A sandboxed tool that keelrs ships (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `delete`, `move`). A turn that declares a sandbox gets all of them unless it narrows them with `only`, and their names stay reserved even when a tool is left out.
+_Avoid_: Default tool, core tool, harness tool
+
 **Sandbox**:
 Where sandboxed tools read files and run commands: this machine, or a container, microVM or remote host. The application owns it and may share one between many agents; the agent itself always runs outside it.
 _Avoid_: Workspace, environment, box
