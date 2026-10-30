@@ -847,6 +847,25 @@ src/lib.rs-11- }"
 }
 
 #[tokio::test]
+async fn grep_names_the_files_it_could_not_search() {
+    let fx = Fixture::new().await;
+    fx.put("a.txt", "needle\n");
+    fs::write(fx.dir.join("b.bin"), b"needle \xff\n").unwrap();
+    assert_eq!(
+        fx.grep("needle", |_| {}).await,
+        "a.txt:1: needle\n[not searched, over 16 MB, not UTF-8 or unreadable: b.bin]"
+    );
+    for n in 0..6 {
+        fs::write(fx.dir.join(format!("c{n}.bin")), b"\xff").unwrap();
+    }
+    assert_eq!(
+        fx.grep("haystack", |_| {}).await,
+        "No matches.\n[not searched, over 16 MB, not UTF-8 or unreadable: \
+         b.bin, c0.bin, c1.bin, c2.bin, c3.bin, and 2 more]"
+    );
+}
+
+#[tokio::test]
 async fn grep_with_the_largest_context_shows_the_whole_file() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "one\ntwo\nthree\n");

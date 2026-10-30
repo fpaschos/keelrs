@@ -19,6 +19,8 @@ const MAX_LINE: usize = 500;
 const MAX_OUTPUT: usize = 100 * 1024;
 /// Files read in one go, so a call holds a batch, never the whole tree.
 const BATCH: usize = 64;
+/// Most files not searched that one `grep` call names.
+const MAX_SKIPPED: usize = 5;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -51,9 +53,11 @@ pub(super) fn tool() -> Tool {
              is set or the glob names one, hidden files. Returns `path:line: text` for each \
              match, at most {MAX_MATCHES} or {} KB, with lines cut at {MAX_LINE} characters; with \
              `context`, the lines around each match as `path-line- text`, groups apart by \
-             `--`. Paths are relative to the working directory, as `read` takes them. Use it \
-             to find code, not `grep` or `rg` in `bash`.",
-            MAX_OUTPUT / 1024
+             `--`. Files over {} MB or not UTF-8 are not searched, and a note names them. \
+             Paths are relative to the working directory, as `read` takes them. Use it to find \
+             code, not `grep` or `rg` in `bash`.",
+            MAX_OUTPUT / 1024,
+            MAX_FILE_BYTES / (1024 * 1024)
         ),
         |call: ToolCall<GrepArgs>, sb: Sandbox| async move { grep(&sb, call.data).await },
     )
@@ -90,6 +94,7 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     listed.sort();
     let context = args.context.unwrap_or(0);
     let mut out: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     // `cut`: a match not shown, or a file not read, once `kept` is full.
     let (mut kept, mut cut) = (0, false);
     'files: for batch in listed.chunks(BATCH) {
@@ -108,6 +113,7 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
             }
             let name = relative(&work_dir, path);
             let Some(text) = bytes.and_then(|bytes| String::from_utf8(bytes).ok()) else {
+                skipped.push(name);
                 continue;
             };
             if let Some(whole) = &whole
@@ -155,9 +161,8 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
         }
     }
     if out.is_empty() {
-        return Ok("No matches.".to_owned());
-    }
-    if fit(&mut out, MAX_OUTPUT) {
+        out.push("No matches.".to_owned());
+    } else if fit(&mut out, MAX_OUTPUT) {
         out.push(format!(
             "[output cut at {} KB; narrow your search]",
             MAX_OUTPUT / 1024
@@ -165,6 +170,18 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     } else if cut {
         out.push(format!(
             "[showing the first {MAX_MATCHES} matches; narrow your search]"
+        ));
+    }
+    if !skipped.is_empty() {
+        let more = match skipped.len().saturating_sub(MAX_SKIPPED) {
+            0 => String::new(),
+            more => format!(", and {more} more"),
+        };
+        skipped.truncate(MAX_SKIPPED);
+        out.push(format!(
+            "[not searched, over {} MB, not UTF-8 or unreadable: {}{more}]",
+            MAX_FILE_BYTES / (1024 * 1024),
+            skipped.join(", ")
         ));
     }
     Ok(out.join("\n"))

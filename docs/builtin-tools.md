@@ -10,7 +10,7 @@ The eight sandboxed tools every turn that declares a sandbox gets (`keelrs/src/b
 | `write` | a file's whole content, creating its folders | — |
 | `edit` | exact replacements in one file, in order, all or none | the file as last read, written only if it still holds that text |
 | `bash` | a command line in the work dir | last 2000 lines or 50 KB; stopped at 10 MB printed; no timeout unless given |
-| `grep` | lines matching a regex, ignore rules applied | 100 matches, 500 characters a line, 100 KB in all; files over 16 MB or not UTF-8 are skipped without a note |
+| `grep` | lines matching a regex, ignore rules applied | 100 matches, 500 characters a line, 100 KB in all; files over 16 MB or not UTF-8 are skipped, and a note names them |
 | `glob` | files matching a path glob from the searched directory | 1000 paths or 50 KB |
 | `delete` | one file, never a directory | — |
 | `move` | one file, creating `to`'s folders | refuses an existing `to` unless `overwrite` |
