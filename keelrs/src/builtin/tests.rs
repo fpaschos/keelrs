@@ -227,6 +227,21 @@ async fn write_creates_a_file_and_its_folders() {
 }
 
 #[tokio::test]
+async fn write_replaces_a_file_it_cannot_read() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new().await;
+    fx.put("locked.txt", "old\n");
+    let path = fx.dir.join("locked.txt");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
+    assert_eq!(
+        fx.write("locked.txt", "new\n").await,
+        "Replaced locked.txt."
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fx.get("locked.txt"), "new\n");
+}
+
+#[tokio::test]
 async fn write_through_a_dangling_link_out_of_the_work_dir_is_refused() {
     let fx = Fixture::new().await;
     let outside = fx.dir.with_extension("outside");
