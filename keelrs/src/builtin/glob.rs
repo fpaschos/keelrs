@@ -3,7 +3,9 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, listing, place, relative};
+use rig_tools::MAX_BYTES;
+
+use super::{Out, fail, fit, listing, place, relative};
 use crate::sandbox::Sandbox;
 use crate::{Tool, ToolCall};
 
@@ -29,8 +31,9 @@ pub(super) fn tool() -> Tool {
             "Find files by path glob, such as `**/*.rs` (at any depth) or `src/*` (directly in \
              src), from the working directory or `path`. Skips files ignored by git, target \
              directories and, unless hidden is set or the glob names one, hidden files. Returns \
-             file paths relative to the working directory, sorted, at most {MAX_PATHS}. Use it \
-             to find files, not `find` or `ls` in `bash`."
+             file paths relative to the working directory, sorted, at most {MAX_PATHS} or {} KB. \
+             Use it to find files, not `find` or `ls` in `bash`.",
+            MAX_BYTES / 1024
         ),
         |call: ToolCall<GlobArgs>, sb: Sandbox| async move { glob(&sb, call.data).await },
     )
@@ -61,9 +64,11 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
         return Ok("No files found.".to_owned());
     }
     paths.truncate(MAX_PATHS);
-    if total > MAX_PATHS {
+    fit(&mut paths, MAX_BYTES);
+    if paths.len() < total {
         paths.push(format!(
-            "[showing {MAX_PATHS} of {total} paths; narrow the pattern or path]"
+            "[showing {} of {total} paths; narrow the pattern or path]",
+            paths.len()
         ));
     }
     Ok(paths.join("\n"))

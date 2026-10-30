@@ -514,7 +514,37 @@ async fn glob_stops_at_1000_paths() {
     );
 }
 
+#[tokio::test]
+async fn glob_stops_at_50_kb_of_paths() {
+    let fx = Fixture::new().await;
+    let deep = "d".repeat(100);
+    for n in 0..600 {
+        fx.put(&format!("{deep}/{n:04}.txt"), "");
+    }
+    let listed = fx.glob("**/*.txt", None, false).await;
+    let (shown, note) = listed.rsplit_once('\n').unwrap();
+    assert!(shown.len() <= 50 * 1024, "{}", shown.len());
+    assert!(shown.ends_with(".txt"));
+    let count = shown.lines().count();
+    assert_eq!(
+        note,
+        format!("[showing {count} of 600 paths; narrow the pattern or path]")
+    );
+}
+
 // grep
+
+#[tokio::test]
+async fn grep_stops_at_100_kb_however_much_context_is_asked() {
+    let fx = Fixture::new().await;
+    fx.put("long.txt", &format!("{}\n", "x".repeat(99)).repeat(2000));
+    fx.put("short.txt", "x\n");
+    let found = fx.grep("x", |args| args.context = Some(100_000)).await;
+    let (shown, note) = found.rsplit_once('\n').unwrap();
+    assert!(shown.len() <= 100 * 1024, "{}", shown.len());
+    assert!(shown.starts_with("long.txt:1: x"));
+    assert_eq!(note, "[output cut at 100 KB; narrow your search]");
+}
 
 #[tokio::test]
 async fn grep_lists_matching_lines_leaving_out_ignored_and_hidden_files() {

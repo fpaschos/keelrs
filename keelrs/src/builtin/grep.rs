@@ -6,7 +6,7 @@ use rig_tools::{MAX_FILE_BYTES, clip};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, listing, place, relative};
+use super::{Out, fail, fit, listing, place, relative};
 use crate::sandbox::{Sandbox, Stat};
 use crate::{Tool, ToolCall};
 
@@ -14,6 +14,9 @@ use crate::{Tool, ToolCall};
 const MAX_MATCHES: usize = 100;
 /// Characters a shown line is cut at.
 const MAX_LINE: usize = 500;
+/// Most bytes one `grep` call shows, context lines included: room for
+/// [`MAX_MATCHES`] lines of [`MAX_LINE`] characters, and some context.
+const MAX_OUTPUT: usize = 100 * 1024;
 /// Files read in one go, so a call holds a batch, never the whole tree.
 const BATCH: usize = 64;
 
@@ -46,10 +49,11 @@ pub(super) fn tool() -> Tool {
             "Search file contents with a regular expression (Rust regex syntax), or plain text \
              with `literal`. Skips files ignored by git, target directories and, unless hidden \
              is set or the glob names one, hidden files. Returns `path:line: text` for each \
-             match, at most {MAX_MATCHES}, with lines cut at {MAX_LINE} characters; with \
+             match, at most {MAX_MATCHES} or {} KB, with lines cut at {MAX_LINE} characters; with \
              `context`, the lines around each match as `path-line- text`, groups apart by \
              `--`. Paths are relative to the working directory, as `read` takes them. Use it \
-             to find code, not `grep` or `rg` in `bash`."
+             to find code, not `grep` or `rg` in `bash`.",
+            MAX_OUTPUT / 1024
         ),
         |call: ToolCall<GrepArgs>, sb: Sandbox| async move { grep(&sb, call.data).await },
     )
@@ -153,7 +157,12 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     if out.is_empty() {
         return Ok("No matches.".to_owned());
     }
-    if cut {
+    if fit(&mut out, MAX_OUTPUT) {
+        out.push(format!(
+            "[output cut at {} KB; narrow your search]",
+            MAX_OUTPUT / 1024
+        ));
+    } else if cut {
         out.push(format!(
             "[showing the first {MAX_MATCHES} matches; narrow your search]"
         ));

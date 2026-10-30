@@ -85,6 +85,22 @@ fn listing(hidden: bool) -> Listing {
     }
 }
 
+/// Drops `lines` from the end until, joined by `\n`, they fit in `max`
+/// bytes; whether any was dropped.
+fn fit(lines: &mut Vec<String>, max: usize) -> bool {
+    let mut used = 0;
+    let kept = lines
+        .iter()
+        .take_while(|line| {
+            used += line.len() + 1;
+            used <= max + 1
+        })
+        .count();
+    let cut = kept < lines.len();
+    lines.truncate(kept);
+    cut
+}
+
 /// The key a canonical path has in [`Seen`].
 fn key(path: &SandboxPath) -> PathBuf {
     PathBuf::from(path.as_str())
