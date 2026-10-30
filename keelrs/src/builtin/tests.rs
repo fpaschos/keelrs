@@ -664,6 +664,31 @@ async fn bash_keeps_the_last_2000_lines_and_says_how_many_were_cut() {
 }
 
 #[tokio::test]
+async fn bash_shows_the_end_of_a_last_line_longer_than_50_kb() {
+    let fx = Fixture::new().await;
+    let ran = fx
+        .bash("head -c 60000 /dev/zero | tr '\\0' a; echo END", None)
+        .await;
+    let (note, rest) = ran.split_once('\n').unwrap();
+    assert_eq!(note, "[showing the last 50 KB of a longer line]");
+    assert!(rest.ends_with("aaaEND\n[exit code 0]"), "{rest:.80}");
+    assert_eq!(rest.len(), 50 * 1024 + "[exit code 0]".len());
+}
+
+#[tokio::test]
+async fn bash_stops_a_command_once_it_has_printed_10_mb() {
+    let fx = Fixture::new().await;
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(30), fx.bash("yes", None))
+        .await
+        .expect("`yes` was not stopped");
+    let lines: Vec<&str> = ran.lines().collect();
+    assert!(lines[0].ends_with(" earlier lines cut]"), "{}", lines[0]);
+    assert_eq!(lines.len(), 2002);
+    assert!(lines[1..2001].iter().all(|line| *line == "y"));
+    assert_eq!(lines[2001], "[stopped after printing 10 MB]");
+}
+
+#[tokio::test]
 async fn bash_past_its_timeout_is_stopped() {
     let fx = Fixture::new().await;
     assert_eq!(
