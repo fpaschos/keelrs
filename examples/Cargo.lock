@@ -384,6 +384,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-build-review-loop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "keelrs",
+ "rig-core",
+ "rig-tools",
+ "schemars",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "example-dogfood"
 version = "0.1.0"
 dependencies = [
