@@ -8,6 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rig_core::tool::ToolErrorKind;
 use rig_tools::Seen;
 
 use super::bash::{BashArgs, bash, description};
@@ -224,6 +225,29 @@ async fn write_creates_a_file_and_its_folders() {
         "Created src/new.rs."
     );
     assert_eq!(fx.get("src/new.rs"), "fn main() {}\n");
+}
+
+#[tokio::test]
+async fn a_read_only_file_and_a_path_outside_are_refused_as_permission_denied() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new().await;
+    fx.put("frozen.txt", "old\n");
+    let path = fx.dir.join("frozen.txt");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+    let kind = |path: &str| {
+        let args = WriteArgs {
+            path: path.to_owned(),
+            content: "new\n".to_owned(),
+        };
+        let (sb, seen) = (&fx.sb, &fx.seen);
+        async move { write(sb, seen, args).await.unwrap_err().kind() }
+    };
+    assert_eq!(kind("frozen.txt").await, ToolErrorKind::PermissionDenied);
+    assert_eq!(
+        kind("../escaped.txt").await,
+        ToolErrorKind::PermissionDenied
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 #[tokio::test]

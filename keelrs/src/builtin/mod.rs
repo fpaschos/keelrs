@@ -165,8 +165,13 @@ fn fail(sent: &str, error: crate::Error) -> ToolExecutionError {
             ..
         } => ToolExecutionError::invalid_args(format!("{sent} is not a regular file")),
         SandboxError::OutsideWorkDir { .. } => {
-            ToolExecutionError::invalid_args(format!("{sent} is outside the work dir"))
+            ToolExecutionError::permission_denied(format!("{sent} is outside the work dir"))
         }
+        SandboxError::Io {
+            kind: ErrorKind::PermissionDenied,
+            message,
+            ..
+        } => ToolExecutionError::permission_denied(format!("{sent}: {message}")),
         SandboxError::Io { message, .. } => ToolExecutionError::other(format!("{sent}: {message}")),
         other => ToolExecutionError::other(other.to_string()),
     }
