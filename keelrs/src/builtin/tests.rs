@@ -555,6 +555,40 @@ async fn glob_stops_at_50_kb_of_paths() {
 
 // grep
 
+/// Whatever line endings a file has, `grep` finds every line the pattern
+/// matches, as if each line were matched alone: anchors at a later line's
+/// start and end (also before `\r\n`), text anchors and flags the pattern
+/// turns off, a `.` over a `\r` inside a line, and case ignored. The cases
+/// are rig-tools' (`search/tests.rs`), whose whole-text prefilter `grep`
+/// copies.
+#[tokio::test]
+async fn grep_finds_every_matching_line_whatever_the_line_ends() {
+    let fx = Fixture::new().await;
+    let cases = [
+        ("first\nsecond\n", "^second", false),
+        ("first\r\nsecond\r\nthird\r\n", "second$", false),
+        ("first\r\nsecond\r\n", r"^second\z", false),
+        ("first\nsecond\n", r"\Asecond", false),
+        ("first\nsecond\n", "(?-m)^second$", false),
+        ("first\na\rb\n", "a.b", false),
+        ("first\nSECOND\n", "^second$", true),
+    ];
+    for (index, (text, pattern, ignore_case)) in cases.into_iter().enumerate() {
+        let file = format!("{index}.txt");
+        fx.put(&file, text);
+        let found = fx
+            .grep(pattern, |args| {
+                args.path = Some(file.clone());
+                args.ignore_case = ignore_case;
+            })
+            .await;
+        assert!(
+            found.starts_with(&format!("{file}:2: ")) && found.lines().count() == 1,
+            "{pattern:?} in {text:?}: {found}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn grep_stops_at_100_kb_however_much_context_is_asked() {
     let fx = Fixture::new().await;
