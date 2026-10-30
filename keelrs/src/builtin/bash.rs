@@ -72,7 +72,14 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
     let ended = match exit {
         _ if stopped => format!("stopped after printing {} MB", MAX_PRINTED / (1024 * 1024)),
         Exit::Code(code) => format!("exit code {code}"),
-        Exit::Signaled(signal) => format!("ended by signal {signal}"),
+        Exit::Signaled(signal) => {
+            let (name, why) = sent(signal);
+            format!("ended by {name} (signal {signal}): {why}")
+        }
+        Exit::TimedOut if tail.printed == 0 => format!(
+            "timed out after {}s and was stopped{SILENT}",
+            args.timeout.unwrap_or_default()
+        ),
         Exit::TimedOut => format!(
             "timed out after {}s and was stopped",
             args.timeout.unwrap_or_default()
@@ -105,6 +112,36 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
     }
     out.push_str(&format!("[{ended}]"));
     Ok(out)
+}
+
+// Copied from rig-tools 0.46.0-rc.1 src/shell.rs (`SILENT`, `sent`;
+// private there).
+
+/// What a timeout adds when the command printed nothing at all.
+const SILENT: &str = ". It printed nothing: a program whose output is not a terminal may hold \
+                      it back until it ends, so make it print as it goes (such as \
+                      `python3 -u` or `stdbuf -oL`) to see how far it got";
+
+/// The name of `signal` and what likely sent it.
+fn sent(signal: i32) -> (&'static str, &'static str) {
+    match signal {
+        libc::SIGHUP => ("SIGHUP", "its terminal or session went away"),
+        libc::SIGINT => ("SIGINT", "something on this machine interrupted it"),
+        libc::SIGQUIT => ("SIGQUIT", "something on this machine asked it to quit"),
+        libc::SIGILL => ("SIGILL", "it crashed"),
+        libc::SIGTRAP => ("SIGTRAP", "it crashed, or a debugger stopped it"),
+        libc::SIGABRT => ("SIGABRT", "it aborted itself, as on a failed assertion"),
+        libc::SIGBUS => ("SIGBUS", "it crashed"),
+        libc::SIGFPE => ("SIGFPE", "it crashed on an arithmetic error"),
+        libc::SIGKILL => (
+            "SIGKILL",
+            "something on this machine killed it, such as the out-of-memory killer or a `kill`",
+        ),
+        libc::SIGSEGV => ("SIGSEGV", "it crashed"),
+        libc::SIGPIPE => ("SIGPIPE", "it wrote to a pipe that nothing read any more"),
+        libc::SIGTERM => ("SIGTERM", "something on this machine asked it to stop"),
+        _ => ("a signal", "something on this machine sent it"),
+    }
 }
 
 /// Most output one `bash` call lets a command print before stopping it, as

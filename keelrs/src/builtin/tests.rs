@@ -748,7 +748,21 @@ async fn bash_past_its_timeout_is_stopped() {
     );
     assert_eq!(
         fx.bash("sleep 1", Some(0)).await,
-        "[timed out after 0s and was stopped]"
+        format!("[timed out after 0s and was stopped{SILENT}]")
+    );
+}
+
+/// What a timed-out `bash` adds when the command printed nothing.
+const SILENT: &str = ". It printed nothing: a program whose output is not a terminal may hold \
+                      it back until it ends, so make it print as it goes (such as `python3 -u` \
+                      or `stdbuf -oL`) to see how far it got";
+
+#[tokio::test]
+async fn bash_names_the_signal_that_ended_a_command_and_what_likely_sent_it() {
+    let fx = Fixture::new().await;
+    assert_eq!(
+        fx.bash("echo before; kill -TERM $$", None).await,
+        "before\n[ended by SIGTERM (signal 15): something on this machine asked it to stop]"
     );
 }
 
