@@ -107,6 +107,23 @@ async fn a_path_out_of_the_work_dir_is_refused() {
 }
 
 #[tokio::test]
+async fn list_skips_a_name_that_is_not_utf8_and_lists_the_rest() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = TempDir::new();
+    let odd = std::ffi::OsStr::from_bytes(b"odd\xff.txt");
+    if std::fs::write(dir.0.join(odd), "x").is_err() {
+        return; // the file system takes UTF-8 names only, as macOS's does
+    }
+    std::fs::write(dir.0.join("ok.txt"), "x").unwrap();
+    let sb = open(&dir).await;
+    let listed = sb.list(".", None, Listing::Visible).await.unwrap();
+    assert_eq!(
+        listed,
+        [SandboxPath::new(dir.0.join("ok.txt").to_str().unwrap()).unwrap()]
+    );
+}
+
+#[tokio::test]
 async fn a_dangling_link_leads_where_it_points_and_out_is_refused() {
     let dir = TempDir::new();
     std::fs::create_dir_all(dir.0.join("inner")).unwrap();

@@ -213,10 +213,11 @@ impl SandboxBackend for LocalBackend {
             Local.files(&at, glob.as_deref(), Listing::All)
         })
         .await?;
-        files
+        // A name that is not UTF-8 has no `SandboxPath`, so it is left out.
+        Ok(files
             .iter()
-            .map(|file| sandbox_path("list", file))
-            .collect()
+            .filter_map(|file| sandbox_path("list", file).ok())
+            .collect())
     }
 
     async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> {
