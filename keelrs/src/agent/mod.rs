@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-pub use context::AgentContext;
+pub use context::{AgentContext, BuiltinTools};
 pub use instance::{AgentInstance, Receipt, Reply, SubmissionId};
 
 mod context;

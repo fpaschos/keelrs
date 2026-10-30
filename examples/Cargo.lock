@@ -389,8 +389,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "keelrs",
- "rig-core",
- "rig-tools",
  "schemars",
  "serde",
  "tokio",
@@ -402,8 +400,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "keelrs",
- "rig-core",
- "rig-tools",
  "schemars",
  "serde",
  "tokio",
@@ -1071,6 +1067,7 @@ dependencies = [
  "include_dir",
  "libc",
  "process-wrap",
+ "regex",
  "rig-agent",
  "rig-core",
  "rig-tools",

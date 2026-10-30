@@ -14,6 +14,7 @@ pub mod __private {
     pub use include_dir;
 }
 
+mod builtin;
 mod error;
 mod event;
 mod tool;

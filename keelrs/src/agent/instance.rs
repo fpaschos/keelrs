@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::rig::{self, Settled};
+use crate::builtin::Caches;
 use crate::event::Event;
 use crate::{Agent, Error, Outcome, Result};
 
@@ -40,6 +41,7 @@ impl AgentInstance {
             inbox: receiver,
             cancel: shutdown.child_token(),
             settled: HashMap::new(),
+            caches: Caches::default(),
         };
         tokio::spawn(actor.run());
         Self { id, inbox }
@@ -124,6 +126,8 @@ struct InstanceActor {
     cancel: CancellationToken,
     /// STORE: stands in for the stored `Event::Settled`s until durable storage keeps them.
     settled: HashMap<SubmissionId, Result<String, Outcome>>,
+    /// What this instance's built-in tools remember, per sandbox; never stored.
+    caches: Caches,
 }
 
 impl InstanceActor {
@@ -155,7 +159,7 @@ impl InstanceActor {
             biased;
             // Dropping the run's future stops its model call.
             () = self.cancel.cancelled() => Err(Outcome::Aborted),
-            result = rig::run(self.agent.clone(), text, history) => match result {
+            result = rig::run(self.agent.clone(), text, history, &self.caches) => match result {
                 Ok(Settled { reply, messages }) => {
                     events.extend(messages.into_iter().map(Event::Message));
                     Ok(reply)

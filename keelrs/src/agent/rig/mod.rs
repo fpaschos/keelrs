@@ -22,10 +22,11 @@ use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
+use crate::builtin::{self, Caches};
 use crate::model::Thinking;
 use crate::sandbox::Sandbox;
 use crate::skills::catalog::catalog;
-use crate::skills::tools::builtin;
+use crate::skills::tools::builtin as skill_tools;
 use crate::{Agent, Model, Tool};
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
@@ -41,13 +42,15 @@ pub(crate) struct Settled {
     pub(crate) messages: Vec<Message>,
 }
 
-/// Runs `agent` on `text` after `history`; an error is the failure reason, as plain text.
+/// Runs `agent` on `text` after `history`, its built-in tools remembering
+/// in `caches`; an error is the failure reason, as plain text.
 pub(crate) async fn run(
     agent: Agent,
     text: String,
     history: Vec<Message>,
+    caches: &Caches,
 ) -> Result<Settled, String> {
-    run_with(agent, text, history, |model| {
+    run_with(agent, text, history, caches, |model| {
         Catalog::builtin()
             .connect(model.id.as_str())
             .map_err(|e| e.to_string())
@@ -60,6 +63,7 @@ async fn run_with(
     agent: Agent,
     text: String,
     history: Vec<Message>,
+    caches: &Caches,
     connect: impl Fn(&Model) -> Result<DynModel<Completion>, String>,
 ) -> Result<Settled, String> {
     let max_turns = agent.max_turns;
@@ -88,10 +92,18 @@ async fn run_with(
                 let declared = cx.model()?;
                 let instructions = cx.instructions(&returned)?;
                 let skills = cx.skills()?;
-                // The built-in skill tools follow the declared ones and are pinned with them.
-                let tools: Vec<Tool> = cx.tools()?.iter().cloned().chain(builtin(skills)).collect();
                 // Pinned with the tools: their calls get this render's sandbox.
                 sandbox = cx.sandbox()?.cloned();
+                // Flue's order: the sandbox built-ins, the skill tools, then the declared ones.
+                let builtins = match &sandbox {
+                    Some(sb) => builtin::tools(sb, &caches.seen(sb.id()), &cx.builtins()?),
+                    None => Vec::new(),
+                };
+                let tools: Vec<Tool> = builtins
+                    .into_iter()
+                    .chain(skill_tools(skills))
+                    .chain(cx.tools()?.iter().cloned())
+                    .collect();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
                     None => connected.insert((connect(declared)?, declared.thinking)),

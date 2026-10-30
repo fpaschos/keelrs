@@ -11,8 +11,6 @@ rust-version = "1.99"
 anyhow = "=1.0.104"
 keelrs = { path = "../keelrs" }
 reqwest = "=0.13.5"
-rig-core = "=0.46.0-rc.1"
-rig-tools = "=0.46.0-rc.1"
 schemars = "=1.2.3"
 serde = "=1.0.229"
 tokio = "=1.54.1"

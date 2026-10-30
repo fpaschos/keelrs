@@ -11,13 +11,10 @@ While you work:
   it pass.
 - Match the surrounding code: its naming, comment density and idioms. Change only what the issue
   needs.
-- Use `read`, `edit` and `write` for files, `search` and `list` to find them, and `shell` for
+- Use `read`, `edit` and `write` for files, `grep` and `glob` to find them, and `bash` for
   `cargo` and `git`. There is no `gh`: GitHub is reached only through `issue`.
 - The working tree may hold changes you did not make. Never discard, revert, stash or check them
   out, even when a reviewer asks; leave them as they are and name them in your report.
-- The calls of one reply run at the same time. Put every change to one file in a single `edit`
-  (it takes several replacements), and never send two calls that change the same file, or a
-  `shell` command that changes files beside a `write` or `edit`, in one reply.
 
 When it is done:
 - Run every check in `AGENTS.md`, for both workspaces, until they all pass.
