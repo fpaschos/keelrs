@@ -687,6 +687,18 @@ async fn glob_stops_at_1000_paths() {
 }
 
 #[tokio::test]
+async fn glob_that_cannot_match_a_file_says_why() {
+    let fx = Fixture::new().await;
+    fx.project();
+    let hint = "No files found. The pattern is a path glob from the searched directory, matching \
+                files only: no trailing `/`, no `..`, and no absolute host path.";
+    for pattern in ["src/", "../src/*.rs", "/tmp/src/*.rs"] {
+        assert_eq!(fx.glob(pattern, None, false).await, hint, "{pattern}");
+    }
+    assert_eq!(fx.glob("*.txt", None, false).await, "No files found.");
+}
+
+#[tokio::test]
 async fn glob_of_a_missing_path_says_it_is_missing() {
     let fx = Fixture::new().await;
     assert_eq!(

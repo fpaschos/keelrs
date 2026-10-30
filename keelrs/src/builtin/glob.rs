@@ -68,6 +68,15 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
                 "{sent}: no such file or directory"
             )));
         }
+        let sent = args.pattern.as_str();
+        if sent.ends_with('/') || sent.split('/').any(|part| part == "..") || sent.starts_with('/')
+        {
+            return Ok(
+                "No files found. The pattern is a path glob from the searched directory, \
+                       matching files only: no trailing `/`, no `..`, and no absolute host path."
+                    .to_owned(),
+            );
+        }
         return Ok("No files found.".to_owned());
     }
     paths.truncate(MAX_PATHS);
