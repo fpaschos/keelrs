@@ -41,7 +41,8 @@ pub(super) fn tool(seen: Seen) -> Tool {
         "edit",
         "Replace text in a file: each `old_text`, copied from the file, must match exactly one \
          place, unless `replace_all` is set, and replacements must not overlap. All are applied \
-         or none. Read the file first. Returns the changed lines with some context.",
+         or none. Make all changes to one file in one call, one entry per change. Read the \
+         file first. Returns the changed lines with some context.",
         move |call: ToolCall<EditArgs>, sb: Sandbox| async move { edit(&sb, &seen, call.data).await },
     )
 }
