@@ -106,6 +106,33 @@ async fn a_path_out_of_the_work_dir_is_refused() {
     assert!(!dir.0.join("escaped.txt").exists());
 }
 
+#[tokio::test]
+async fn a_dangling_link_leads_where_it_points_and_out_is_refused() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.0.join("inner")).unwrap();
+    let link = |to: &str, at: &str| {
+        std::os::unix::fs::symlink(dir.0.join(to), dir.0.join(at)).unwrap();
+    };
+    link("outside/new.txt", "inner/out.txt");
+    link("inner/made/new.txt", "inner/in.txt");
+    let sb = open(&dir).await.work_dir("inner");
+
+    let write = sb.write("out.txt", b"x".to_vec()).await;
+    assert!(
+        matches!(
+            write,
+            Err(Error::Sandbox(SandboxError::OutsideWorkDir { .. }))
+        ),
+        "{write:?}"
+    );
+    assert!(!dir.0.join("outside").exists());
+    sb.write("in.txt", b"x".to_vec()).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.0.join("inner/made/new.txt")).unwrap(),
+        "x"
+    );
+}
+
 /// A project with every kind of file a listing leaves out or keeps.
 const PROJECT: [(&str, &str); 17] = [
     (".git/info/exclude", "excluded.txt\n"),

@@ -227,6 +227,18 @@ async fn write_creates_a_file_and_its_folders() {
 }
 
 #[tokio::test]
+async fn write_through_a_dangling_link_out_of_the_work_dir_is_refused() {
+    let fx = Fixture::new().await;
+    let outside = fx.dir.with_extension("outside");
+    std::os::unix::fs::symlink(outside.join("new.txt"), fx.dir.join("out.txt")).unwrap();
+    assert_eq!(
+        fx.write("out.txt", "x").await,
+        "Err: out.txt is outside the work dir"
+    );
+    assert!(!outside.exists());
+}
+
+#[tokio::test]
 async fn write_replaces_a_file_and_says_how_long_it_was() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "one\ntwo\n");

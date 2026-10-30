@@ -222,7 +222,7 @@ impl SandboxBackend for LocalBackend {
     async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> {
         let at = host(path);
         let canonical = blocking("canonical", path.to_string(), move || {
-            Ok(Local.canonical(&at))
+            Ok(Local.canonical(&dangling_target(Local.canonical(&at))))
         })
         .await?;
         sandbox_path("canonical", &canonical)
@@ -385,6 +385,22 @@ async fn drive(
         exit = Exit::Killed;
     }
     Ok(exit)
+}
+
+/// Where `path` leads when it is a dangling link, which `Local.canonical`
+/// leaves as it is: the end of its chain of links, where a write creates
+/// the file. Any other path as it is.
+fn dangling_target(path: PathBuf) -> PathBuf {
+    /// Linux's own limit on links followed in one lookup.
+    const MAX_HOPS: usize = 40;
+    let mut target = path;
+    for _ in 0..MAX_HOPS {
+        let Ok(link) = std::fs::read_link(&target) else {
+            break;
+        };
+        target = target.parent().unwrap_or(Path::new("/")).join(link);
+    }
+    target
 }
 
 /// Sends what `pipe` prints in whole lines, all those one read brings, or
