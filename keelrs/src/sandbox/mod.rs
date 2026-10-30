@@ -728,8 +728,8 @@ impl Execution {
                 Chunk::Err(text) => keep_tail(&mut stderr, &text),
             }
         }
-        keep_last(&mut stdout);
-        keep_last(&mut stderr);
+        keep_last(&mut stdout, KEPT_OUTPUT);
+        keep_last(&mut stderr, KEPT_OUTPUT);
         let exit = self.wait().await?;
         Ok(Ran {
             stdout,
@@ -757,15 +757,13 @@ impl fmt::Debug for Execution {
 fn keep_tail(kept: &mut String, text: &str) {
     kept.push_str(text);
     if kept.len() > KEPT_OUTPUT + KEPT_OUTPUT / 8 {
-        keep_last(kept);
+        keep_last(kept, KEPT_OUTPUT);
     }
 }
 
-/// Drops from the front of `kept` what is past [`KEPT_OUTPUT`], at a
-/// character boundary.
-fn keep_last(kept: &mut String) {
-    if kept.len() > KEPT_OUTPUT {
-        let cut = kept.ceil_char_boundary(kept.len() - KEPT_OUTPUT);
-        kept.drain(..cut);
-    }
+/// Drops from the front of `kept` what is past `max` bytes, at a character
+/// boundary; the text dropped.
+pub(crate) fn keep_last(kept: &mut String, max: usize) -> std::string::Drain<'_> {
+    let cut = kept.ceil_char_boundary(kept.len().saturating_sub(max));
+    kept.drain(..cut)
 }

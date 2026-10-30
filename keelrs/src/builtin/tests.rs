@@ -950,6 +950,15 @@ async fn bash_keeps_the_last_2000_lines_and_says_how_many_were_cut() {
 }
 
 #[tokio::test]
+async fn bash_counts_the_lines_cut_from_output_past_100_kb() {
+    let fx = Fixture::new().await;
+    let ran = fx.bash("seq 1 30000", None).await;
+    let lines: Vec<&str> = ran.lines().collect();
+    assert_eq!(lines[0], "[28000 earlier lines cut]");
+    assert_eq!(lines[1], "28001");
+}
+
+#[tokio::test]
 async fn bash_shows_the_end_of_a_last_line_longer_than_50_kb() {
     let fx = Fixture::new().await;
     let ran = fx

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::Out;
-use crate::sandbox::{Chunk, ExecRequest, Exit, Sandbox, SandboxPath};
+use crate::sandbox::{Chunk, ExecRequest, Exit, Sandbox, SandboxPath, keep_last};
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -266,9 +266,10 @@ impl Tail {
     fn keep(&mut self, text: &str) {
         self.kept.push_str(text);
         if self.kept.len() > 2 * MAX_BYTES {
-            let drop = self.kept.ceil_char_boundary(self.kept.len() - MAX_BYTES);
-            self.cut += self.kept[..drop].matches('\n').count();
-            self.kept.drain(..drop);
+            self.cut += keep_last(&mut self.kept, MAX_BYTES)
+                .as_str()
+                .matches('\n')
+                .count();
         }
     }
 }
