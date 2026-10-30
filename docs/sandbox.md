@@ -36,7 +36,10 @@ before it calls the backend, so a backend only sees absolute, canonical paths in
 `tokio::process`. Each command leads a session and process group of its own, with no controlling terminal, and gets
 its env directly, never through argv. A shell line runs with `bash -c` (`sh -c` where there is no bash), resolved by
 absolute path at `open`. A kill or timeout sends SIGTERM to the group, then SIGKILL 2 s later; once the command exits,
-whatever it left in its group has 100 ms to close the output, then the group is killed.
+whatever it left in its group has 100 ms to close the output, then the group is killed. A group is also killed when
+the runtime it runs on shuts down.
+
+The built-in tools over this API, their limits and how they differ from rig-tools: [builtin-tools.md](builtin-tools.md).
 
 ## Operations
 
@@ -48,7 +51,7 @@ whatever it left in its group has 100 ms to close the output, then the group is 
 | `remove` | Removes a file; a directory only when empty, or with `recursive`. | Deleting files and scratch output. |
 | `rename` | Moves a file, creating the target's directory and replacing a file there. | Moves and refactors. |
 | `list` | Every regular file under a root, only those matching a glob when one is given. `Sandbox::list` applies the ignore rules on top (`Listing`). | Listing files and choosing what to search. |
-| `canonical` | A path with its links followed and `..` folded; a missing tail is kept. | Confinement: `Sandbox` canonicalizes every path and refuses one outside the work dir. |
+| `canonical` | A path with its links followed and `..` folded; a missing tail is kept, and a dangling link leads where it points. | Confinement: `Sandbox` canonicalizes every path and refuses one outside the work dir. |
 | `exec` | Starts a command (a shell line or argv) with a cwd, env, stdin and timeout; returns its output as it comes, its exit, and a kill. | Running shells, builds, tests, git. |
 
 ## Operations with a default
