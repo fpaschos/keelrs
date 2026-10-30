@@ -946,6 +946,31 @@ async fn bash_stops_a_command_once_it_has_printed_10_mb() {
 }
 
 #[tokio::test]
+async fn bash_redacts_the_secrets_a_command_prints() {
+    let fx = Fixture::new().await;
+    let printed = "printf 'OPENAI_API_KEY=sk-test-probe-1234567890abcdef\\n\
+        -----BEGIN RSA PRIVATE KEY-----\\nMIIEsecretbody\\n-----END RSA PRIVATE KEY-----\\n\
+        after\\n'";
+    assert_eq!(
+        fx.bash(printed, None).await,
+        "OPENAI_API_KEY=[REDACTED]\n[REDACTED]\nafter\n[exit code 0]"
+    );
+}
+
+#[tokio::test]
+async fn bash_drops_terminal_escape_sequences() {
+    let fx = Fixture::new().await;
+    assert_eq!(
+        fx.bash(
+            "printf '\\033[31mred\\033[0m and \\033]8;;http://x\\007link\\033]8;;\\007\\n'",
+            None
+        )
+        .await,
+        "red and link\n[exit code 0]"
+    );
+}
+
+#[tokio::test]
 async fn bash_past_its_timeout_is_stopped() {
     let fx = Fixture::new().await;
     assert_eq!(

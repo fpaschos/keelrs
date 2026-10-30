@@ -1,7 +1,9 @@
 //! `bash`: a command line in the sandbox's shell.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
+use rig_core::redact;
 use rig_core::tool::ToolExecutionError;
 use rig_tools::{MAX_BYTES, MAX_LINES, OutputLimit};
 use schemars::JsonSchema;
@@ -34,7 +36,9 @@ pub(super) fn description(shell: Option<&SandboxPath>) -> String {
         "Run a command line in the working directory, for builds, tests, git and other \
          programs. Returns its output, stderr merged into stdout, at most the last {MAX_LINES} \
          lines or {} KB, then how it ended. It runs until it ends, or until it has printed \
-         {} MB, unless `timeout` (seconds) is given. Use `read`, `grep`, `glob`, `edit` and `write` for files, not `cat`, \
+         {} MB, unless `timeout` (seconds) is given. Terminal escape codes are dropped and \
+         secrets it prints, such as API keys and private keys, show as [REDACTED]; `read` \
+         shows a file exactly. Use `read`, `grep`, `glob`, `edit` and `write` for files, not `cat`, \
          `grep`, `find`, `sed` or `echo`.",
         MAX_BYTES / 1024,
         MAX_PRINTED / (1024 * 1024)
@@ -68,6 +72,7 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
             break;
         }
     }
+    tail.finish();
     let exit = execution.wait().await.map_err(failed)?;
     let ended = match exit {
         _ if stopped => format!("stopped after printing {} MB", MAX_PRINTED / (1024 * 1024)),
@@ -114,8 +119,45 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
     Ok(out)
 }
 
-// Copied from rig-tools 0.46.0-rc.1 src/shell.rs (`SILENT`, `sent`;
-// private there).
+// Copied from rig-tools 0.46.0-rc.1 src/shell.rs (`SILENT`, `sent`,
+// `plain`; private there).
+
+/// `line` without the terminal escape sequences in it, such as the colours
+/// a program prints even when its output is no terminal, or a link's or a
+/// window title's markup: the text between them stays.
+fn plain(line: &str) -> Cow<'_, str> {
+    if !line.contains('\x1b') {
+        return Cow::Borrowed(line);
+    }
+    let mut text = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            // A control sequence: parameters, then one final character.
+            Some('[') => {
+                let _ = chars.by_ref().find(|c| ('\x40'..='\x7e').contains(c));
+            }
+            // A string, such as a link or a title, up to BEL or `ESC \`.
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            // Intermediate characters, then one final character.
+            Some(' '..='/') => {
+                let _ = chars.by_ref().find(|c| !(' '..='/').contains(c));
+            }
+            _ => {}
+        }
+    }
+    Cow::Owned(text)
+}
 
 /// What a timeout adds when the command printed nothing at all.
 const SILENT: &str = ". It printed nothing: a program whose output is not a terminal may hold \
@@ -148,8 +190,14 @@ fn sent(signal: i32) -> (&'static str, &'static str) {
 /// rig-tools' shell does.
 const MAX_PRINTED: usize = 10 * 1024 * 1024;
 
-/// The end of a command's output, enough for [`OutputLimit::tail`]: at
-/// least the last [`MAX_BYTES`], and at most twice that.
+/// The longest unfinished line held for its end; past it, a piece is taken
+/// as it is, as rig-tools' shell does (`MAX_HELD`).
+const MAX_HELD: usize = 1024 * 1024;
+
+/// The end of a command's output as the model sees it, line by line: no
+/// terminal escape sequences ([`plain`]) and secrets redacted; enough for
+/// [`OutputLimit::tail`], at least the last [`MAX_BYTES`] and at most twice
+/// that.
 #[derive(Default)]
 struct Tail {
     kept: String,
@@ -157,11 +205,69 @@ struct Tail {
     cut: usize,
     /// Bytes printed in all.
     printed: usize,
+    /// The line printed so far, not yet ended.
+    held: String,
+    /// Inside a private key block, left out through its end line.
+    in_key: bool,
 }
 
 impl Tail {
     fn push(&mut self, text: &str) {
         self.printed += text.len();
+        let mut held = std::mem::take(&mut self.held);
+        held.push_str(text);
+        let mut start = 0;
+        while let Some(at) = held[start..].find('\n') {
+            self.line(&held[start..=start + at]);
+            start += at + 1;
+        }
+        self.held = held.split_off(start);
+        if self.held.len() > MAX_HELD {
+            let piece = std::mem::take(&mut self.held);
+            self.line(&piece);
+        }
+    }
+
+    /// Takes the line left unfinished when the output ended.
+    fn finish(&mut self) {
+        let piece = std::mem::take(&mut self.held);
+        if !piece.is_empty() {
+            self.line(&piece);
+        }
+    }
+
+    fn line(&mut self, piece: &str) {
+        let piece = plain(piece);
+        let piece = self.redact(&piece);
+        self.keep(&piece);
+    }
+
+    // Copied from rig-tools 0.46.0-rc.1 src/shell.rs (`Kept::redact`).
+    /// `piece`, a line, with its secrets redacted ([`redact::text`]). A
+    /// private key block spans lines: its first is redacted to its end, and
+    /// the lines after it, through its end line, are left out.
+    fn redact<'a>(&mut self, piece: &'a str) -> Cow<'a, str> {
+        if self.in_key {
+            self.in_key = !piece.contains("-----END ");
+            return Cow::Borrowed("");
+        }
+        let mut redacted = redact::text(piece);
+        if let Cow::Owned(line) = &mut redacted {
+            self.in_key = redact::find(piece).any(|secret| {
+                secret.kind == redact::Kind::PrivateKey
+                    && piece
+                        .get(secret.range)
+                        .is_some_and(|key| !key.contains("-----END "))
+            });
+            // A key redacted to the line's end took its newline.
+            if piece.ends_with('\n') && !line.ends_with('\n') {
+                line.push('\n');
+            }
+        }
+        redacted
+    }
+
+    fn keep(&mut self, text: &str) {
         self.kept.push_str(text);
         if self.kept.len() > 2 * MAX_BYTES {
             let mut drop = self.kept.len() - MAX_BYTES;
