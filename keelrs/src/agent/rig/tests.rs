@@ -733,10 +733,6 @@ async fn sandboxed() -> (Folder, Sandbox) {
     (folder, sb)
 }
 
-const BUILTINS: [&str; 8] = [
-    "read", "write", "edit", "bash", "grep", "glob", "delete", "move",
-];
-
 #[tokio::test]
 async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared_tools() {
     let (_folder, sb) = sandboxed().await;
@@ -746,7 +742,7 @@ async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared
         cx.use_sandbox(sb.clone());
     });
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
-    let expected: Vec<&str> = BUILTINS
+    let expected: Vec<&str> = builtin::NAMES
         .into_iter()
         .chain(["activate_skill", "current_time"])
         .collect();
@@ -801,7 +797,7 @@ async fn an_unknown_name_in_only_fails_the_run() {
 #[tokio::test]
 async fn a_builtin_name_is_reserved_with_or_without_a_sandbox_or_only() {
     let (_folder, sb) = sandboxed().await;
-    for name in BUILTINS {
+    for name in builtin::NAMES {
         let mine = Tool::host(name, "Mine.", async |_: ToolCall<()>| {
             Ok::<_, Infallible>("ran")
         });

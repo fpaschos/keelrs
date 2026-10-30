@@ -6,8 +6,8 @@ use rig_tools::{MAX_FILE_BYTES, clip};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, place, relative};
-use crate::sandbox::{Listing, Sandbox, Stat};
+use super::{Out, fail, listing, place, relative};
+use crate::sandbox::{Sandbox, Stat};
 use crate::{Tool, ToolCall};
 
 /// Most matches one `grep` call shows.
@@ -68,38 +68,29 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     let shown = args.path.as_deref().unwrap_or(".");
     let root = place(sb, shown).await?;
     let work_dir = place(sb, ".").await?;
-    let listed = match sb.stat(root.as_str()).await.map_err(|e| fail(shown, e))? {
+    let mut listed = match sb.stat(root.as_str()).await.map_err(|e| fail(shown, e))? {
         Stat::File { .. } => vec![root],
         Stat::Missing => {
             return Err(ToolExecutionError::not_found(format!(
                 "{shown}: no such file or directory"
             )));
         }
-        Stat::Dir | Stat::Other => {
-            let listing = if args.hidden {
-                Listing::Hidden
-            } else {
-                Listing::Visible
-            };
-            sb.list(root.as_str(), args.glob.as_deref(), listing)
-                .await
-                .map_err(|e| fail(shown, e))?
-        }
+        Stat::Dir | Stat::Other => sb
+            .list(root.as_str(), args.glob.as_deref(), listing(args.hidden))
+            .await
+            .map_err(|e| fail(shown, e))?,
     };
-    let mut files: Vec<(String, String)> = listed
-        .iter()
-        .map(|path| (relative(&work_dir, path), path.to_string()))
-        .collect();
-    files.sort();
-    let paths: Vec<&str> = files.iter().map(|(_, path)| path.as_str()).collect();
+    // All under the work dir, so in the order of the names shown.
+    listed.sort();
     let texts = sb
-        .read_files(&paths, MAX_FILE_BYTES)
+        .read_files(&listed, MAX_FILE_BYTES)
         .await
         .map_err(|e| fail(shown, e))?;
     let context = args.context.unwrap_or(0);
     let mut out: Vec<String> = Vec::new();
     let (mut kept, mut total) = (0, 0);
-    for ((name, _), bytes) in files.iter().zip(texts) {
+    for (path, bytes) in listed.iter().zip(texts) {
+        let name = relative(&work_dir, path);
         let Some(text) = bytes.and_then(|bytes| String::from_utf8(bytes).ok()) else {
             continue;
         };

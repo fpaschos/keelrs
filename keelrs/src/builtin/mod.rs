@@ -17,7 +17,7 @@ use rig_core::tool::ToolExecutionError;
 use rig_tools::{MAX_FILE_BYTES, Seen};
 
 use crate::Tool;
-use crate::sandbox::{Sandbox, SandboxError, SandboxId, SandboxPath};
+use crate::sandbox::{Listing, Sandbox, SandboxError, SandboxId, SandboxPath};
 
 mod bash;
 mod edit;
@@ -74,6 +74,15 @@ type Out = Result<String, ToolExecutionError>;
 /// `path` from the work dir, canonical; a refusal names `path` as the model sent it.
 async fn place(sb: &Sandbox, path: &str) -> Result<SandboxPath, ToolExecutionError> {
     sb.canonical(path).await.map_err(|e| fail(path, e))
+}
+
+/// What `grep` and `glob` list: hidden files too only with `hidden`.
+fn listing(hidden: bool) -> Listing {
+    if hidden {
+        Listing::Hidden
+    } else {
+        Listing::Visible
+    }
 }
 
 /// The key a canonical path has in [`Seen`].

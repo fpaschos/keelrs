@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, place, relative};
-use crate::sandbox::{Listing, Sandbox};
+use super::{Out, fail, listing, place, relative};
+use crate::sandbox::Sandbox;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -46,13 +46,8 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
         Some(_) => args.pattern.clone(),
         None => format!("/{}", args.pattern),
     };
-    let listing = if args.hidden {
-        Listing::Hidden
-    } else {
-        Listing::Visible
-    };
     let listed = sb
-        .list(root.as_str(), Some(&pattern), listing)
+        .list(root.as_str(), Some(&pattern), listing(args.hidden))
         .await
         .map_err(|e| fail(shown, e))?;
     let mut paths: Vec<String> = listed

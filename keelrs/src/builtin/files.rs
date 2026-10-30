@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{Out, fail, key, place};
-use crate::sandbox::{Sandbox, Stat};
+use crate::sandbox::{Sandbox, SandboxPath, Stat};
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -54,19 +54,7 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
 pub(crate) async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
     let shown = args.path.as_str();
     let path = place(sb, shown).await?;
-    match sb.stat(path.as_str()).await.map_err(|e| fail(shown, e))? {
-        Stat::File { .. } => {}
-        Stat::Missing => {
-            return Err(ToolExecutionError::not_found(format!(
-                "{shown}: no such file"
-            )));
-        }
-        Stat::Dir | Stat::Other => {
-            return Err(ToolExecutionError::invalid_args(format!(
-                "{shown} is not a regular file; `delete` removes files only"
-            )));
-        }
-    }
+    a_file(sb, &path, shown, "`delete` removes").await?;
     seen.forget(&key(&path));
     sb.remove(path.as_str(), false)
         .await
@@ -80,23 +68,7 @@ pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out 
     let (shown_from, shown_to) = (args.from.as_str(), args.to.as_str());
     let from = place(sb, shown_from).await?;
     let to = place(sb, shown_to).await?;
-    match sb
-        .stat(from.as_str())
-        .await
-        .map_err(|e| fail(shown_from, e))?
-    {
-        Stat::File { .. } => {}
-        Stat::Missing => {
-            return Err(ToolExecutionError::not_found(format!(
-                "{shown_from}: no such file"
-            )));
-        }
-        Stat::Dir | Stat::Other => {
-            return Err(ToolExecutionError::invalid_args(format!(
-                "{shown_from} is not a regular file; `move` moves files only"
-            )));
-        }
-    }
+    a_file(sb, &from, shown_from, "`move` moves").await?;
     if from == to {
         return Err(ToolExecutionError::invalid_args(format!(
             "{shown_from} and {shown_to} are the same file"
@@ -130,4 +102,23 @@ pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out 
         (None, None) => {}
     }
     Ok(format!("Moved {shown_from} to {shown_to}."))
+}
+
+/// Refuses `path`, which the model calls `shown`, unless it is a regular
+/// file; `tool` says what takes files only, as in "`delete` removes".
+async fn a_file(
+    sb: &Sandbox,
+    path: &SandboxPath,
+    shown: &str,
+    tool: &str,
+) -> Result<(), ToolExecutionError> {
+    match sb.stat(path.as_str()).await.map_err(|e| fail(shown, e))? {
+        Stat::File { .. } => Ok(()),
+        Stat::Missing => Err(ToolExecutionError::not_found(format!(
+            "{shown}: no such file"
+        ))),
+        Stat::Dir | Stat::Other => Err(ToolExecutionError::invalid_args(format!(
+            "{shown} is not a regular file; {tool} files only"
+        ))),
+    }
 }

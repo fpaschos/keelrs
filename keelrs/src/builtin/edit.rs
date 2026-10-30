@@ -24,7 +24,6 @@ pub(crate) struct EditArgs {
 }
 
 // One replacement of an `edit` call; not a doc comment, which the model would see.
-#[allow(missing_docs)]
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Replacement {
@@ -57,13 +56,10 @@ pub(crate) async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
     let edits: Vec<rig_tools::Replacement> = args
         .edits
         .iter()
-        .map(|edit| {
-            let replacement = rig_tools::Replacement::new(&edit.old_text, &edit.new_text);
-            if edit.replace_all {
-                replacement.all()
-            } else {
-                replacement
-            }
+        .map(|edit| rig_tools::Replacement {
+            old_text: edit.old_text.clone(),
+            new_text: edit.new_text.clone(),
+            replace_all: edit.replace_all,
         })
         .collect();
     let mut held = None;
