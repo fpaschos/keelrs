@@ -29,8 +29,8 @@ HOST ─ always: the agent, the Rig run, the model, secrets (ADR 0005)
 Files are confined by `Sandbox::place` on the host; commands are confined only by what the backend is.
 
 A [`Sandbox`](../keelrs/src/sandbox/mod.rs) is a cloneable handle over a `SandboxBackend`: the operations one kind of
-sandbox implements (this machine, a container, a microVM, a remote host). `Sandbox` confines paths to the work dir and
-checks capabilities before it calls the backend, so a backend only sees absolute, canonical paths inside the work dir.
+sandbox implements (this machine, a container, a microVM, a remote host). `Sandbox` confines paths to the work dir
+before it calls the backend, so a backend only sees absolute, canonical paths inside the work dir.
 
 `local()` implements the backend for this machine (`keelrs/src/sandbox/local.rs`): files on rig-tools, commands on
 `tokio::process`. Each command leads a session and process group of its own, with no controlling terminal, and gets
@@ -58,6 +58,5 @@ whatever it left in its group has 100 ms to close the output, then the group is 
 | `write_if` | Writes only while the file still holds the content hashed as `held`; otherwise writes nothing and returns what it holds now. | Edits made from text the model read earlier must not overwrite newer changes. | Read, compare, write (not atomic). |
 | `canonical_all` | `canonical` of many paths, in order. | `read_files` and `list` place many paths at once; a remote backend can do it in one round trip. | One `canonical` per path. |
 | `read_files` | The whole content of each of many files up to a limit; `None` for any other path. | Search reads many files; a remote backend can do it in one round trip. | One `read` per path. |
-| `capabilities` | Whether `write` (with `write_if`, `remove`, `rename`) and `exec` are supported. | A read-only or exec-less sandbox refuses those with `Unsupported` before any work. | Everything. |
 | `shell` | The shell that runs shell lines, by its path in the sandbox. | The `shell` tool can tell the model which shell it writes for. | `None`: not said. |
 | `close` | Removes the sandbox and what runs in it. | A container or remote host has something to tear down; afterwards every clone fails with `Died`. | Nothing. |

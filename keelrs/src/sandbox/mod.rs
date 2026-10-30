@@ -112,25 +112,6 @@ impl ContentHash {
     }
 }
 
-/// Which operations a backend supports; the others fail with
-/// [`SandboxError::Unsupported`] before reaching it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct Capabilities {
-    /// `write`, `write_if`, `remove` and `rename`.
-    pub write: bool,
-    /// `exec`.
-    pub exec: bool,
-}
-
-impl Capabilities {
-    /// Every operation.
-    pub const ALL: Self = Self {
-        write: true,
-        exec: true,
-    };
-}
-
 /// What a sandbox could not do.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -141,8 +122,8 @@ pub enum SandboxError {
         /// The operation, such as `read`.
         operation: &'static str,
     },
-    /// The backend does not support the operation.
-    #[error("this sandbox does not support `{operation}`")]
+    /// The backend refused one operation, or one of its options.
+    #[error("this sandbox refused `{operation}`")]
     Unsupported {
         /// The operation, such as `exec`.
         operation: &'static str,
@@ -189,7 +170,8 @@ impl fmt::Display for SandboxId {
 
 /// What a sandbox does: the operations a backend implements, on absolute,
 /// canonical [`SandboxPath`]s that [`Sandbox`] has already confined to its
-/// work dir.
+/// work dir. A backend that cannot do an operation, or one of its options,
+/// returns [`SandboxError::Unsupported`].
 ///
 /// Implement it for a new kind of sandbox with
 /// [`#[keelrs::async_trait]`](crate::async_trait) and wrap it with
@@ -298,11 +280,6 @@ pub trait SandboxBackend: Send + Sync + 'static {
         files
     }
 
-    /// Which operations it supports.
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
-    }
-
     /// The shell that runs [`Command::Shell`] lines, by its path in the
     /// sandbox; `None` when the backend does not say.
     fn shell(&self) -> Option<&SandboxPath> {
@@ -366,12 +343,6 @@ impl Sandbox {
             real_work_dir: Arc::default(),
             ..self.clone()
         }
-    }
-
-    /// Which operations its backend supports.
-    #[must_use]
-    pub fn capabilities(&self) -> Capabilities {
-        self.backend.capabilities()
     }
 
     /// The shell that runs [`Command::Shell`] lines, as its backend names
@@ -442,7 +413,6 @@ impl Sandbox {
 
     /// Replaces the file `path` with `bytes` in one step, creating its directory.
     pub async fn write(&self, path: impl AsRef<str>, bytes: impl Into<Vec<u8>>) -> Result<()> {
-        supports("write", self.capabilities().write)?;
         let path = self.place(path.as_ref()).await?;
         self.race("write", self.backend.write(&path, bytes.into()))
             .await
@@ -457,7 +427,6 @@ impl Sandbox {
         bytes: impl Into<Vec<u8>>,
         held: ContentHash,
     ) -> Result<Option<Contents>> {
-        supports("write_if", self.capabilities().write)?;
         let path = self.place(path.as_ref()).await?;
         self.race("write_if", self.backend.write_if(&path, bytes.into(), held))
             .await
@@ -465,7 +434,6 @@ impl Sandbox {
 
     /// Removes the file `path`; a directory only when empty, or with `recursive`.
     pub async fn remove(&self, path: impl AsRef<str>, recursive: bool) -> Result<()> {
-        supports("remove", self.capabilities().write)?;
         let path = self.place(path.as_ref()).await?;
         self.race("remove", self.backend.remove(&path, recursive))
             .await
@@ -473,7 +441,6 @@ impl Sandbox {
 
     /// Moves the file `from` to `to`, creating `to`'s directory and replacing a file there.
     pub async fn rename(&self, from: impl AsRef<str>, to: impl AsRef<str>) -> Result<()> {
-        supports("rename", self.capabilities().write)?;
         let from = self.place(from.as_ref()).await?;
         let to = self.place(to.as_ref()).await?;
         self.race("rename", self.backend.rename(&from, &to)).await
@@ -520,7 +487,6 @@ impl Sandbox {
     /// Starts `request` in its `cwd` from the work dir, or the work dir
     /// itself. The command is not caged to the work dir.
     pub async fn exec(&self, mut request: ExecRequest) -> Result<Execution> {
-        supports("exec", self.capabilities().exec)?;
         let cwd = self.work_dir.join(request.cwd.as_deref().unwrap_or("."));
         request.cwd = Some(cwd.to_string());
         self.race("exec", self.backend.exec(request)).await
@@ -565,15 +531,6 @@ impl Sandbox {
             .run_until_cancelled(work)
             .await
             .unwrap_or_else(|| Err(SandboxError::Died { operation }.into()))
-    }
-}
-
-/// `Ok` when `supported`, else [`SandboxError::Unsupported`] for `operation`.
-fn supports(operation: &'static str, supported: bool) -> Result<()> {
-    if supported {
-        Ok(())
-    } else {
-        Err(SandboxError::Unsupported { operation }.into())
     }
 }
 

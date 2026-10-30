@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use keelrs::sandbox::{
-    self, Capabilities, Chunk, ContentHash, Contents, ExecRequest, Execution, Exit, Listing,
-    Sandbox, SandboxBackend, SandboxError, SandboxPath, Stat,
+    self, Chunk, ContentHash, Contents, ExecRequest, Execution, Exit, Listing, Sandbox,
+    SandboxBackend, SandboxError, SandboxPath, Stat,
 };
 use keelrs::{Error, Result};
 use rig_tools::workspace::{Local, Workspace as _};
@@ -469,14 +469,7 @@ impl SandboxBackend for Memory {
     }
 
     async fn exec(&self, _request: ExecRequest) -> Result<Execution> {
-        unreachable!("exec is not a capability")
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            exec: false,
-            ..Capabilities::ALL
-        }
+        Err(SandboxError::Unsupported { operation: "exec" }.into())
     }
 }
 
@@ -501,6 +494,18 @@ async fn a_backend_of_our_own_gets_write_if_and_read_files_by_default() {
         .await
         .unwrap();
     assert_eq!(files, vec![Some(b"two".to_vec()), None]);
+}
+
+#[tokio::test]
+async fn a_backend_refusing_an_operation_reaches_the_caller_as_unsupported() {
+    let sb = Sandbox::new(Memory::default(), SandboxPath::new("/work").unwrap());
+    let refused = sb.exec(ExecRequest::shell("true")).await;
+    assert!(matches!(
+        refused,
+        Err(Error::Sandbox(SandboxError::Unsupported {
+            operation: "exec"
+        }))
+    ));
 }
 
 /// The backend calls a sandbox made, by name.
