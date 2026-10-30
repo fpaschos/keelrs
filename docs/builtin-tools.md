@@ -10,7 +10,7 @@ The eight sandboxed tools every turn that declares a sandbox gets (`keelrs/src/b
 | `write` | a file's whole content, creating its folders | — |
 | `edit` | exact replacements in one file, in order, all or none | the file as last read, written only if it still holds that text |
 | `bash` | a command line in the work dir | last 2000 lines or 50 KB; stopped at 10 MB printed; no timeout unless given |
-| `grep` | lines matching a regex, ignore rules applied | 100 matches, 500 characters a line, 100 KB in all |
+| `grep` | lines matching a regex, ignore rules applied | 100 matches, 500 characters a line, 100 KB in all; files over 16 MB or not UTF-8 are skipped without a note |
 | `glob` | files matching a path glob from the searched directory | 1000 paths or 50 KB |
 | `delete` | one file, never a directory | — |
 | `move` | one file, creating `to`'s folders | refuses an existing `to` unless `overwrite` |
@@ -43,3 +43,5 @@ Redaction lowers the odds of a key reaching the model and its provider's logs. I
 
 - **Two changes to one file in one reply can race**: calls of one reply run at once. [How a reply's tool calls are ordered](https://github.com/fpaschos/keelrs/issues/35).
 - **A listing walks ignored directories** (`target/`, `.git/`) before dropping them. [Where grep and the listing run on a remote sandbox](https://github.com/fpaschos/keelrs/issues/66).
+- **A case-only rename is refused on a case-insensitive filesystem** (macOS by default): `move Readme.md README.md` resolves both to one file and is refused as "the same file".
+- **A dangling link cannot be removed**: `delete` follows it to its missing target and says "no such file".
