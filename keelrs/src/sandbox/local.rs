@@ -349,12 +349,14 @@ fn apply(vars: &mut Vec<(String, String)>, changes: Vec<(String, Option<String>)
 /// before it is killed and the pumps are `cut`. A stop that comes while it
 /// ends still ends it as [`Exit::Killed`].
 async fn drive(
-    mut child: Box<dyn ChildWrapper>,
+    child: Box<dyn ChildWrapper>,
     pumps: Vec<JoinHandle<()>>,
     cut: CancellationToken,
     timeout: Option<Duration>,
     mut stopped: oneshot::Receiver<()>,
 ) -> io::Result<Exit> {
+    let mut child = Group(child, false);
+    let child = &mut child;
     let ended = tokio::select! {
         status = child.wait() => Ok(status),
         () = tokio::time::sleep(timeout.unwrap_or(Duration::MAX)) => Err(Exit::TimedOut),
@@ -385,7 +387,34 @@ async fn drive(
     if stopped.try_recv() == Ok(Some(())) {
         exit = Exit::Killed;
     }
+    child.1 = true;
     Ok(exit)
+}
+
+/// A command's process group, killed when dropped before [`drive`] saw it
+/// through (`.1`), as when the runtime it ran on shuts down.
+struct Group(Box<dyn ChildWrapper>, bool);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if !self.1 {
+            self.0.start_kill().ok();
+        }
+    }
+}
+
+impl std::ops::Deref for Group {
+    type Target = dyn ChildWrapper;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl std::ops::DerefMut for Group {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
 }
 
 /// Where `path` leads when it is a dangling link, which `Local.canonical`

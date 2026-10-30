@@ -351,6 +351,42 @@ async fn dropping_an_execution_kills_its_group() {
     panic!("the background sleep outlived its dropped execution");
 }
 
+#[test]
+#[allow(clippy::disallowed_types)] // with its runtime gone, the check runs on the host
+fn a_command_does_not_outlive_its_runtime() {
+    let dir = TempDir::new();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, running) = runtime.block_on(async {
+        let sb = open(&dir).await;
+        let mut running = sb
+            .exec(ExecRequest::shell("sleep 30 & echo $!; wait"))
+            .await
+            .unwrap();
+        let Some(Chunk::Out(pid)) = running.next().await else {
+            panic!("no pid");
+        };
+        (pid.trim().to_owned(), running)
+    });
+    // The execution outlives the runtime, so only the runtime's end can stop it.
+    drop(runtime);
+    drop(running);
+    for _ in 0..50 {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        if !alive.success() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the background sleep outlived its runtime");
+}
+
 #[tokio::test]
 async fn a_background_leftover_does_not_hold_the_command_open() {
     let dir = TempDir::new();
