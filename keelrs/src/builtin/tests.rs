@@ -473,6 +473,14 @@ async fn glob_says_when_nothing_matches() {
 }
 
 #[tokio::test]
+async fn glob_refuses_a_bad_glob_saying_why() {
+    let fx = Fixture::new().await;
+    fx.project();
+    let bad = fx.glob("src/[", None, false).await;
+    assert!(bad.starts_with("Err: bad glob: "), "{bad}");
+}
+
+#[tokio::test]
 async fn glob_stops_at_1000_paths() {
     let fx = Fixture::new().await;
     for n in 0..1001 {
@@ -585,6 +593,8 @@ async fn grep_says_when_nothing_matches_and_refuses_a_bad_pattern() {
     assert_eq!(fx.grep("nowhere at all", |_| {}).await, "No matches.");
     let bad = fx.grep("(", |_| {}).await;
     assert!(bad.starts_with("Err: bad pattern: "), "{bad}");
+    let bad = fx.grep("fn", |a| a.glob = Some("**/{a".to_owned())).await;
+    assert!(bad.starts_with("Err: bad glob: "), "{bad}");
 }
 
 // bash

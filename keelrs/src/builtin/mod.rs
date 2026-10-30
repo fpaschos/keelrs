@@ -131,6 +131,13 @@ fn fail(shown: &str, error: crate::Error) -> ToolExecutionError {
             kind: ErrorKind::NotFound,
             ..
         } => ToolExecutionError::not_found(format!("{shown}: no such file")),
+        // `list`'s own refusal, such as a bad glob, says what was wrong.
+        SandboxError::Io {
+            operation: "list",
+            kind: ErrorKind::InvalidInput,
+            message,
+            ..
+        } => ToolExecutionError::invalid_args(message),
         SandboxError::Io {
             kind: ErrorKind::InvalidInput | ErrorKind::IsADirectory,
             ..
