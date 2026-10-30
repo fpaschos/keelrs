@@ -39,10 +39,13 @@ pub(crate) struct Replacement {
 pub(super) fn tool(seen: Seen) -> Tool {
     Tool::sandbox(
         "edit",
-        "Replace text in a file: each `old_text`, copied from the file, must match exactly one \
-         place, unless `replace_all` is set, and replacements must not overlap. All are applied \
-         or none. Make all changes to one file in one call, one entry per change. Read the \
-         file first. Returns the changed lines with some context.",
+        "Replace text in a file: each `old_text`, copied from the file as `read` showed it, \
+         must match exactly one place, unless `replace_all` is set. Text with no exact match \
+         still matches once trailing whitespace and typographic quotes, dashes and spaces are \
+         evened out, where only one place matches that way, and the result says so. Make all \
+         changes to one file in one call, one entry per change: they apply in order, each to \
+         the text the ones before it left, and all of them or none. Read the file first. \
+         Returns the changed lines with some context, so there is no need to read it again.",
         move |call: ToolCall<EditArgs>, sb: Sandbox| async move { edit(&sb, &seen, call.data).await },
     )
 }

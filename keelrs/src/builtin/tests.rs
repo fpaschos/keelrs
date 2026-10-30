@@ -207,6 +207,35 @@ async fn read_shows_crlf_lines_without_their_cr() {
 }
 
 #[tokio::test]
+async fn read_from_past_the_end_says_how_long_the_file_is() {
+    let fx = Fixture::new().await;
+    fx.put("a.txt", "one\ntwo\nthree\n");
+    assert_eq!(
+        fx.read("a.txt", Some(5), Some(10)).await,
+        "[offset 5 is past the end: the file has 3 lines]\n"
+    );
+}
+
+#[tokio::test]
+async fn read_cuts_long_lines_to_fit_and_says_so() {
+    let fx = Fixture::new().await;
+    let long = "x".repeat(640);
+    let text: String = (0..475).map(|n| format!("{n} {long}\n")).collect();
+    fx.put("data.txt", &text);
+    let shown = fx.read("data.txt", None, None).await;
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines.len(), 476);
+    assert!(lines[0].starts_with("0 x") && lines[0].ends_with(" […]"));
+    assert!(
+        lines[475].starts_with("[475 lines were cut at ")
+            && lines[475]
+                .ends_with(" characters to fit 50 KB; a smaller limit shows more of each]"),
+        "{}",
+        lines[475]
+    );
+}
+
+#[tokio::test]
 async fn read_of_a_missing_file_names_the_path_it_was_given() {
     let fx = Fixture::new().await;
     assert_eq!(
@@ -341,6 +370,98 @@ async fn edit_refuses_an_old_text_found_nowhere() {
     assert_eq!(
         fx.edit("src/lib.rs", &[("zzz qqq", "x", false)]).await,
         "Err: `old_text` was not found, not even ignoring trailing whitespace, and nothing in the file is close to it; check the path and the text. `src/lib.rs` was not changed; fix the edit and send it again."
+    );
+}
+
+#[tokio::test]
+async fn edit_names_every_failed_entry_and_changes_nothing() {
+    let fx = Fixture::new().await;
+    fx.put("src/lib.rs", LIB);
+    fx.read("src/lib.rs", None, None).await;
+    let refused = fx
+        .edit(
+            "src/lib.rs",
+            &[
+                ("nope one", "x", false),
+                ("x * 2", "x + x", false),
+                ("nope two", "y", false),
+            ],
+        )
+        .await;
+    assert!(
+        refused.starts_with("Err: 2 of the 3 edits failed:\nedits[0]: ")
+            && refused.contains("\nedits[2]: ")
+            && refused.ends_with(
+                "No edit was applied, so `src/lib.rs` was not changed. Send all 3 edits again, \
+                 with these fixed."
+            ),
+        "{refused}"
+    );
+    assert_eq!(fx.get("src/lib.rs"), LIB);
+}
+
+#[tokio::test]
+async fn edit_applies_entries_in_order_even_where_they_overlap() {
+    let fx = Fixture::new().await;
+    fx.put("a.rs", "fn area(w: u32, h: u32) -> u32 {\n    w * h\n}\n");
+    fx.read("a.rs", None, None).await;
+    fx.edit(
+        "a.rs",
+        &[
+            (
+                "fn area(w: u32, h: u32) -> u32 {\n    w * h",
+                "fn area(w: u64, h: u64) -> u64 {\n    w * h",
+                false,
+            ),
+            ("    w * h", "    w.saturating_mul(h)", false),
+        ],
+    )
+    .await;
+    assert_eq!(
+        fx.get("a.rs"),
+        "fn area(w: u64, h: u64) -> u64 {\n    w.saturating_mul(h)\n}\n"
+    );
+    let refused = fx
+        .edit(
+            "a.rs",
+            &[
+                ("u64", "u32", true),
+                ("-> u64 {", "-> Option<u64> {", false),
+            ],
+        )
+        .await;
+    assert!(
+        refused.starts_with(
+            "Err: edits[1]: `old_text` was in the file, but edits[0], applied before it, \
+             changed that text"
+        ),
+        "{refused}"
+    );
+}
+
+#[tokio::test]
+async fn edit_of_text_found_nowhere_shows_the_closest_text() {
+    let fx = Fixture::new().await;
+    fx.put(
+        "main.rs",
+        "fn main() {\n    let total = add(1, 2);\n    println!(\"{total}\");\n}\n",
+    );
+    fx.read("main.rs", None, None).await;
+    let missed = fx
+        .edit(
+            "main.rs",
+            &[(
+                "    let total = add(1, 3);\n",
+                "    let total = add(2, 3);\n",
+                false,
+            )],
+        )
+        .await;
+    assert!(
+        missed.contains("copy it from the closest text in the file, shown below")
+            && missed.contains("is line 2:\n    let total = add(1, 2);")
+            && !missed.contains("read it again"),
+        "{missed}"
     );
 }
 

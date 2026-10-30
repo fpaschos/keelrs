@@ -24,7 +24,8 @@ pub(super) fn tool(seen: Seen) -> Tool {
         "read",
         format!(
             "Read a text file of at most {} MB: its lines as they are, at most {MAX_LINES} lines \
-             or {} KB, then the offset to read on from if it stopped early. Use offset (from 1) \
+             or {} KB, then the offset to read on from if it stopped early; lines too long to \
+             fit are cut, and a note says so. Use offset (from 1) \
              and limit for part of a file. Use `read` to look at a file, not `cat`, `head` or \
              `sed` in `bash`, and read several files at once by calling it several times in \
              one reply.",
