@@ -54,7 +54,7 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
 pub(crate) async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
     let shown = args.path.as_str();
     let path = place(sb, shown).await?;
-    a_file(sb, &path, shown, "`delete` removes").await?;
+    require_file(sb, &path, shown, "`delete` removes").await?;
     seen.forget(&key(&path));
     sb.remove(path.as_str(), false)
         .await
@@ -68,7 +68,7 @@ pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out 
     let (shown_from, shown_to) = (args.from.as_str(), args.to.as_str());
     let from = place(sb, shown_from).await?;
     let to = place(sb, shown_to).await?;
-    a_file(sb, &from, shown_from, "`move` moves").await?;
+    require_file(sb, &from, shown_from, "`move` moves").await?;
     if from == to {
         return Err(ToolExecutionError::invalid_args(format!(
             "{shown_from} and {shown_to} are the same file"
@@ -106,7 +106,7 @@ pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out 
 
 /// Refuses `path`, which the model calls `shown`, unless it is a regular
 /// file; `tool` says what takes files only, as in "`delete` removes".
-async fn a_file(
+async fn require_file(
     sb: &Sandbox,
     path: &SandboxPath,
     shown: &str,
