@@ -847,6 +847,16 @@ src/lib.rs-11- }"
 }
 
 #[tokio::test]
+async fn grep_with_the_largest_context_shows_the_whole_file() {
+    let fx = Fixture::new().await;
+    fx.put("a.txt", "one\ntwo\nthree\n");
+    assert_eq!(
+        fx.grep("two", |a| a.context = Some(usize::MAX)).await,
+        "a.txt-1- one\na.txt:2: two\na.txt-3- three"
+    );
+}
+
+#[tokio::test]
 async fn grep_stops_at_100_matches_and_cuts_lines_at_500_characters() {
     let fx = Fixture::new().await;
     let wide = "hit ".repeat(200);

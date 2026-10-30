@@ -128,7 +128,7 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
             for &at in hits {
                 let (first, last) = (
                     at.saturating_sub(context),
-                    (at + context).min(lines.len() - 1),
+                    at.saturating_add(context).min(lines.len() - 1),
                 );
                 match groups.last_mut() {
                     Some((_, end)) if first <= *end + 1 => *end = last.max(*end),
