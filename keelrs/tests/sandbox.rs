@@ -107,6 +107,21 @@ async fn a_path_out_of_the_work_dir_is_refused() {
 }
 
 #[tokio::test]
+async fn a_gitignore_starting_with_a_byte_order_mark_keeps_its_first_rule() {
+    let dir = TempDir::new();
+    std::fs::write(dir.0.join(".gitignore"), "\u{feff}gen/\n").unwrap();
+    std::fs::create_dir_all(dir.0.join("gen")).unwrap();
+    std::fs::write(dir.0.join("gen/out.rs"), "x").unwrap();
+    std::fs::write(dir.0.join("lib.rs"), "x").unwrap();
+    let sb = open(&dir).await;
+    let listed = sb.list(".", None, Listing::Visible).await.unwrap();
+    assert_eq!(
+        listed,
+        [SandboxPath::new(dir.0.join("lib.rs").to_str().unwrap()).unwrap()]
+    );
+}
+
+#[tokio::test]
 async fn list_skips_a_name_that_is_not_utf8_and_lists_the_rest() {
     use std::os::unix::ffi::OsStrExt as _;
     let dir = TempDir::new();
