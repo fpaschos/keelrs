@@ -586,7 +586,24 @@ async fn grep_stops_at_100_matches_and_cuts_lines_at_500_characters() {
     assert_eq!(lines[0], format!("many.txt:1: {}", &wide[..500]));
     assert_eq!(
         lines[100],
-        "[showing 100 of 150 matches; narrow your search]"
+        "[showing the first 100 matches; narrow your search]"
+    );
+}
+
+#[tokio::test]
+async fn grep_finds_matches_in_every_file_in_path_order_however_many_files() {
+    let fx = Fixture::new().await;
+    for n in 0..150 {
+        let text = if n == 0 || n == 149 {
+            "hit\n"
+        } else {
+            "miss\n"
+        };
+        fx.put(&format!("many/{n:03}.txt"), text);
+    }
+    assert_eq!(
+        fx.grep("hit", |_| {}).await,
+        "many/000.txt:1: hit\nmany/149.txt:1: hit"
     );
 }
 

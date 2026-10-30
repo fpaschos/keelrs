@@ -14,6 +14,8 @@ use crate::{Tool, ToolCall};
 const MAX_MATCHES: usize = 100;
 /// Characters a shown line is cut at.
 const MAX_LINE: usize = 500;
+/// Files read in one go, so a call holds a batch, never the whole tree.
+const BATCH: usize = 64;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -82,67 +84,78 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     };
     // All under the work dir, so in the order of the names shown.
     listed.sort();
-    let texts = sb
-        .read_files(&listed, MAX_FILE_BYTES)
-        .await
-        .map_err(|e| fail(shown, e))?;
     let context = args.context.unwrap_or(0);
     let mut out: Vec<String> = Vec::new();
-    let (mut kept, mut total) = (0, 0);
-    for (path, bytes) in listed.iter().zip(texts) {
-        let name = relative(&work_dir, path);
-        let Some(text) = bytes.and_then(|bytes| String::from_utf8(bytes).ok()) else {
-            continue;
-        };
-        if let Some(whole) = &whole
-            && !lone_cr(&text)
-            && !whole.is_match(&text)
-        {
-            continue;
+    // `cut`: a match not shown, or a file not read, once `kept` is full.
+    let (mut kept, mut cut) = (0, false);
+    'files: for batch in listed.chunks(BATCH) {
+        if kept == MAX_MATCHES {
+            cut = true;
+            break;
         }
-        let lines: Vec<&str> = text.lines().collect();
-        let hits: Vec<usize> = (0..lines.len())
-            .filter(|&at| regex.is_match(lines[at]))
-            .collect();
-        total += hits.len();
-        let hits = &hits[..hits.len().min(MAX_MATCHES - kept)];
-        kept += hits.len();
-        // Each hit with its context, overlapping or touching runs merged.
-        let mut groups: Vec<(usize, usize)> = Vec::new();
-        for &at in hits {
-            let (first, last) = (
-                at.saturating_sub(context),
-                (at + context).min(lines.len() - 1),
-            );
-            match groups.last_mut() {
-                Some((_, end)) if first <= *end + 1 => *end = last.max(*end),
-                _ => groups.push((first, last)),
+        let texts = sb
+            .read_files(batch, MAX_FILE_BYTES)
+            .await
+            .map_err(|e| fail(shown, e))?;
+        for (path, bytes) in batch.iter().zip(texts) {
+            if kept == MAX_MATCHES {
+                cut = true;
+                break 'files;
             }
-        }
-        for (first, last) in groups {
-            if context > 0 && !out.is_empty() {
-                out.push("--".to_owned());
+            let name = relative(&work_dir, path);
+            let Some(text) = bytes.and_then(|bytes| String::from_utf8(bytes).ok()) else {
+                continue;
+            };
+            if let Some(whole) = &whole
+                && !lone_cr(&text)
+                && !whole.is_match(&text)
+            {
+                continue;
             }
-            for (at, line) in lines.iter().enumerate().take(last + 1).skip(first) {
-                let mark = if hits.binary_search(&at).is_ok() {
-                    ':'
-                } else {
-                    '-'
-                };
-                out.push(format!(
-                    "{name}{mark}{}{mark} {}",
-                    at + 1,
-                    clip(line, MAX_LINE)
-                ));
+            let lines: Vec<&str> = text.lines().collect();
+            let hits: Vec<usize> = (0..lines.len())
+                .filter(|&at| regex.is_match(lines[at]))
+                .collect();
+            cut |= hits.len() > MAX_MATCHES - kept;
+            let hits = &hits[..hits.len().min(MAX_MATCHES - kept)];
+            kept += hits.len();
+            // Each hit with its context, overlapping or touching runs merged.
+            let mut groups: Vec<(usize, usize)> = Vec::new();
+            for &at in hits {
+                let (first, last) = (
+                    at.saturating_sub(context),
+                    (at + context).min(lines.len() - 1),
+                );
+                match groups.last_mut() {
+                    Some((_, end)) if first <= *end + 1 => *end = last.max(*end),
+                    _ => groups.push((first, last)),
+                }
+            }
+            for (first, last) in groups {
+                if context > 0 && !out.is_empty() {
+                    out.push("--".to_owned());
+                }
+                for (at, line) in lines.iter().enumerate().take(last + 1).skip(first) {
+                    let mark = if hits.binary_search(&at).is_ok() {
+                        ':'
+                    } else {
+                        '-'
+                    };
+                    out.push(format!(
+                        "{name}{mark}{}{mark} {}",
+                        at + 1,
+                        clip(line, MAX_LINE)
+                    ));
+                }
             }
         }
     }
     if out.is_empty() {
         return Ok("No matches.".to_owned());
     }
-    if total > kept {
+    if cut {
         out.push(format!(
-            "[showing {MAX_MATCHES} of {total} matches; narrow your search]"
+            "[showing the first {MAX_MATCHES} matches; narrow your search]"
         ));
     }
     Ok(out.join("\n"))
