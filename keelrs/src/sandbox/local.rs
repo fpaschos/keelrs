@@ -355,10 +355,12 @@ async fn drive(
     timeout: Option<Duration>,
     mut stopped: oneshot::Receiver<()>,
 ) -> io::Result<Exit> {
-    let mut child = Group(child, false);
-    let child = &mut child;
+    let mut group = Group {
+        child,
+        seen_through: false,
+    };
     let ended = tokio::select! {
-        status = child.wait() => Ok(status),
+        status = group.child.wait() => Ok(status),
         () = tokio::time::sleep(timeout.unwrap_or(Duration::MAX)) => Err(Exit::TimedOut),
         _ = &mut stopped => Err(Exit::Killed),
     };
@@ -366,54 +368,43 @@ async fn drive(
     let mut exit = match ended {
         Ok(Ok(status)) => exit_of(status),
         Ok(Err(e)) => {
-            child.start_kill().ok();
+            group.child.start_kill().ok();
             cut.cancel();
             return Err(e);
         }
         Err(exit) => {
-            child.signal(libc::SIGTERM).ok();
-            tokio::time::timeout(GRACE, child.wait()).await.ok();
-            child.start_kill().ok();
-            child.wait().await.ok();
+            group.child.signal(libc::SIGTERM).ok();
+            tokio::time::timeout(GRACE, group.child.wait()).await.ok();
+            group.child.start_kill().ok();
+            group.child.wait().await.ok();
             exit
         }
     };
     let mut pumps = futures::future::join_all(pumps);
     if tokio::time::timeout(LEFTOVER, &mut pumps).await.is_err() {
-        child.start_kill().ok();
+        group.child.start_kill().ok();
         cut.cancel();
         pumps.await;
     }
     if stopped.try_recv() == Ok(Some(())) {
         exit = Exit::Killed;
     }
-    child.1 = true;
+    group.seen_through = true;
     Ok(exit)
 }
 
 /// A command's process group, killed when dropped before [`drive`] saw it
-/// through (`.1`), as when the runtime it ran on shuts down.
-struct Group(Box<dyn ChildWrapper>, bool);
+/// through, as when the runtime it ran on shuts down.
+struct Group {
+    child: Box<dyn ChildWrapper>,
+    seen_through: bool,
+}
 
 impl Drop for Group {
     fn drop(&mut self) {
-        if !self.1 {
-            self.0.start_kill().ok();
+        if !self.seen_through {
+            self.child.start_kill().ok();
         }
-    }
-}
-
-impl std::ops::Deref for Group {
-    type Target = dyn ChildWrapper;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-
-impl std::ops::DerefMut for Group {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.0
     }
 }
 

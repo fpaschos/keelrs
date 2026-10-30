@@ -36,15 +36,14 @@ pub(crate) async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
         .map_err(|e| fail(&args.path, e))?
     {
         // A file it cannot read, it may still replace, uncounted.
-        Stat::File { size, .. } if size <= MAX_FILE_BYTES => {
-            match sb.read(path.as_str(), MAX_FILE_BYTES).await {
-                Ok(contents) => match String::from_utf8(contents.bytes) {
-                    Ok(text) => Before::Lines(text.lines().count()),
-                    Err(_) => Before::Uncounted,
-                },
-                Err(_) => Before::Uncounted,
-            }
-        }
+        Stat::File { size, .. } if size <= MAX_FILE_BYTES => sb
+            .read(path.as_str(), MAX_FILE_BYTES)
+            .await
+            .ok()
+            .and_then(|contents| String::from_utf8(contents.bytes).ok())
+            .map_or(Before::Uncounted, |text| {
+                Before::Lines(text.lines().count())
+            }),
         Stat::Missing => Before::Nothing,
         _ => Before::Uncounted,
     };

@@ -765,10 +765,7 @@ fn keep_tail(kept: &mut String, text: &str) {
 /// character boundary.
 fn keep_last(kept: &mut String) {
     if kept.len() > KEPT_OUTPUT {
-        let mut cut = kept.len() - KEPT_OUTPUT;
-        while !kept.is_char_boundary(cut) {
-            cut += 1;
-        }
+        let cut = kept.ceil_char_boundary(kept.len() - KEPT_OUTPUT);
         kept.drain(..cut);
     }
 }

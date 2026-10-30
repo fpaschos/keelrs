@@ -5,7 +5,7 @@
 //! over that render's sandbox, as the skill tools are, and act only through
 //! [`Sandbox`]'s own methods, so they behave alike on every backend.
 //!
-//! They reuse rig-tools' text logic (`Seen`, `ReadArgs::shown`,
+//! They reuse rig-tools' text logic (`Seen`, `ReadArgs::show`,
 //! `edit::apply`, `clip`); what rig-tools keeps private is copied, marked
 //! where it is. No Rig type leaves this module (ADR 0004, rule 2).
 
@@ -138,7 +138,8 @@ fn text_of(contents: Contents, sent: &str) -> Result<String, ToolExecutionError>
             MAX_FILE_BYTES / (1024 * 1024)
         )));
     }
-    String::from_utf8(contents.bytes).map_err(|_| not_text(sent))
+    String::from_utf8(contents.bytes)
+        .map_err(|_| ToolExecutionError::invalid_args(format!("{sent} is not UTF-8 text")))
 }
 
 /// A sandbox error worded for the model, naming `sent`, the path as it gave it.
@@ -175,8 +176,4 @@ fn fail(sent: &str, error: crate::Error) -> ToolExecutionError {
         SandboxError::Io { message, .. } => ToolExecutionError::other(format!("{sent}: {message}")),
         other => ToolExecutionError::other(other.to_string()),
     }
-}
-
-fn not_text(sent: &str) -> ToolExecutionError {
-    ToolExecutionError::invalid_args(format!("{sent} is not UTF-8 text"))
 }

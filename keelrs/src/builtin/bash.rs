@@ -81,23 +81,19 @@ pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
             let (name, why) = sent(signal);
             format!("ended by {name} (signal {signal}): {why}")
         }
-        Exit::TimedOut if tail.printed == 0 => format!(
-            "timed out after {}s and was stopped{SILENT}",
-            args.timeout.unwrap_or_default()
-        ),
         Exit::TimedOut => format!(
-            "timed out after {}s and was stopped",
-            args.timeout.unwrap_or_default()
+            "timed out after {}s and was stopped{}",
+            args.timeout.unwrap_or_default(),
+            if tail.printed == 0 { SILENT } else { "" }
         ),
         Exit::Killed => "killed".to_owned(),
     };
     let mut out = String::new();
     match OutputLimit::default().tail(&tail.kept) {
         ("", _) if !tail.kept.is_empty() => {
-            let mut start = tail.kept.len().saturating_sub(MAX_BYTES);
-            while !tail.kept.is_char_boundary(start) {
-                start += 1;
-            }
+            let start = tail
+                .kept
+                .ceil_char_boundary(tail.kept.len().saturating_sub(MAX_BYTES));
             out.push_str(&format!(
                 "[showing the last {} KB of a longer line]\n",
                 MAX_BYTES / 1024
@@ -270,10 +266,7 @@ impl Tail {
     fn keep(&mut self, text: &str) {
         self.kept.push_str(text);
         if self.kept.len() > 2 * MAX_BYTES {
-            let mut drop = self.kept.len() - MAX_BYTES;
-            while !self.kept.is_char_boundary(drop) {
-                drop += 1;
-            }
+            let drop = self.kept.ceil_char_boundary(self.kept.len() - MAX_BYTES);
             self.cut += self.kept[..drop].matches('\n').count();
             self.kept.drain(..drop);
         }
