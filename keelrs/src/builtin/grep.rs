@@ -67,20 +67,20 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
         .build()
         .map_err(|e| ToolExecutionError::invalid_args(format!("bad pattern: {e}")))?;
     let whole = whole_text(&pattern, args.ignore_case);
-    let shown = args.path.as_deref().unwrap_or(".");
-    let root = place(sb, shown).await?;
+    let sent = args.path.as_deref().unwrap_or(".");
+    let root = place(sb, sent).await?;
     let work_dir = place(sb, ".").await?;
-    let mut listed = match sb.stat(root.as_str()).await.map_err(|e| fail(shown, e))? {
+    let mut listed = match sb.stat(root.as_str()).await.map_err(|e| fail(sent, e))? {
         Stat::File { .. } => vec![root],
         Stat::Missing => {
             return Err(ToolExecutionError::not_found(format!(
-                "{shown}: no such file or directory"
+                "{sent}: no such file or directory"
             )));
         }
         Stat::Dir | Stat::Other => sb
             .list(root.as_str(), args.glob.as_deref(), listing(args.hidden))
             .await
-            .map_err(|e| fail(shown, e))?,
+            .map_err(|e| fail(sent, e))?,
     };
     // All under the work dir, so in the order of the names shown.
     listed.sort();
@@ -96,7 +96,7 @@ pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
         let texts = sb
             .read_files(batch, MAX_FILE_BYTES)
             .await
-            .map_err(|e| fail(shown, e))?;
+            .map_err(|e| fail(sent, e))?;
         for (path, bytes) in batch.iter().zip(texts) {
             if kept == MAX_MATCHES {
                 cut = true;

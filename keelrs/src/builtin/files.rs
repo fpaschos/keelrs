@@ -52,39 +52,39 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
 /// Removes the file `args.path`, which `seen` then forgets.
 // The rules and wording are rig-tools 0.46.0-rc.1 src/delete.rs's.
 pub(crate) async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
-    let shown = args.path.as_str();
-    let path = place(sb, shown).await?;
-    require_file(sb, &path, shown, "`delete` removes").await?;
+    let sent = args.path.as_str();
+    let path = place(sb, sent).await?;
+    require_file(sb, &path, sent, "`delete` removes").await?;
     seen.forget(&key(&path));
     sb.remove(path.as_str(), false)
         .await
-        .map_err(|e| fail(shown, e))?;
-    Ok(format!("Deleted {shown}."))
+        .map_err(|e| fail(sent, e))?;
+    Ok(format!("Deleted {sent}."))
 }
 
 /// Moves the file `args.from` to `args.to`; what `seen` remembers of it moves too.
 // The rules and wording are rig-tools 0.46.0-rc.1 src/move_file.rs's.
 pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
-    let (shown_from, shown_to) = (args.from.as_str(), args.to.as_str());
-    let from = place(sb, shown_from).await?;
-    let to = place(sb, shown_to).await?;
-    require_file(sb, &from, shown_from, "`move` moves").await?;
+    let (sent_from, sent_to) = (args.from.as_str(), args.to.as_str());
+    let from = place(sb, sent_from).await?;
+    let to = place(sb, sent_to).await?;
+    require_file(sb, &from, sent_from, "`move` moves").await?;
     if from == to {
         return Err(ToolExecutionError::invalid_args(format!(
-            "{shown_from} and {shown_to} are the same file"
+            "{sent_from} and {sent_to} are the same file"
         )));
     }
-    match sb.stat(to.as_str()).await.map_err(|e| fail(shown_to, e))? {
+    match sb.stat(to.as_str()).await.map_err(|e| fail(sent_to, e))? {
         Stat::Missing => {}
         Stat::File { .. } if args.overwrite => {}
         Stat::File { .. } => {
             return Err(ToolExecutionError::invalid_args(format!(
-                "{shown_to} already exists; set `overwrite` to replace it"
+                "{sent_to} already exists; set `overwrite` to replace it"
             )));
         }
         Stat::Dir | Stat::Other => {
             return Err(ToolExecutionError::invalid_args(format!(
-                "{shown_to} is not a regular file; give the file's new path"
+                "{sent_to} is not a regular file; give the file's new path"
             )));
         }
     }
@@ -95,30 +95,30 @@ pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out 
     seen.forget(&to_key);
     sb.rename(from.as_str(), to.as_str())
         .await
-        .map_err(|e| fail(shown_from, e))?;
+        .map_err(|e| fail(sent_from, e))?;
     match (moved, hash) {
         (Some((_, text)), _) => seen.saw_whole(&to_key, &text),
         (None, Some(hash)) => seen.saw(&to_key, hash),
         (None, None) => {}
     }
-    Ok(format!("Moved {shown_from} to {shown_to}."))
+    Ok(format!("Moved {sent_from} to {sent_to}."))
 }
 
-/// Refuses `path`, which the model calls `shown`, unless it is a regular
+/// Refuses `path` (`sent` as the model gave it) unless it is a regular
 /// file; `tool` says what takes files only, as in "`delete` removes".
 async fn require_file(
     sb: &Sandbox,
     path: &SandboxPath,
-    shown: &str,
+    sent: &str,
     tool: &str,
 ) -> Result<(), ToolExecutionError> {
-    match sb.stat(path.as_str()).await.map_err(|e| fail(shown, e))? {
+    match sb.stat(path.as_str()).await.map_err(|e| fail(sent, e))? {
         Stat::File { .. } => Ok(()),
         Stat::Missing => Err(ToolExecutionError::not_found(format!(
-            "{shown}: no such file"
+            "{sent}: no such file"
         ))),
         Stat::Dir | Stat::Other => Err(ToolExecutionError::invalid_args(format!(
-            "{shown} is not a regular file; {tool} files only"
+            "{sent} is not a regular file; {tool} files only"
         ))),
     }
 }

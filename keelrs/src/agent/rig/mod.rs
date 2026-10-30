@@ -26,7 +26,7 @@ use crate::builtin::{self, Caches};
 use crate::model::Thinking;
 use crate::sandbox::Sandbox;
 use crate::skills::catalog::catalog;
-use crate::skills::tools::builtin as skill_tools;
+use crate::skills::tools::skill_tools;
 use crate::{Agent, Model, Tool};
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
@@ -96,7 +96,7 @@ async fn run_with(
                 sandbox = cx.sandbox()?.cloned();
                 // Flue's order: the sandbox built-ins, the skill tools, then the declared ones.
                 let builtins = match &sandbox {
-                    Some(sb) => builtin::tools(sb, &caches.seen(sb.id()), &cx.builtins()?),
+                    Some(sb) => builtin::tools(sb, &caches.seen(sb.id()), &cx.builtin_names()?),
                     None => Vec::new(),
                 };
                 let tools: Vec<Tool> = builtins

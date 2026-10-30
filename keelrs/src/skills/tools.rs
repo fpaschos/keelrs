@@ -16,7 +16,7 @@ use crate::{Tool, ToolCall};
 
 /// The built-in tools for `skills`: `activate_skill` with at least one skill,
 /// `read_skill_resource` when one has files besides `SKILL.md`.
-pub(crate) fn builtin(skills: &[Skill]) -> Vec<Tool> {
+pub(crate) fn skill_tools(skills: &[Skill]) -> Vec<Tool> {
     if skills.is_empty() {
         return Vec::new();
     }

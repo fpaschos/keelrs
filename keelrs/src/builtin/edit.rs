@@ -9,7 +9,7 @@ use rig_tools::{Seen, clip};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, key, not_text, place, whole_text};
+use super::{Out, fail, key, not_text, place, read_text};
 use crate::sandbox::{ContentHash, Sandbox};
 use crate::{Tool, ToolCall};
 
@@ -51,8 +51,8 @@ pub(super) fn tool(seen: Seen) -> Tool {
 /// text last seen whole, written only if the file still holds it, and
 /// otherwise from the file as it is now.
 pub(crate) async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
-    let shown = args.path.as_str();
-    let path = place(sb, shown).await?;
+    let sent = args.path.as_str();
+    let path = place(sb, sent).await?;
     let key = key(&path);
     let edits: Vec<rig_tools::Replacement> = args
         .edits
@@ -65,39 +65,37 @@ pub(crate) async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
         .collect();
     let mut held = None;
     if let Some((_, text)) = seen.text(&key)
-        && let Ok(applied) = apply(shown, &text, &edits)
+        && let Ok(applied) = apply(sent, &text, &edits)
     {
         let hash = ContentHash::of(text.as_bytes());
         match sb
             .write_if(path.as_str(), applied.text.as_bytes(), hash)
             .await
         {
-            Ok(None) => return Ok(reply(seen, &key, shown, edits.len(), &applied)),
-            Ok(Some(now)) => {
-                held = Some(String::from_utf8(now.bytes).map_err(|_| not_text(shown))?)
-            }
+            Ok(None) => return Ok(reply(seen, &key, sent, edits.len(), &applied)),
+            Ok(Some(now)) => held = Some(String::from_utf8(now.bytes).map_err(|_| not_text(sent))?),
             Err(e) => {
                 seen.forget(&key);
-                return Err(fail(shown, e));
+                return Err(fail(sent, e));
             }
         }
     }
     let text = match held {
         Some(text) => text,
-        None => whole_text(sb, &path, shown).await?,
+        None => read_text(sb, &path, sent).await?,
     };
     let changed = seen
         .hash(&key)
         .is_some_and(|hash| hash != content_hash(text.as_bytes()));
-    let applied = apply(shown, &text, &edits).map_err(|e| match changed {
-        true => stale(shown, &e),
+    let applied = apply(sent, &text, &edits).map_err(|e| match changed {
+        true => stale(sent, &e),
         false => e,
     })?;
     if let Err(e) = sb.write(path.as_str(), applied.text.as_bytes()).await {
         seen.forget(&key);
-        return Err(fail(shown, e));
+        return Err(fail(sent, e));
     }
-    Ok(reply(seen, &key, shown, edits.len(), &applied))
+    Ok(reply(seen, &key, sent, edits.len(), &applied))
 }
 
 /// `refusal` worded for a file `path` that changed since it was last read:

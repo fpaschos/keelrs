@@ -4,7 +4,7 @@ use rig_tools::{MAX_BYTES, MAX_FILE_BYTES, MAX_LINES, Seen};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, key, place, whole_text};
+use super::{Out, key, place, read_text};
 use crate::sandbox::Sandbox;
 use crate::{Tool, ToolCall};
 
@@ -39,10 +39,10 @@ pub(super) fn tool(seen: Seen) -> Tool {
 /// remembered in `seen` for a later `edit`.
 pub(crate) async fn read(sb: &Sandbox, seen: &Seen, args: ReadArgs) -> Out {
     let path = place(sb, &args.path).await?;
-    let text = whole_text(sb, &path, &args.path).await?;
-    let mut shown = rig_tools::ReadArgs::new(args.path);
-    shown.offset = args.offset;
-    shown.limit = args.limit;
+    let text = read_text(sb, &path, &args.path).await?;
+    let mut page = rig_tools::ReadArgs::new(args.path);
+    page.offset = args.offset;
+    page.limit = args.limit;
     seen.saw_whole(&key(&path), &text);
-    Ok(shown.show(&text))
+    Ok(page.show(&text))
 }

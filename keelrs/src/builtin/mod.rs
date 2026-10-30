@@ -99,29 +99,29 @@ fn relative(work_dir: &SandboxPath, path: &SandboxPath) -> String {
     }
 }
 
-/// The whole UTF-8 text of `path`, which the model calls `shown`; refused
+/// The whole UTF-8 text of `path` (`sent` as the model gave it); refused
 /// over [`MAX_FILE_BYTES`].
-async fn whole_text(
+async fn read_text(
     sb: &Sandbox,
     path: &SandboxPath,
-    shown: &str,
+    sent: &str,
 ) -> Result<String, ToolExecutionError> {
     let contents = sb
         .read(path.as_str(), MAX_FILE_BYTES + 1)
         .await
-        .map_err(|e| fail(shown, e))?;
+        .map_err(|e| fail(sent, e))?;
     if contents.size > MAX_FILE_BYTES {
         return Err(ToolExecutionError::invalid_args(format!(
-            "{shown} is larger than {} MB",
+            "{sent} is larger than {} MB",
             MAX_FILE_BYTES / (1024 * 1024)
         )));
     }
-    String::from_utf8(contents.bytes).map_err(|_| not_text(shown))
+    String::from_utf8(contents.bytes).map_err(|_| not_text(sent))
 }
 
-/// A sandbox error worded for the model, naming `shown`, the path it sent.
+/// A sandbox error worded for the model, naming `sent`, the path as it gave it.
 // Copied from rig-tools 0.46.0-rc.1 src/workspace.rs (`text_error`), over keelrs's errors.
-fn fail(shown: &str, error: crate::Error) -> ToolExecutionError {
+fn fail(sent: &str, error: crate::Error) -> ToolExecutionError {
     use std::io::ErrorKind;
     let crate::Error::Sandbox(error) = error else {
         return ToolExecutionError::other(error.to_string());
@@ -130,7 +130,7 @@ fn fail(shown: &str, error: crate::Error) -> ToolExecutionError {
         SandboxError::Io {
             kind: ErrorKind::NotFound,
             ..
-        } => ToolExecutionError::not_found(format!("{shown}: no such file")),
+        } => ToolExecutionError::not_found(format!("{sent}: no such file")),
         // `list`'s own refusal, such as a bad glob, says what was wrong.
         SandboxError::Io {
             operation: "list",
@@ -141,17 +141,15 @@ fn fail(shown: &str, error: crate::Error) -> ToolExecutionError {
         SandboxError::Io {
             kind: ErrorKind::InvalidInput | ErrorKind::IsADirectory,
             ..
-        } => ToolExecutionError::invalid_args(format!("{shown} is not a regular file")),
+        } => ToolExecutionError::invalid_args(format!("{sent} is not a regular file")),
         SandboxError::OutsideWorkDir { .. } => {
-            ToolExecutionError::invalid_args(format!("{shown} is outside the work dir"))
+            ToolExecutionError::invalid_args(format!("{sent} is outside the work dir"))
         }
-        SandboxError::Io { message, .. } => {
-            ToolExecutionError::other(format!("{shown}: {message}"))
-        }
+        SandboxError::Io { message, .. } => ToolExecutionError::other(format!("{sent}: {message}")),
         other => ToolExecutionError::other(other.to_string()),
     }
 }
 
-fn not_text(shown: &str) -> ToolExecutionError {
-    ToolExecutionError::invalid_args(format!("{shown} is not UTF-8 text"))
+fn not_text(sent: &str) -> ToolExecutionError {
+    ToolExecutionError::invalid_args(format!("{sent} is not UTF-8 text"))
 }

@@ -167,9 +167,9 @@ impl AgentContext {
         Ok(self.sandbox.as_ref())
     }
 
-    /// The built-in tools this render gets, in [`BUILTIN_NAMES`] order:
+    /// The names of the built-in tools this render gets, in [`BUILTIN_NAMES`] order:
     /// none without a sandbox, all of them unless `only` narrowed them.
-    pub(crate) fn builtins(&self) -> Result<Vec<&'static str>, String> {
+    pub(crate) fn builtin_names(&self) -> Result<Vec<&'static str>, String> {
         if self.sandbox.is_none() {
             return Ok(Vec::new());
         }

@@ -38,8 +38,8 @@ pub(super) fn tool() -> Tool {
 
 /// The files under `args.path` whose paths below it match `args.pattern`.
 pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
-    let shown = args.path.as_deref().unwrap_or(".");
-    let root = place(sb, shown).await?;
+    let sent = args.path.as_deref().unwrap_or(".");
+    let root = place(sb, sent).await?;
     let work_dir = place(sb, ".").await?;
     // Anchored at the root, so `*.md` is a path glob, not a name at any depth.
     let pattern = args.pattern.trim_start_matches("./");
@@ -50,7 +50,7 @@ pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
     let listed = sb
         .list(root.as_str(), Some(&pattern), listing(args.hidden))
         .await
-        .map_err(|e| fail(shown, e))?;
+        .map_err(|e| fail(sent, e))?;
     let mut paths: Vec<String> = listed
         .iter()
         .map(|path| relative(&work_dir, path))
