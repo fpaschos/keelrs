@@ -642,7 +642,7 @@ impl ExecRequest {
     }
 }
 
-/// A piece of a running command's output, as it comes: usually a line.
+/// A piece of a running command's output, as it comes: usually whole lines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Chunk {
     /// From stdout.
@@ -728,6 +728,8 @@ impl Execution {
                 Chunk::Err(text) => keep_tail(&mut stderr, &text),
             }
         }
+        keep_last(&mut stdout, KEPT_OUTPUT);
+        keep_last(&mut stderr, KEPT_OUTPUT);
         let exit = self.wait().await?;
         Ok(Ran {
             stdout,
@@ -749,15 +751,19 @@ impl fmt::Debug for Execution {
     }
 }
 
-/// Appends `text` to `kept`, then drops from the front what is past
-/// [`KEPT_OUTPUT`], at a character boundary.
+/// Appends `text` to `kept`, dropping from the front what is past
+/// [`KEPT_OUTPUT`] once it is an eighth over, so the drop that moves the
+/// rest comes once per 8 MiB, not once per line.
 fn keep_tail(kept: &mut String, text: &str) {
     kept.push_str(text);
-    if kept.len() > KEPT_OUTPUT {
-        let mut cut = kept.len() - KEPT_OUTPUT;
-        while !kept.is_char_boundary(cut) {
-            cut += 1;
-        }
-        kept.drain(..cut);
+    if kept.len() > KEPT_OUTPUT + KEPT_OUTPUT / 8 {
+        keep_last(kept, KEPT_OUTPUT);
     }
+}
+
+/// Drops from the front of `kept` what is past `max` bytes, at a character
+/// boundary; the text dropped.
+pub(crate) fn keep_last(kept: &mut String, max: usize) -> std::string::Drain<'_> {
+    let cut = kept.ceil_char_boundary(kept.len().saturating_sub(max));
+    kept.drain(..cut)
 }

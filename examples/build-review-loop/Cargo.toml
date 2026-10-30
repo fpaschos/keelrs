@@ -8,8 +8,6 @@ publish = false
 [dependencies]
 keelrs.workspace = true
 anyhow.workspace = true
-rig-core.workspace = true
-rig-tools.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }

@@ -116,8 +116,10 @@ impl Rules {
                 _ => (1, parent(file)),
             };
             let mut builder = GitignoreBuilder::new(dir);
-            // A line that is not a glob is skipped, as git skips it.
-            for line in String::from_utf8_lossy(&text).lines() {
+            // A line that is not a glob is skipped, as git skips it; a
+            // leading byte order mark is dropped, as `ignore` drops it.
+            let text = String::from_utf8_lossy(&text);
+            for line in text.strip_prefix('\u{feff}').unwrap_or(&text).lines() {
                 builder
                     .add_line(Some(PathBuf::from(file.as_str())), line)
                     .ok();

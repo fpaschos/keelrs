@@ -1,10 +1,12 @@
 //! What an agent function declares for the current turn.
 
+use crate::builtin::NAMES as BUILTIN_NAMES;
 use crate::sandbox::Sandbox;
 use crate::{Model, Skill, Tool};
 
-/// Tool names keelrs keeps for its built-in tools, with or without skills.
-const RESERVED_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
+/// Tool names keelrs keeps for its skill tools, with or without skills; the
+/// sandbox built-ins' names are kept too, with or without a sandbox.
+const SKILL_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
 
 /// What an agent function receives to make its declarations for the current turn.
 #[derive(Debug, Default)]
@@ -17,6 +19,30 @@ pub struct AgentContext {
     /// The first `use_sandbox` sandbox, and how many calls this render made.
     sandbox: Option<Sandbox>,
     sandbox_calls: usize,
+    /// The built-in tools `only` kept, when it was called.
+    only: Option<Vec<String>>,
+}
+
+/// The built-in tools a sandbox brings to a turn: `read`, `write`, `edit`,
+/// `bash`, `grep`, `glob`, `delete` and `move`, all of them unless
+/// narrowed with [`only`](Self::only). Returned by
+/// [`AgentContext::use_sandbox`].
+#[derive(Debug)]
+pub struct BuiltinTools<'a> {
+    only: &'a mut Option<Vec<String>>,
+}
+
+impl BuiltinTools<'_> {
+    /// Keeps only the built-in tools `names`, such as
+    /// `["read", "grep", "glob", "bash"]` for an agent that looks but does
+    /// not edit (its `bash` can still write); `[]` keeps none.
+    ///
+    /// An unknown name settles the dispatch as
+    /// [`Outcome::Failed`](crate::Outcome::Failed). The names left out stay
+    /// reserved: no declared tool may take them.
+    pub fn only<'n>(self, names: impl IntoIterator<Item = &'n str>) {
+        *self.only = Some(names.into_iter().map(str::to_owned).collect());
+    }
 }
 
 impl AgentContext {
@@ -46,13 +72,20 @@ impl AgentContext {
     /// Declares the sandbox this turn's sandboxed tools act through
     /// ([`Tool::sandbox`]); keelrs holds it only for this dispatch.
     ///
+    /// The turn also gets keelrs's built-in tools over it, listed before
+    /// skill tools and declared tools; narrow them with
+    /// [`BuiltinTools::only`].
+    ///
     /// Optional, and at most once per render: a second call, or a sandboxed
     /// tool with no sandbox declared, settles the dispatch as
     /// [`Outcome::Failed`](crate::Outcome::Failed). keelrs never falls back
     /// to the host.
-    pub fn use_sandbox(&mut self, sandbox: Sandbox) {
+    pub fn use_sandbox(&mut self, sandbox: Sandbox) -> BuiltinTools<'_> {
         self.sandbox_calls += 1;
         self.sandbox.get_or_insert(sandbox);
+        BuiltinTools {
+            only: &mut self.only,
+        }
     }
 
     /// Mounts a skill this turn, in call order: the model sees its name and
@@ -93,7 +126,7 @@ impl AgentContext {
     /// The tools this render declared, or why the run fails.
     pub(crate) fn tools(&self) -> Result<&[Tool], String> {
         for (i, tool) in self.tools.iter().enumerate() {
-            if RESERVED_TOOL_NAMES.contains(&&*tool.name) {
+            if SKILL_TOOL_NAMES.contains(&&*tool.name) || BUILTIN_NAMES.contains(&&*tool.name) {
                 return Err(format!(
                     "`{}` is reserved for keelrs's built-in tool",
                     tool.name
@@ -132,6 +165,30 @@ impl AgentContext {
             ));
         }
         Ok(self.sandbox.as_ref())
+    }
+
+    /// The names of the built-in tools this render gets, in [`BUILTIN_NAMES`] order:
+    /// none without a sandbox, all of them unless `only` narrowed them.
+    pub(crate) fn builtin_names(&self) -> Result<Vec<&'static str>, String> {
+        if self.sandbox.is_none() {
+            return Ok(Vec::new());
+        }
+        let Some(kept) = &self.only else {
+            return Ok(BUILTIN_NAMES.to_vec());
+        };
+        if let Some(unknown) = kept
+            .iter()
+            .find(|name| !BUILTIN_NAMES.contains(&name.as_str()))
+        {
+            return Err(format!(
+                "`only` names `{unknown}`, which is not a built-in tool; they are {}",
+                BUILTIN_NAMES.join(", ")
+            ));
+        }
+        Ok(BUILTIN_NAMES
+            .into_iter()
+            .filter(|name| kept.iter().any(|kept| kept == name))
+            .collect())
     }
 
     /// The skills this render mounted, or why the run fails.

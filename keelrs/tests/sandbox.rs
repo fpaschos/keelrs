@@ -106,6 +106,65 @@ async fn a_path_out_of_the_work_dir_is_refused() {
     assert!(!dir.0.join("escaped.txt").exists());
 }
 
+#[tokio::test]
+async fn a_gitignore_starting_with_a_byte_order_mark_keeps_its_first_rule() {
+    let dir = TempDir::new();
+    std::fs::write(dir.0.join(".gitignore"), "\u{feff}gen/\n").unwrap();
+    std::fs::create_dir_all(dir.0.join("gen")).unwrap();
+    std::fs::write(dir.0.join("gen/out.rs"), "x").unwrap();
+    std::fs::write(dir.0.join("lib.rs"), "x").unwrap();
+    let sb = open(&dir).await;
+    let listed = sb.list(".", None, Listing::Visible).await.unwrap();
+    assert_eq!(
+        listed,
+        [SandboxPath::new(dir.0.join("lib.rs").to_str().unwrap()).unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn list_skips_a_name_that_is_not_utf8_and_lists_the_rest() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = TempDir::new();
+    let odd = std::ffi::OsStr::from_bytes(b"odd\xff.txt");
+    if std::fs::write(dir.0.join(odd), "x").is_err() {
+        return; // the file system takes UTF-8 names only, as macOS's does
+    }
+    std::fs::write(dir.0.join("ok.txt"), "x").unwrap();
+    let sb = open(&dir).await;
+    let listed = sb.list(".", None, Listing::Visible).await.unwrap();
+    assert_eq!(
+        listed,
+        [SandboxPath::new(dir.0.join("ok.txt").to_str().unwrap()).unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn a_dangling_link_leads_where_it_points_and_out_is_refused() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(dir.0.join("inner")).unwrap();
+    let link = |to: &str, at: &str| {
+        std::os::unix::fs::symlink(dir.0.join(to), dir.0.join(at)).unwrap();
+    };
+    link("outside/new.txt", "inner/out.txt");
+    link("inner/made/new.txt", "inner/in.txt");
+    let sb = open(&dir).await.work_dir("inner");
+
+    let write = sb.write("out.txt", b"x".to_vec()).await;
+    assert!(
+        matches!(
+            write,
+            Err(Error::Sandbox(SandboxError::OutsideWorkDir { .. }))
+        ),
+        "{write:?}"
+    );
+    assert!(!dir.0.join("outside").exists());
+    sb.write("in.txt", b"x".to_vec()).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.0.join("inner/made/new.txt")).unwrap(),
+        "x"
+    );
+}
+
 /// A project with every kind of file a listing leaves out or keeps.
 const PROJECT: [(&str, &str); 17] = [
     (".git/info/exclude", "excluded.txt\n"),
@@ -307,6 +366,42 @@ async fn dropping_an_execution_kills_its_group() {
     panic!("the background sleep outlived its dropped execution");
 }
 
+#[test]
+#[allow(clippy::disallowed_types)] // with its runtime gone, the check runs on the host
+fn a_command_does_not_outlive_its_runtime() {
+    let dir = TempDir::new();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, running) = runtime.block_on(async {
+        let sb = open(&dir).await;
+        let mut running = sb
+            .exec(ExecRequest::shell("sleep 30 & echo $!; wait"))
+            .await
+            .unwrap();
+        let Some(Chunk::Out(pid)) = running.next().await else {
+            panic!("no pid");
+        };
+        (pid.trim().to_owned(), running)
+    });
+    // The execution outlives the runtime, so only the runtime's end can stop it.
+    drop(runtime);
+    drop(running);
+    for _ in 0..50 {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        if !alive.success() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the background sleep outlived its runtime");
+}
+
 #[tokio::test]
 async fn a_background_leftover_does_not_hold_the_command_open() {
     let dir = TempDir::new();
@@ -404,6 +499,23 @@ async fn a_long_line_is_split_between_characters() {
         .await
         .unwrap();
     assert_eq!(ran.stdout, format!("a{}", "\u{e9}".repeat(100_000)));
+}
+
+#[tokio::test]
+async fn run_keeps_the_last_64_mib_of_a_larger_output_without_slowing_down() {
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
+    let run = sb
+        .exec(ExecRequest::shell("yes | head -c 80000000"))
+        .await
+        .unwrap()
+        .run();
+    let ran = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("80 MB of output took over 30s")
+        .unwrap();
+    assert_eq!(ran.stdout.len(), 64 * 1024 * 1024);
+    assert!(ran.stdout == "y\n".repeat(32 * 1024 * 1024));
 }
 
 /// Files in memory: a backend with only the required methods, and no exec.

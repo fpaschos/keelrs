@@ -5,11 +5,9 @@
 //! then commits, harvests the branch as a bundle, pushes it and opens a pull request.
 //!
 //! The sandbox is `keelrs::sandbox::local`, rooted at a scratch directory standing in for a
-//! remote one: [`git::seed`], [`git::harvest`] and `shell` reach it only through `Sandbox`, so
-//! they work on any backend. The file tools in [`coding`] are still rig-tools' stand-ins on this
-//! machine's disk, until keelrs has its own (#42). GitHub stays on the host: agents read issues
-//! through the `issues` and `issue` host tools, and the flow pushes. Each tool call is logged to
-//! stderr.
+//! remote one: [`git::seed`], [`git::harvest`] and keelrs's built-in tools reach it only
+//! through `Sandbox`, so they work on any backend. GitHub stays on the host: agents read issues
+//! through the `issues` and `issue` host tools, and the flow pushes.
 //!
 //! Needs `ANTHROPIC_API_KEY`, and `gh` logged in. Run from the repository root with
 //!
@@ -17,7 +15,6 @@
 //! cargo run --manifest-path examples/Cargo.toml -p example-build-review-loop
 //! ```
 
-mod coding;
 mod git;
 mod host;
 mod report;
@@ -31,7 +28,6 @@ use keelrs::{Agent, AgentContext, Runtime};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::coding::{CODING, LOOKING};
 use crate::report::Report;
 
 /// Implement-then-review rounds before the flow gives up.
@@ -79,11 +75,9 @@ static REVIEW: LazyLock<Report<Review>> = LazyLock::new(|| Report::new("report_r
 
 /// Picks the next issue, looking only.
 fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone());
+    cx.use_sandbox(sandbox.clone())
+        .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    for tool in LOOKING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(host::ISSUES.clone());
     cx.use_tool(host::ISSUE.clone());
     cx.use_tool(PLAN.tool("Report the issue you picked, or none. Call once, last."));
@@ -94,9 +88,6 @@ fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
 fn implementer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
     cx.use_sandbox(sandbox.clone());
     cx.use_model("anthropic/claude-sonnet-5-5");
-    for tool in CODING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(host::ISSUE.clone());
     cx.use_tool(IMPLEMENTATION.tool("Report the outcome. Call once, as the very last step."));
     include_str!("../prompts/implement.md").into()
@@ -104,11 +95,9 @@ fn implementer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
 
 /// Reviews the change on another model, looking only.
 fn reviewer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone());
+    cx.use_sandbox(sandbox.clone())
+        .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-opus-5-5");
-    for tool in LOOKING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(host::ISSUE.clone());
     cx.use_tool(REVIEW.tool("Report your verdict. Call once, last."));
     include_str!("../prompts/review.md").into()

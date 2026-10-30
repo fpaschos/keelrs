@@ -30,8 +30,17 @@ async fn scripted(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> Result<Settled, String> {
+    scripted_in(agent, turns, &Caches::default()).await
+}
+
+/// [`scripted`], as the agent instance whose built-in tools remember in `caches`.
+async fn scripted_in(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+    caches: &Caches,
+) -> Result<Settled, String> {
     let model = MockCompletionModel::from_turns(turns);
-    run_with(agent.clone(), "Go".to_owned(), Vec::new(), |_| {
+    run_with(agent.clone(), "Go".to_owned(), Vec::new(), caches, |_| {
         Ok(model.clone().erase())
     })
     .await
@@ -282,9 +291,13 @@ async fn sent(
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Settled, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
-    let settled = run_with(agent.clone(), "Go".to_owned(), Vec::new(), |_| {
-        Ok(model.clone().erase())
-    })
+    let settled = run_with(
+        agent.clone(),
+        "Go".to_owned(),
+        Vec::new(),
+        &Caches::default(),
+        |_| Ok(model.clone().erase()),
+    )
     .await
     .unwrap();
     (settled, model.requests())
@@ -352,7 +365,7 @@ async fn activate_skill_is_declared_with_skills_and_read_skill_resource_with_fil
     let (_, requests) = sent(&with_files, [MockTurn::text("Done.")]).await;
     assert_eq!(
         tool_names(&requests[0]),
-        ["current_time", "activate_skill", "read_skill_resource"]
+        ["activate_skill", "read_skill_resource", "current_time"]
     );
 }
 
@@ -705,4 +718,138 @@ async fn a_multi_line_description_is_one_catalog_line() {
         "{:?}",
         preamble(&requests[0])
     );
+}
+
+// Built-in tools: they arrive with `use_sandbox`, first in the tool list.
+
+/// A local sandbox on a fresh temp folder, which is removed on drop.
+async fn sandboxed() -> (Folder, Sandbox) {
+    let folder = Folder::new();
+    let sb = crate::sandbox::local()
+        .root(&folder.0)
+        .open()
+        .await
+        .unwrap();
+    (folder, sb)
+}
+
+#[tokio::test]
+async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared_tools() {
+    let (_folder, sb) = sandboxed().await;
+    let agent = agent(move |cx| {
+        cx.use_tool(clock());
+        cx.use_skill(haiku());
+        cx.use_sandbox(sb.clone());
+    });
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    let expected: Vec<&str> = builtin::NAMES
+        .into_iter()
+        .chain(["activate_skill", "current_time"])
+        .collect();
+    assert_eq!(tool_names(&requests[0]), expected);
+}
+
+#[tokio::test]
+async fn a_turn_without_a_sandbox_declares_no_builtins() {
+    let agent = agent(|cx| cx.use_tool(clock()));
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(tool_names(&requests[0]), ["current_time"]);
+}
+
+#[tokio::test]
+async fn only_keeps_the_named_builtins_in_their_own_order() {
+    let (_folder, sb) = sandboxed().await;
+    let agent = agent(move |cx| {
+        cx.use_sandbox(sb.clone())
+            .only(["bash", "glob", "grep", "read"]);
+    });
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(tool_names(&requests[0]), ["read", "bash", "grep", "glob"]);
+}
+
+#[tokio::test]
+async fn only_with_no_names_keeps_only_the_declared_tools() {
+    let (_folder, sb) = sandboxed().await;
+    let agent = agent(move |cx| {
+        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_tool(clock());
+    });
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(tool_names(&requests[0]), ["current_time"]);
+}
+
+#[tokio::test]
+async fn an_unknown_name_in_only_fails_the_run() {
+    let (_folder, sb) = sandboxed().await;
+    let agent = agent(move |cx| {
+        cx.use_sandbox(sb.clone()).only(["read", "shell"]);
+    });
+    let failed = scripted(&agent, [MockTurn::text("Done.")])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        failed,
+        "`only` names `shell`, which is not a built-in tool; they are \
+         read, write, edit, bash, grep, glob, delete, move"
+    );
+}
+
+#[tokio::test]
+async fn a_builtin_name_is_reserved_with_or_without_a_sandbox_or_only() {
+    let (_folder, sb) = sandboxed().await;
+    for name in builtin::NAMES {
+        let mine = Tool::host(name, "Mine.", async |_: ToolCall<()>| {
+            Ok::<_, Infallible>("ran")
+        });
+        let sb = sb.clone();
+        let without = agent({
+            let mine = mine.clone();
+            move |cx| cx.use_tool(mine.clone())
+        });
+        let left_out = agent(move |cx| {
+            cx.use_sandbox(sb.clone()).only([]);
+            cx.use_tool(mine.clone());
+        });
+        for agent in [without, left_out] {
+            let failed = scripted(&agent, [MockTurn::text("Done.")])
+                .await
+                .unwrap_err();
+            assert_eq!(
+                failed,
+                format!("`{name}` is reserved for keelrs's built-in tool")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn each_instance_remembers_only_what_its_own_builtins_read() {
+    let (folder, sb) = sandboxed().await;
+    folder.write("a.txt", "one\n");
+    let agent = agent(move |cx| {
+        cx.use_sandbox(sb.clone());
+    });
+    let edit = || {
+        [
+            MockTurn::tool_call(
+                "c1",
+                "edit",
+                json!({"path": "a.txt", "edits": [{"old_text": "one", "new_text": "1"}]}),
+            ),
+            MockTurn::text("Done."),
+        ]
+    };
+    let (reader, other) = (Caches::default(), Caches::default());
+    let read = [
+        MockTurn::tool_call("c1", "read", json!({"path": "a.txt"})),
+        MockTurn::text("Done."),
+    ];
+    scripted_in(&agent, read, &reader).await.unwrap();
+    folder.write("a.txt", "two\n");
+
+    let stale = "changed since it was last read";
+    let theirs = results(&scripted_in(&agent, edit(), &other).await.unwrap());
+    assert!(!theirs[0].0.contains(stale), "{theirs:?}");
+    let mine = results(&scripted_in(&agent, edit(), &reader).await.unwrap());
+    assert!(mine[0].0.contains(stale), "{mine:?}");
 }

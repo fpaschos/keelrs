@@ -1000,6 +1000,7 @@ dependencies = [
  "include_dir",
  "libc",
  "process-wrap",
+ "regex",
  "rig-agent",
  "rig-core",
  "rig-tools",

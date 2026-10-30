@@ -213,16 +213,17 @@ impl SandboxBackend for LocalBackend {
             Local.files(&at, glob.as_deref(), Listing::All)
         })
         .await?;
-        files
+        // A name that is not UTF-8 has no `SandboxPath`, so it is left out.
+        Ok(files
             .iter()
-            .map(|file| sandbox_path("list", file))
-            .collect()
+            .filter_map(|file| sandbox_path("list", file).ok())
+            .collect())
     }
 
     async fn canonical(&self, path: &SandboxPath) -> Result<SandboxPath> {
         let at = host(path);
         let canonical = blocking("canonical", path.to_string(), move || {
-            Ok(Local.canonical(&at))
+            Ok(Local.canonical(&dangling_target(Local.canonical(&at))))
         })
         .await?;
         sandbox_path("canonical", &canonical)
@@ -348,14 +349,18 @@ fn apply(vars: &mut Vec<(String, String)>, changes: Vec<(String, Option<String>)
 /// before it is killed and the pumps are `cut`. A stop that comes while it
 /// ends still ends it as [`Exit::Killed`].
 async fn drive(
-    mut child: Box<dyn ChildWrapper>,
+    child: Box<dyn ChildWrapper>,
     pumps: Vec<JoinHandle<()>>,
     cut: CancellationToken,
     timeout: Option<Duration>,
     mut stopped: oneshot::Receiver<()>,
 ) -> io::Result<Exit> {
+    let mut group = Group {
+        child,
+        seen_through: false,
+    };
     let ended = tokio::select! {
-        status = child.wait() => Ok(status),
+        status = group.child.wait() => Ok(status),
         () = tokio::time::sleep(timeout.unwrap_or(Duration::MAX)) => Err(Exit::TimedOut),
         _ = &mut stopped => Err(Exit::Killed),
     };
@@ -363,31 +368,64 @@ async fn drive(
     let mut exit = match ended {
         Ok(Ok(status)) => exit_of(status),
         Ok(Err(e)) => {
-            child.start_kill().ok();
+            group.child.start_kill().ok();
             cut.cancel();
             return Err(e);
         }
         Err(exit) => {
-            child.signal(libc::SIGTERM).ok();
-            tokio::time::timeout(GRACE, child.wait()).await.ok();
-            child.start_kill().ok();
-            child.wait().await.ok();
+            group.child.signal(libc::SIGTERM).ok();
+            tokio::time::timeout(GRACE, group.child.wait()).await.ok();
+            group.child.start_kill().ok();
+            group.child.wait().await.ok();
             exit
         }
     };
     let mut pumps = futures::future::join_all(pumps);
     if tokio::time::timeout(LEFTOVER, &mut pumps).await.is_err() {
-        child.start_kill().ok();
+        group.child.start_kill().ok();
         cut.cancel();
         pumps.await;
     }
     if stopped.try_recv() == Ok(Some(())) {
         exit = Exit::Killed;
     }
+    group.seen_through = true;
     Ok(exit)
 }
 
-/// Sends what `pipe` prints a line, or at most [`CHUNK`] bytes, at a time.
+/// A command's process group, killed when dropped before [`drive`] saw it
+/// through, as when the runtime it ran on shuts down.
+struct Group {
+    child: Box<dyn ChildWrapper>,
+    seen_through: bool,
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if !self.seen_through {
+            self.child.start_kill().ok();
+        }
+    }
+}
+
+/// Where `path` leads when it is a dangling link, which `Local.canonical`
+/// leaves as it is: the end of its chain of links, where a write creates
+/// the file. Any other path as it is.
+fn dangling_target(path: PathBuf) -> PathBuf {
+    /// Linux's own limit on links followed in one lookup.
+    const MAX_HOPS: usize = 40;
+    let mut target = path;
+    for _ in 0..MAX_HOPS {
+        let Ok(link) = std::fs::read_link(&target) else {
+            break;
+        };
+        target = target.parent().unwrap_or(Path::new("/")).join(link);
+    }
+    target
+}
+
+/// Sends what `pipe` prints in whole lines, all those one read brings, or
+/// at most [`CHUNK`] bytes of a longer line, at a time.
 /// Once nobody reads, it still drains the pipe so the command never blocks;
 /// once `cut`, it stops at the first read that would wait.
 async fn pump(
@@ -407,7 +445,7 @@ async fn pump(
         let done = read.is_empty();
         let (len, ended) = read
             .iter()
-            .position(|&byte| byte == b'\n')
+            .rposition(|&byte| byte == b'\n')
             .map_or((read.len(), false), |at| (at + 1, true));
         line.extend_from_slice(&read[..len]);
         pipe.consume(len);

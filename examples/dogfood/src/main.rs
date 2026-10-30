@@ -3,9 +3,9 @@
 //! back to the same implementer conversation, until it approves or [`MAX_ROUNDS`] run out.
 //! Nothing is committed.
 //!
-//! The agents share one local sandbox rooted at this checkout (`keelrs::sandbox::local`): their
-//! file tools stay inside it, and `shell` starts there from an env allowlist (so `gh` must be
-//! logged in through its config, not `GH_TOKEN`). No worktree. Each tool call is logged to stderr.
+//! The agents share one local sandbox rooted at this checkout (`keelrs::sandbox::local`): keelrs's
+//! built-in file tools stay inside it, and `bash` starts there from an env allowlist (so `gh`
+//! must be logged in through its config, not `GH_TOKEN`). No worktree.
 //!
 //! Needs `ANTHROPIC_API_KEY`, and `gh` logged in. Run from the repository root with
 //!
@@ -13,7 +13,6 @@
 //! cargo run --manifest-path examples/Cargo.toml -p example-dogfood
 //! ```
 
-mod coding;
 mod report;
 
 use std::sync::LazyLock;
@@ -24,7 +23,6 @@ use keelrs::{Agent, AgentContext, Runtime};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::coding::{CODING, LOOKING};
 use crate::report::Report;
 
 /// Implement-then-review rounds before the flow gives up.
@@ -72,11 +70,9 @@ static REVIEW: LazyLock<Report<Review>> = LazyLock::new(|| Report::new("report_r
 
 /// Picks the next issue, looking only.
 fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone());
+    cx.use_sandbox(sandbox.clone())
+        .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    for tool in LOOKING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(PLAN.tool("Report the issue you picked, or none. Call once, last."));
     include_str!("../prompts/plan.md").into()
 }
@@ -85,20 +81,15 @@ fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
 fn implementer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
     cx.use_sandbox(sandbox.clone());
     cx.use_model("anthropic/claude-sonnet-5-5");
-    for tool in CODING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(IMPLEMENTATION.tool("Report the outcome. Call once, as the very last step."));
     include_str!("../prompts/implement.md").into()
 }
 
 /// Reviews the change on another model, looking only.
 fn reviewer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone());
+    cx.use_sandbox(sandbox.clone())
+        .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-opus-5-5");
-    for tool in LOOKING.iter() {
-        cx.use_tool(tool.clone());
-    }
     cx.use_tool(REVIEW.tool("Report your verdict. Call once, last."));
     include_str!("../prompts/review.md").into()
 }
