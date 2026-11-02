@@ -119,7 +119,6 @@ async fn run_with(
                         )))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                // Pinned with the tools: their calls get this render's sandbox.
                 pinned = Some((
                     tools
                         .iter()

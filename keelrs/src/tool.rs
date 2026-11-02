@@ -111,7 +111,8 @@ impl Tool {
         T: Serialize + 'static,
         E: fmt::Display + Send + Sync + 'static,
     {
-        Self::erased(name, description, move |call, _| run(call))
+        // A host tool is a sandboxed one that ignores its sandbox.
+        Self::sandbox(name, description, move |call, _| run(call))
     }
 
     /// A **sandboxed tool**: as [`host`](Self::host), but `run` also
@@ -122,41 +123,6 @@ impl Tool {
     /// keelrs guarantees which sandbox it gets: the declared one, as
     /// narrowed to its work dir.
     pub fn sandbox<Args, F, Fut, T, E>(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        run: F,
-    ) -> Self
-    where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
-        F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
-    {
-        Self::erased(name, description, move |call, sandbox: Sandbox| {
-            run(call, sandbox)
-        })
-    }
-
-    /// keelrs's own tools, such as `activate_skill`: host tools that only
-    /// keelrs may name with a reserved name.
-    pub(crate) fn builtin<Args, F, Fut, T, E>(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        run: F,
-    ) -> Self
-    where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
-        F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
-    {
-        Self::host(name, description, run)
-    }
-
-    /// A tool around `run`, which gets the turn's sandbox.
-    fn erased<Args, F, Fut, T, E>(
         name: impl Into<String>,
         description: impl Into<String>,
         run: F,
@@ -195,6 +161,23 @@ impl Tool {
             timeout: None,
             run: Arc::new(run),
         }
+    }
+
+    /// keelrs's own tools, such as `activate_skill`: host tools that only
+    /// keelrs may name with a reserved name.
+    pub(crate) fn builtin<Args, F, Fut, T, E>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        run: F,
+    ) -> Self
+    where
+        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: Serialize + 'static,
+        E: fmt::Display + Send + Sync + 'static,
+    {
+        Self::host(name, description, run)
     }
 
     /// Stops a call after `timeout`; the model then reads that it timed out.

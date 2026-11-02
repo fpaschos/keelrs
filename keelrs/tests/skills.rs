@@ -1,5 +1,7 @@
 //! Building and mounting skills, through the public API, with no network.
 
+mod common;
+
 use std::convert::Infallible;
 
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime, Skill, Tool, ToolCall};
@@ -19,11 +21,7 @@ async fn failure_reason(agent: Agent) -> String {
 
 /// An agent in a temp-dir sandbox, with no built-ins.
 async fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
-    let sb = keelrs::sandbox::local()
-        .root(std::env::temp_dir())
-        .open()
-        .await
-        .unwrap();
+    let sb = common::temp_sandbox().await;
     Agent::new("skilled", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
         cx.use_sandbox(sb.clone()).only([]);

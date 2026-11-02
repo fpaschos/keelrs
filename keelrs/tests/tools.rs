@@ -2,7 +2,10 @@
 
 use std::convert::Infallible;
 
-use keelrs::sandbox::{self, Sandbox};
+mod common;
+
+use common::temp_sandbox;
+use keelrs::sandbox::Sandbox;
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime, Tool, ToolCall};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
@@ -61,14 +64,6 @@ async fn a_tool_whose_arguments_are_not_an_object_fails() {
         reason.contains("`echo`'s arguments must be a JSON object"),
         "{reason}"
     );
-}
-
-async fn temp_sandbox() -> Sandbox {
-    sandbox::local()
-        .root(std::env::temp_dir())
-        .open()
-        .await
-        .unwrap()
 }
 
 fn listing() -> Tool {

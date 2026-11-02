@@ -18,6 +18,7 @@ use serde_json::json;
 use tokio::sync::Barrier;
 
 use super::*;
+use crate::sandbox::unused;
 use crate::skills::tests::{Folder, haiku, sonnet};
 use crate::{AgentContext, Skill, ToolCall};
 
@@ -67,9 +68,9 @@ fn results(settled: &Settled) -> Vec<(String, bool)> {
     results
 }
 
-/// An agent on the mock model, in a sandbox with nothing in it and no built-ins.
+/// An agent on the mock model, in an unused sandbox with no built-ins.
 fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
-    let sb = crate::sandbox::empty();
+    let sb = unused();
     sandboxed_agent(move |cx| {
         cx.use_sandbox(sb.clone()).only([]);
         declare(cx);
@@ -169,7 +170,7 @@ async fn a_call_gets_its_arguments_and_id_and_settles_to_its_value() {
         &lookup_order(),
         json!({"order_id": "A1"}),
         "c1".into(),
-        &crate::sandbox::empty(),
+        &unused(),
     )
     .await;
     assert_eq!(called, Ok(json!({"order": "A1", "call": "c1"})));
@@ -182,13 +183,7 @@ async fn an_app_error_fails_the_call_as_other_with_its_message() {
         "Look up an order.",
         async |call: ToolCall<Order>| Err::<(), _>(format!("no order {}", call.data.order_id)),
     );
-    let called = call(
-        &tool,
-        json!({"order_id": "Z9"}),
-        "c1".into(),
-        &crate::sandbox::empty(),
-    )
-    .await;
+    let called = call(&tool, json!({"order_id": "Z9"}), "c1".into(), &unused()).await;
     assert_eq!(called, Err(Failed::new(FailKind::Other, "no order Z9")));
 }
 
@@ -202,14 +197,9 @@ async fn arguments_that_break_the_schema_are_invalid_args_and_the_tool_does_not_
             Ok::<_, Infallible>("found")
         }
     });
-    let failed = call(
-        &tool,
-        json!({"order_id": 5}),
-        "c1".into(),
-        &crate::sandbox::empty(),
-    )
-    .await
-    .unwrap_err();
+    let failed = call(&tool, json!({"order_id": 5}), "c1".into(), &unused())
+        .await
+        .unwrap_err();
     assert!(!ran.load(Ordering::SeqCst));
     assert_eq!(failed.kind, FailKind::InvalidArgs);
     assert!(failed.message.contains("do not fit its schema"), "{failed}");
@@ -227,14 +217,9 @@ async fn arguments_the_schema_takes_but_that_do_not_decode_are_invalid_args() {
     let tool = Tool::host("ping", "Ping a host.", async |call: ToolCall<Ping>| {
         Ok::<_, Infallible>(call.data.host.to_string())
     });
-    let failed = call(
-        &tool,
-        json!({"host": "nowhere"}),
-        "c1".into(),
-        &crate::sandbox::empty(),
-    )
-    .await
-    .unwrap_err();
+    let failed = call(&tool, json!({"host": "nowhere"}), "c1".into(), &unused())
+        .await
+        .unwrap_err();
     assert_eq!(failed.kind, FailKind::InvalidArgs);
     assert!(
         failed
@@ -250,7 +235,7 @@ async fn a_call_past_its_timeout_fails_as_timed_out() {
         std::future::pending::<Result<(), Infallible>>().await
     })
     .timeout(Duration::from_millis(10));
-    let called = call(&tool, json!({}), "c1".into(), &crate::sandbox::empty()).await;
+    let called = call(&tool, json!({}), "c1".into(), &unused()).await;
     assert_eq!(
         called,
         Err(Failed::new(
@@ -377,7 +362,7 @@ fn tool_names(request: &CompletionRequest) -> Vec<String> {
 
 #[tokio::test]
 async fn the_catalog_follows_the_instructions_in_use_skill_order() {
-    let sb = crate::sandbox::empty();
+    let sb = unused();
     let agent = Agent::new("poet", move |cx: &mut AgentContext| {
         cx.use_model("mock/model");
         cx.use_sandbox(sb.clone()).only([]);
@@ -544,38 +529,6 @@ async fn a_builtin_name_is_reserved_with_or_without_only() {
     }
 }
 
-#[tokio::test]
-async fn each_instance_remembers_only_what_its_own_builtins_read() {
-    let (folder, sb) = sandboxed().await;
-    folder.write("a.txt", "one\n");
-    let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone());
-    });
-    let edit = || {
-        [
-            MockTurn::tool_call(
-                "c1",
-                "edit",
-                json!({"path": "a.txt", "edits": [{"old_text": "one", "new_text": "1"}]}),
-            ),
-            MockTurn::text("Done."),
-        ]
-    };
-    let (mut reader, mut other) = (Caches::default(), Caches::default());
-    let read = [
-        MockTurn::tool_call("c1", "read", json!({"path": "a.txt"})),
-        MockTurn::text("Done."),
-    ];
-    scripted_in(&agent, read, &mut reader).await.unwrap();
-    folder.write("a.txt", "two\n");
-
-    let stale = "changed since it was last read";
-    let theirs = results(&scripted_in(&agent, edit(), &mut other).await.unwrap());
-    assert!(!theirs[0].0.contains(stale), "{theirs:?}");
-    let mine = results(&scripted_in(&agent, edit(), &mut reader).await.unwrap());
-    assert!(mine[0].0.contains(stale), "{mine:?}");
-}
-
 /// An agent on the mock model whose built-ins act through `sb`.
 fn agent_in(sb: &Sandbox) -> Agent {
     let sb = sb.clone();
@@ -605,6 +558,30 @@ fn edit_one(path: &str) -> [MockTurn; 2] {
 }
 
 const STALE: &str = "changed since it was last read";
+
+#[tokio::test]
+async fn each_instance_remembers_only_what_its_own_builtins_read() {
+    let (folder, sb) = sandboxed().await;
+    folder.write("a.txt", "one\n");
+    let (mut reader, mut other) = (Caches::default(), Caches::default());
+    scripted_in(&agent_in(&sb), read("a.txt"), &mut reader)
+        .await
+        .unwrap();
+    folder.write("a.txt", "two\n");
+
+    let theirs = results(
+        &scripted_in(&agent_in(&sb), edit_one("a.txt"), &mut other)
+            .await
+            .unwrap(),
+    );
+    assert!(!theirs[0].0.contains(STALE), "{theirs:?}");
+    let mine = results(
+        &scripted_in(&agent_in(&sb), edit_one("a.txt"), &mut reader)
+            .await
+            .unwrap(),
+    );
+    assert!(mine[0].0.contains(STALE), "{mine:?}");
+}
 
 #[tokio::test]
 async fn a_render_in_another_sandbox_forgets_what_the_builtins_read() {
@@ -649,11 +626,8 @@ async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
     let edited = scripted_in(&agent_in(&sub), edit_one("a.txt"), &mut caches)
         .await
         .unwrap();
-    assert!(
-        results(&edited)[0].0.contains(STALE),
-        "{:?}",
-        results(&edited)
-    );
+    let edited = results(&edited);
+    assert!(edited[0].0.contains(STALE), "{edited:?}");
 }
 
 #[tokio::test]
@@ -666,7 +640,7 @@ async fn a_failed_render_in_another_sandbox_keeps_what_the_builtins_read() {
         .unwrap();
     folder.write("a.txt", "two\n");
     let unknown = sandboxed_agent(|cx| {
-        cx.use_sandbox(crate::sandbox::empty()).only(["shell"]);
+        cx.use_sandbox(unused()).only(["shell"]);
     });
     scripted_in(&unknown, [MockTurn::text("Done.")], &mut caches)
         .await

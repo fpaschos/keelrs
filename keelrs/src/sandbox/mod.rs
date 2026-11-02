@@ -51,17 +51,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Result;
 
-#[cfg(test)]
-mod empty;
 mod listing;
 mod local;
 mod path;
-
 #[cfg(test)]
-pub(crate) use empty::empty;
+mod unused;
+
 pub use listing::Listing;
 pub use local::{LocalBuilder, local};
 pub use path::SandboxPath;
+#[cfg(test)]
+pub(crate) use unused::unused;
 
 /// How much of each stream [`Execution::run`] keeps: the last 64 MiB.
 const KEPT_OUTPUT: usize = 64 * 1024 * 1024;

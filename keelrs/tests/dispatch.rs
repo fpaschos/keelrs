@@ -1,6 +1,8 @@
 //! Dispatch, read and ask through the public API, with no network.
 
-use keelrs::sandbox::{self, Sandbox};
+mod common;
+
+use common::temp_sandbox;
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
@@ -14,14 +16,6 @@ async fn failure_reason(agent: Agent) -> String {
         }) => reason,
         other => panic!("expected a failed run, got {other:?}"),
     }
-}
-
-async fn temp_sandbox() -> Sandbox {
-    sandbox::local()
-        .root(std::env::temp_dir())
-        .open()
-        .await
-        .unwrap()
 }
 
 #[tokio::test]
