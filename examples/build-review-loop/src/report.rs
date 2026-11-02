@@ -49,7 +49,11 @@ where
     }
 
     /// Asks `instance` `message` and takes its report, asking once more if it ended without one.
-    pub async fn ask(&self, instance: &AgentInstance, message: String) -> anyhow::Result<T> {
+    pub async fn ask(
+        &self,
+        instance: &AgentInstance,
+        message: impl Into<String>,
+    ) -> anyhow::Result<T> {
         self.slot.lock().take();
         instance.ask(message).await?;
         if let Some(report) = self.slot.lock().take() {

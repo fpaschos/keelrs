@@ -41,7 +41,7 @@ struct Plan {
 }
 
 /// The issue an implementer and a reviewer work on: their instance data.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct Issue {
     number: u64,
     title: String,
@@ -140,33 +140,26 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Plan.
     let planned = runtime.instance(&planner, InstanceId::new("plan"))?;
-    let Some(Issue { number, title }) = PLAN
-        .ask(&planned, "Pick the next issue.".into())
-        .await?
-        .issue
-    else {
+    let Some(issue) = PLAN.ask(&planned, "Pick the next issue.").await?.issue else {
         println!("Nothing to do: no agent-ready issue is unblocked.");
         return Ok(());
     };
+    let Issue { number, title } = &issue;
     println!("Picked #{number}: {title}");
     let branch = format!("keelrs/issue-{number}");
     git::run(&work, ["git", "switch", "--create", branch.as_str()]).await?;
 
     // 2. Implement and review, sending findings back to the same implementer conversation.
     // Each conversation is about this issue: its instance data.
-    let issue = || Issue {
-        number,
-        title: title.clone(),
-    };
     let implementing = runtime.instance_with(
         &implementer,
         InstanceId::new(format!("implement-{number}")),
-        issue(),
+        issue.clone(),
     )?;
     let reviewing = runtime.instance_with(
         &reviewer,
         InstanceId::new(format!("review-{number}")),
-        issue(),
+        issue.clone(),
     )?;
     let mut message = "Implement the issue.".to_owned();
     for round in 1..=MAX_ROUNDS {
@@ -175,15 +168,16 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", implementation.summary);
 
         println!("Round {round}: reviewing");
-        let ask = "Review the uncommitted changes.".to_owned();
-        let review = REVIEW.ask(&reviewing, ask).await?;
+        let review = REVIEW
+            .ask(&reviewing, "Review the uncommitted changes.")
+            .await?;
         if review.verdict == Verdict::Approve {
             println!("Approved.");
             // 3. Commit, harvest and open the pull request, on the host.
             git::commit_all(&work, &format!("#{number}: {title}")).await?;
             let bundle = git::harvest(&sandbox, "main", &branch).await?;
             let body = format!("Closes #{number}.\n\n{}", implementation.summary);
-            let url = host::open_pr(bundle, &branch, &title, &body).await?;
+            let url = host::open_pr(bundle, &branch, title, &body).await?;
             println!("Opened {url}");
             sandbox.close().await?;
             return Ok(());
