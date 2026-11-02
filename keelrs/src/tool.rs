@@ -111,11 +111,11 @@ impl Tool {
         run: F,
     ) -> Self
     where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        Args: DeserializeOwned + JsonSchema + 'static,
         F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
+        T: Serialize,
+        E: fmt::Display + 'static,
     {
         // A host tool is a sandboxed one that ignores its sandbox.
         Self::sandbox(name, description, move |call, _| run(call))
@@ -134,11 +134,11 @@ impl Tool {
         run: F,
     ) -> Self
     where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        Args: DeserializeOwned + JsonSchema + 'static,
         F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
+        T: Serialize,
+        E: fmt::Display + 'static,
     {
         let name: Arc<str> = name.into().into();
         let tool_name = name.clone();
