@@ -17,18 +17,14 @@
 
 mod git;
 mod host;
-mod report;
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use anyhow::bail;
 use keelrs::sandbox::{self, Sandbox};
 use keelrs::{Agent, AgentContext, InstanceId, Runtime};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-use crate::report::Report;
 
 /// Implement-then-review rounds before the flow gives up.
 const MAX_ROUNDS: usize = 3;
@@ -47,16 +43,17 @@ struct Issue {
     title: String,
 }
 
-/// The implementer's report.
+/// The implementer's outcome.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Implementation {
-    /// What was changed, 1–5 lines.
+    /// What was changed, 1–5 lines, naming any changes you found and left as they were.
     summary: String,
 }
 
 /// The reviewer's verdict.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Review {
+    /// `approve`, or `changes` when there is at least one finding.
     verdict: Verdict,
     /// One actionable sentence per finding, naming the file; empty when approved.
     findings: Vec<String>,
@@ -69,18 +66,12 @@ enum Verdict {
     Changes,
 }
 
-static PLAN: LazyLock<Report<Plan>> = LazyLock::new(|| Report::new("report_plan"));
-static IMPLEMENTATION: LazyLock<Report<Implementation>> =
-    LazyLock::new(|| Report::new("report_implementation"));
-static REVIEW: LazyLock<Report<Review>> = LazyLock::new(|| Report::new("report_review"));
-
 /// Picks the next issue, looking only.
 fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
     cx.use_sandbox(sandbox)
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-sonnet-5-5");
     cx.use_tools([host::issues(), host::issue()]);
-    cx.use_tool(PLAN.tool("Report the issue you picked, or none. Call once, last."));
     include_str!("../prompts/plan.md").into()
 }
 
@@ -91,7 +82,6 @@ fn implementer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
     cx.use_sandbox(sandbox);
     cx.use_model("anthropic/claude-sonnet-5-5");
     cx.use_tool(host::issue());
-    cx.use_tool(IMPLEMENTATION.tool("Report the outcome. Call once, as the very last step."));
     format!("{}\n\n{task}", include_str!("../prompts/implement.md"))
 }
 
@@ -103,7 +93,6 @@ fn reviewer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-opus-5-5");
     cx.use_tool(host::issue());
-    cx.use_tool(REVIEW.tool("Report your verdict. Call once, last."));
     format!("{}\n\n{task}", include_str!("../prompts/review.md"))
 }
 
@@ -140,7 +129,8 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Plan.
     let planned = runtime.instance(&planner, InstanceId::new("plan"))?;
-    let Some(issue) = PLAN.ask(&planned, "Pick the next issue.").await?.issue else {
+    let pick = planned.ask_structured::<Plan>("Pick the next issue.");
+    let Some(issue) = pick.await?.issue else {
         println!("Nothing to do: no agent-ready issue is unblocked.");
         return Ok(());
     };
@@ -164,12 +154,14 @@ async fn main() -> anyhow::Result<()> {
     let mut message = "Implement the issue.".to_owned();
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
-        let implementation = IMPLEMENTATION.ask(&implementing, message).await?;
+        let implementation = implementing
+            .ask_structured::<Implementation>(message)
+            .await?;
         println!("{}", implementation.summary);
 
         println!("Round {round}: reviewing");
-        let review = REVIEW
-            .ask(&reviewing, "Review the uncommitted changes.")
+        let review = reviewing
+            .ask_structured::<Review>("Review the uncommitted changes.")
             .await?;
         if review.verdict == Verdict::Approve {
             println!("Approved.");

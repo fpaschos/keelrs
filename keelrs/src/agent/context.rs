@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
+use crate::agent::rig::FINISH_STRUCTURED;
 use crate::builtin::NAMES as BUILTIN_NAMES;
 use crate::sandbox::Sandbox;
 use crate::{InstanceId, Model, Skill, Tool};
 
 /// Tool names keelrs keeps for its skill tools, with or without skills; the
-/// sandbox built-ins' names are kept too.
+/// sandbox built-ins' names and `finish_structured` are kept too.
 const SKILL_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
 
 /// What an agent function receives to make its declarations for the current turn,
@@ -169,7 +170,10 @@ impl Declared {
     /// The tools this render declared, or why the run fails.
     pub(crate) fn tools(&self) -> Result<&[Tool], String> {
         for (i, tool) in self.tools.iter().enumerate() {
-            if SKILL_TOOL_NAMES.contains(&&*tool.name) || BUILTIN_NAMES.contains(&&*tool.name) {
+            if SKILL_TOOL_NAMES.contains(&&*tool.name)
+                || BUILTIN_NAMES.contains(&&*tool.name)
+                || *tool.name == *FINISH_STRUCTURED
+            {
                 return Err(format!(
                     "`{}` is reserved for keelrs's built-in tool",
                     tool.name

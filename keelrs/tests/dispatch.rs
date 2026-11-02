@@ -3,11 +3,12 @@
 mod common;
 
 use common::temp_sandbox;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime};
+use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime, Tool, ToolCall};
 use serde::{Deserialize, Serialize};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
@@ -77,6 +78,46 @@ async fn an_unknown_vendor_fails_with_rigs_reason() {
     });
     let reason = failure_reason(agent).await;
     assert!(reason.contains("nope"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_declared_finish_structured_fails_plain_and_structured_asks() {
+    let sb = temp_sandbox().await;
+    let agent = Agent::new("reserved", move |cx: &mut AgentContext| {
+        cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(&sb).only([]);
+        cx.use_tool(Tool::host(
+            "finish_structured",
+            "Mine.",
+            async |_: ToolCall<()>| Ok::<_, Infallible>("ran"),
+        ));
+        String::new()
+    });
+    let expected = "`finish_structured` is reserved for keelrs's built-in tool";
+    let runtime = Runtime::start([&agent]).unwrap();
+    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
+    let plain = instance.ask("go").await.map(|_| ());
+    let structured = instance.ask_structured::<String>("go").await.map(drop);
+    for result in [plain, structured] {
+        assert!(
+            matches!(&result, Err(Error::Run { outcome: Outcome::Failed { reason }, .. })
+                if reason == expected),
+            "{result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_structured_ask_that_fails_settles_as_failed() {
+    let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
+    let runtime = Runtime::start([&agent]).unwrap();
+    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
+    let result = instance.ask_structured::<u32>("go").await;
+    assert!(
+        matches!(&result, Err(Error::Run { outcome: Outcome::Failed { reason }, .. })
+            if reason.contains("never called `use_model`")),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
