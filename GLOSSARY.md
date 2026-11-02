@@ -27,6 +27,16 @@ _Avoid_: Harness, engine, server
 One conversation with an agent, addressed by an id; later dispatches to the same id continue it.
 _Avoid_: Session, thread, conversation id
 
+**Instance id**:
+The name the application gives an agent instance, or asks keelrs to make up; the same id always reaches the same
+conversation.
+_Avoid_: Conversation id, session id, key
+
+**Instance data**:
+What an agent instance is about, given once when it is created and fixed for its whole life; every render reads it.
+What changes from one dispatch to the next travels in the message instead.
+_Avoid_: Initial data, props, input, state
+
 **Dispatch**:
 Submitting a message to an agent instance; it returns a receipt, not the reply.
 _Avoid_: Ask, send, prompt
