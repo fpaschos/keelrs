@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 const MAX_ROUNDS: usize = 3;
 
 /// The planner's pick.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct Plan {
     /// The issue to implement next; null when no issue is ready.
     issue: Option<Issue>,
@@ -44,14 +44,14 @@ struct Issue {
 }
 
 /// The implementer's outcome.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct Implementation {
     /// What was changed, 1–5 lines, naming any changes you found and left as they were.
     summary: String,
 }
 
 /// The reviewer's verdict.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 struct Review {
     /// `approve`, or `changes` when there is at least one finding.
     verdict: Verdict,
@@ -59,7 +59,7 @@ struct Review {
     findings: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Verdict {
     Approve,
@@ -157,11 +157,10 @@ async fn main() -> anyhow::Result<()> {
         issue.clone(),
     )?;
 
+    let mut ask = "Implement the issue.".to_owned();
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
-        let implementation = implementing
-            .ask_structured::<Implementation>("Implement the issue.")
-            .await?;
+        let implementation = implementing.ask_structured::<Implementation>(&ask).await?;
         println!("{}", implementation.summary);
 
         println!("Round {round}: reviewing");
@@ -179,11 +178,11 @@ async fn main() -> anyhow::Result<()> {
             sandbox.close().await?;
             return Ok(());
         }
-        let message = format!(
+        ask = format!(
             "A reviewer asks for changes:\n\n- {}\n\nMake them.",
             review.findings.join("\n- ")
         );
-        println!("{message}");
+        println!("{ask}");
     }
     bail!("#{number} is not approved after {MAX_ROUNDS} rounds")
 }
