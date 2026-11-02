@@ -448,11 +448,15 @@ async fn glob_with_hidden_lists_hidden_files_but_never_ignored_ones() {
 }
 
 #[tokio::test]
-async fn glob_refuses_a_bad_glob_saying_why() {
+async fn glob_refuses_a_bad_glob_as_invalid_args_saying_why() {
     let fx = Fixture::new().await;
     fx.project();
-    let bad = fx.glob("src/[", None, false).await;
-    assert!(bad.starts_with("Err: bad glob: "), "{bad}");
+    let failed = fx
+        .call("glob", json!({"pattern": "src/["}))
+        .await
+        .unwrap_err();
+    assert_eq!(failed.kind, FailKind::InvalidArgs);
+    assert!(failed.message.starts_with("bad glob: "), "{failed}");
 }
 
 #[tokio::test]
