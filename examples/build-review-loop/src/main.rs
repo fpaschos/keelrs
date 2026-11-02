@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 const MAX_ROUNDS: usize = 3;
 
 /// The planner's pick.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct Plan {
     /// The issue to implement next; null when no issue is ready.
     issue: Option<Issue>,
@@ -44,14 +44,14 @@ struct Issue {
 }
 
 /// The implementer's outcome.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct Implementation {
     /// What was changed, 1–5 lines, naming any changes you found and left as they were.
     summary: String,
 }
 
 /// The reviewer's verdict.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct Review {
     /// `approve`, or `changes` when there is at least one finding.
     verdict: Verdict,
@@ -59,7 +59,7 @@ struct Review {
     findings: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Verdict {
     Approve,

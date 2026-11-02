@@ -11,6 +11,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::select;
@@ -18,8 +19,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::InstanceAgent;
-use crate::agent::rig::{self, Settled, Structured};
+use crate::agent::rig::{self, Settled};
 use crate::builtin::Caches;
+use crate::builtin::structured::Structured;
 use crate::event::Event;
 use crate::{Error, InstanceId, Outcome, Result};
 
@@ -81,7 +83,7 @@ impl AgentInstance {
     /// dispatch settles as [`Outcome::Failed`].
     pub async fn ask_structured<T>(&self, message: impl Into<String>) -> Result<T>
     where
-        T: DeserializeOwned + JsonSchema,
+        T: DeserializeOwned + Serialize + JsonSchema + Send + 'static,
     {
         let receipt = self
             .submit(message.into(), Some(Structured::of::<T>()))

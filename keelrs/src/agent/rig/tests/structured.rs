@@ -1,22 +1,13 @@
 //! Structured results: the reserved `finish_structured` tool, driven through
 //! `run_with` on rig-core's scripted model.
 
-use rig_core::completion::CompletionRequest;
-use rig_core::message::{Message as RigMessage, UserContent};
-use rig_core::test_utils::MockTurn;
-use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 
-use super::super::Settled;
-use super::super::tests::{agent, clock, drive, preamble, reply, results, sent, tool_names};
 use super::*;
-use crate::Agent;
-use crate::builtin::Caches;
 
 /// Runs `agent` on one message asking for a `T`, and returns every request the model got.
-async fn structured<T: DeserializeOwned + JsonSchema>(
+async fn structured<T: DeserializeOwned + Serialize + JsonSchema + Send + 'static>(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
@@ -30,8 +21,7 @@ async fn structured<T: DeserializeOwned + JsonSchema>(
 }
 
 /// A plan of work.
-#[derive(Deserialize, JsonSchema)]
-#[expect(dead_code, reason = "only deserialized")]
+#[derive(Serialize, Deserialize, JsonSchema)]
 struct Plan {
     steps: Vec<String>,
 }
@@ -134,7 +124,7 @@ async fn invalid_arguments_are_a_tool_error_the_model_retries_without_a_re_ask()
 }
 
 /// A reviewer's verdict.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum Verdict {
     Approve,
@@ -158,7 +148,11 @@ async fn a_t_that_is_not_an_object_travels_wrapped_as_result_and_settles_unwrapp
         requests[0].tools[0].parameters,
         json!({
             "type": "object",
-            "properties": {"result": {"type": "string", "enum": ["approve", "request_changes"]}},
+            "properties": {"result": {
+                "type": "string",
+                "enum": ["approve", "request_changes"],
+                "description": "A reviewer's verdict.",
+            }},
             "required": ["result"],
             "additionalProperties": false,
         })

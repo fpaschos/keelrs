@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::agent::rig::FINISH_STRUCTURED;
 use crate::builtin::NAMES as BUILTIN_NAMES;
+use crate::builtin::structured::FINISH_STRUCTURED;
 use crate::sandbox::Sandbox;
 use crate::{InstanceId, Model, Skill, Tool};
 

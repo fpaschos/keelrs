@@ -8,6 +8,9 @@
 //! They reuse rig-tools' text logic (`Seen`, `ReadArgs::show`,
 //! `edit::apply`, `clip`); what rig-tools keeps private is copied, marked
 //! where it is. No Rig type leaves this module (ADR 0004, rule 2).
+//!
+//! [`structured`] holds `finish_structured`, the built-in a dispatch that asks
+//! for a structured result gets.
 
 use std::path::PathBuf;
 
@@ -24,6 +27,7 @@ mod files;
 mod glob;
 mod grep;
 mod read;
+pub(crate) mod structured;
 mod write;
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 mod builtin;
 mod call;
 mod skills;
+mod structured;
 mod turns;
 
 /// Runs `agent` on one message against a model that replies with `turns`.

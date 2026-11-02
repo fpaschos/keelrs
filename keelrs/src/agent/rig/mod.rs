@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::future::join_all;
-use parking_lot::Mutex;
 use rig_agent::run::{
     AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PendingToolCall,
     PromptError, RunSpec, ToolAnswer, prepare_request,
@@ -23,10 +22,10 @@ use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
-pub(crate) use structured::{FINISH_STRUCTURED, Structured};
-use structured::{FOOTER, MAX_STRUCTURED_REASKS, REASK};
-
 use crate::agent::InstanceAgent;
+use crate::builtin::structured::{
+    FINISH_STRUCTURED, FOOTER, MAX_STRUCTURED_REASKS, REASK, Structured,
+};
 use crate::builtin::{self, Caches};
 use crate::model::Thinking;
 use crate::sandbox::Sandbox;
@@ -34,8 +33,6 @@ use crate::skills::catalog::catalog;
 use crate::skills::tools::skill_tools;
 use crate::tool::{Called, FailKind, Failed};
 use crate::{Model, Tool};
-
-mod structured;
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
 #[derive(Debug, Clone)]
@@ -98,9 +95,6 @@ async fn run_with(
     // The last render's tools, by name, and its sandbox, for the `CallTools`
     // step after its model call.
     let mut pinned: Option<(HashMap<String, Tool>, Sandbox)> = None;
-    // What `finish_structured` recorded this dispatch, and the tool itself.
-    let recorded = Arc::new(Mutex::new(None));
-    let finish = structured.map(|s| s.tool(recorded.clone()));
     loop {
         let step = match run.next_step() {
             Ok(step) => step,
@@ -127,7 +121,7 @@ async fn run_with(
                     .into_iter()
                     .chain(skill_tools(skills))
                     .chain(declared_tools.iter().cloned())
-                    .chain(finish.clone())
+                    .chain(structured.as_ref().map(|s| s.tool.clone()))
                     .collect();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
@@ -204,7 +198,7 @@ async fn run_with(
                     .collect::<Result<Vec<_>, _>>()?;
                 run.answer_all(answers).map_err(|e| e.to_string())?;
                 // A recorded result ends the dispatch once its whole batch has run.
-                if let Some(value) = recorded.lock().take() {
+                if let Some(value) = structured.as_ref().and_then(Structured::take) {
                     return Ok(Settled {
                         reply: String::new(),
                         messages: earlier
@@ -217,7 +211,7 @@ async fn run_with(
                 }
             }
             // The model ended with text, not the structured result: ask again.
-            AgentRunStep::Done(response) if finish.is_some() => {
+            AgentRunStep::Done(response) if structured.is_some() => {
                 if reasks == MAX_STRUCTURED_REASKS {
                     return Err(format!(
                         "ended without calling `{FINISH_STRUCTURED}` after {reasks} re-asks"
