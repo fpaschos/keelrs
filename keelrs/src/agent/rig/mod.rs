@@ -4,8 +4,6 @@
 //! step that follows its model call (How a tool call runs).
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::future::join_all;
@@ -23,9 +21,10 @@ use rig_core::message::{Message as RigMessage, ToolCall as RigToolCall, ToolFunc
 use rig_core::operation::Completion;
 use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
-use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
+
+pub(crate) use structured::{FINISH_STRUCTURED, Structured};
+use structured::{FOOTER, MAX_STRUCTURED_REASKS, REASK};
 
 use crate::agent::InstanceAgent;
 use crate::builtin::{self, Caches};
@@ -35,6 +34,8 @@ use crate::skills::catalog::catalog;
 use crate::skills::tools::skill_tools;
 use crate::tool::{Called, FailKind, Failed};
 use crate::{Model, Tool};
+
+mod structured;
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
 #[derive(Debug, Clone)]
@@ -50,108 +51,6 @@ pub(crate) struct Settled {
     /// The structured result `finish_structured` recorded, when one was asked for.
     pub(crate) structured: Option<Value>,
 }
-
-/// The reserved tool the model hands a structured result over with.
-pub(crate) const FINISH_STRUCTURED: &str = "finish_structured";
-
-/// The structured result one dispatch asks for: `T`'s schema, its doc comment,
-/// and a check that a value deserializes into `T`.
-#[derive(Debug, Clone)]
-pub(crate) struct Structured {
-    /// `finish_structured`'s parameters: `T`'s schema, wrapped as `{result}` when not an object.
-    schema: Value,
-    /// Whether the value travels as `{"result": value}`.
-    wrapped: bool,
-    /// `T`'s root doc comment.
-    doc: Option<String>,
-    /// Deserializes a value into `T`; the error is what the model reads.
-    check: fn(Value) -> Result<(), String>,
-}
-
-impl Structured {
-    /// The structured result `T`.
-    pub(crate) fn of<T: DeserializeOwned + JsonSchema>() -> Self {
-        // `args_schema` drops the root doc comment and inlines every subschema.
-        let doc = schemars::schema_for!(T)
-            .get("description")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let mut schema = args_schema::<T>();
-        let wrapped = schema.get("type").and_then(Value::as_str) != Some("object");
-        if wrapped {
-            schema = serde_json::json!({
-                "type": "object",
-                "properties": {"result": schema},
-                "required": ["result"],
-                "additionalProperties": false,
-            });
-        }
-        Self {
-            schema,
-            wrapped,
-            doc,
-            check: |value| {
-                serde_json::from_value::<T>(value)
-                    .map(drop)
-                    .map_err(|e| e.to_string())
-            },
-        }
-    }
-
-    /// The `finish_structured` tool, recording the first value that fits in `recorded`.
-    fn tool(&self, recorded: Arc<Mutex<Option<Value>>>) -> Tool {
-        let description = match &self.doc {
-            Some(doc) => format!("{FINISH_DESCRIPTION}\n\n{doc}"),
-            None => FINISH_DESCRIPTION.to_owned(),
-        };
-        let (wrapped, check) = (self.wrapped, self.check);
-        let run = move |arguments: Value, _: String, _: Sandbox| {
-            let recorded = recorded.clone();
-            Box::pin(async move {
-                let value = match arguments {
-                    Value::Object(mut wrapper) if wrapped => {
-                        wrapper.remove("result").unwrap_or_default()
-                    }
-                    value => value,
-                };
-                check(value.clone()).map_err(|e| {
-                    let message = format!("`{FINISH_STRUCTURED}`'s arguments do not fit: {e}");
-                    Failed::new(FailKind::InvalidArgs, message)
-                })?;
-                let mut recorded = recorded.lock();
-                if recorded.is_some() {
-                    return Ok(Value::from("already finished"));
-                }
-                *recorded = Some(value);
-                Ok(Value::from("Recorded."))
-            }) as Pin<Box<dyn Future<Output = Called> + Send>>
-        };
-        Tool {
-            name: FINISH_STRUCTURED.into(),
-            description: description.into(),
-            schema: Arc::new(self.schema.clone()),
-            timeout: None,
-            run: Arc::new(run),
-        }
-    }
-}
-
-/// How many times a dispatch that asked for a structured result is asked again
-/// after ending with text.
-const MAX_STRUCTURED_REASKS: usize = 3;
-
-/// What follows a message that asks for a structured result.
-const FOOTER: &str = "When the task is complete, call `finish_structured` with your answer as \
-    its arguments. The arguments are checked against its schema; if they don't match you get an \
-    error and can try again. Don't answer in plain text: only a successful `finish_structured` \
-    call counts.";
-
-/// The message a re-ask sends.
-const REASK: &str = "You ended without calling `finish_structured`. Call it now with your answer.";
-
-/// What `finish_structured` tells the model, before `T`'s doc comment.
-const FINISH_DESCRIPTION: &str = "Call this once, when the task is complete, with your final \
-    answer as the arguments. They are validated against the schema; the first successful call wins.";
 
 /// Runs the instance's `agent` on `text` after `history`, its built-in tools remembering
 /// in `caches`; an error is the failure reason, as plain text. With `structured`, the

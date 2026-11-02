@@ -1,0 +1,157 @@
+//! The tool loop, driven on rig-core's scripted model: no network; and one
+//! call through [`call`], the seam the loop runs each call with. Shared
+//! helpers here, the tests by topic in the child modules.
+//!
+//! Unit tests, not `keelrs/tests/`: they inject the model through the private
+//! `run_with` and read Rig's messages from `Settled`, neither of which the
+//! public API exposes (Rig types stay in this module, ADR 0004).
+
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use rig_core::completion::AssistantContent;
+use rig_core::message::{ToolResultContent, UserContent};
+use rig_core::test_utils::{MockCompletionModel, MockTurn};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::Barrier;
+
+use super::*;
+use crate::sandbox::unused;
+use crate::skills::tests::{Folder, haiku, sonnet};
+use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
+
+mod builtin;
+mod call;
+mod skills;
+mod turns;
+
+/// Runs `agent` on one message against a model that replies with `turns`.
+async fn scripted(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> Result<Settled, String> {
+    scripted_in(agent, turns, &mut Caches::default()).await
+}
+
+/// [`scripted`], as the agent instance whose built-in tools remember in `caches`.
+async fn scripted_in(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+    caches: &mut Caches,
+) -> Result<Settled, String> {
+    let model = MockCompletionModel::from_turns(turns);
+    run_with(
+        agent.for_instance(InstanceId::new("test"), ()),
+        "Go".to_owned(),
+        Vec::new(),
+        None,
+        caches,
+        |_| Ok(model.clone().erase()),
+    )
+    .await
+}
+
+/// Every tool result the run accepted, in order, as (text or JSON, is_error).
+pub(super) fn results(settled: &Settled) -> Vec<(String, bool)> {
+    let mut results = Vec::new();
+    for message in &settled.messages {
+        let RigMessage::User { content, .. } = message.0.as_ref() else {
+            continue;
+        };
+        for content in content.iter() {
+            if let UserContent::ToolResult(result) = content {
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ToolResultContent::Text(t) => Some(t.text.clone()),
+                        ToolResultContent::Json { value } => Some(value.to_string()),
+                        ToolResultContent::Image(_) => None,
+                    })
+                    .collect::<String>();
+                results.push((text, result.is_error));
+            }
+        }
+    }
+    results
+}
+
+/// An agent on the mock model, in an unused sandbox with no built-ins.
+pub(super) fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+    let sb = unused();
+    sandboxed_agent(move |cx| {
+        cx.use_sandbox(&sb).only([]);
+        declare(cx);
+    })
+}
+
+/// An agent on the mock model whose `declare` calls `use_sandbox` itself.
+fn sandboxed_agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+    Agent::new("scripted", move |cx: &mut AgentContext| {
+        cx.use_model("mock/model");
+        declare(cx);
+        String::new()
+    })
+}
+
+pub(super) fn clock() -> Tool {
+    Tool::host(
+        "current_time",
+        "The current time.",
+        async |_: ToolCall<()>| Ok::<_, Infallible>("noon"),
+    )
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct Order {
+    order_id: String,
+}
+
+fn lookup_order() -> Tool {
+    Tool::host(
+        "lookup_order",
+        "Look up an order.",
+        async |call: ToolCall<Order>| {
+            Ok::<_, Infallible>(json!({"order": call.data.order_id, "call": call.id}))
+        },
+    )
+}
+
+/// Runs `agent` like [`scripted`] and returns every request the model got.
+pub(super) async fn sent(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> (Settled, Vec<CompletionRequest>) {
+    let model = MockCompletionModel::from_turns(turns);
+    let settled = run_with(
+        agent.for_instance(InstanceId::new("test"), ()),
+        "Go".to_owned(),
+        Vec::new(),
+        None,
+        &mut Caches::default(),
+        |_| Ok(model.clone().erase()),
+    )
+    .await
+    .unwrap();
+    (settled, model.requests())
+}
+
+/// The preamble a request carried.
+pub(super) fn preamble(request: &CompletionRequest) -> Option<&str> {
+    match request.chat_history.first()?.as_ref() {
+        RigMessage::System { content } => Some(content),
+        _ => None,
+    }
+}
+
+/// The names of the tools a request declared.
+pub(super) fn tool_names(request: &CompletionRequest) -> Vec<String> {
+    request
+        .tools
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect()
+}
