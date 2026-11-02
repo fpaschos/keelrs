@@ -3,9 +3,8 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use parking_lot::Mutex;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer};
@@ -77,7 +76,7 @@ impl<T: JsonSchema> JsonSchema for Checked<T> {
 #[derive(Debug, Clone)]
 pub(crate) struct Structured {
     pub(crate) tool: Tool,
-    recorded: Arc<Mutex<Option<Value>>>,
+    recorded: Arc<OnceLock<Value>>,
 }
 
 impl Structured {
@@ -101,9 +100,9 @@ impl Structured {
         Self { tool, recorded }
     }
 
-    /// Takes the value `finish_structured` recorded, if any.
-    pub(crate) fn take(&self) -> Option<Value> {
-        self.recorded.lock().take()
+    /// The value `finish_structured` recorded, if any.
+    pub(crate) fn recorded(&self) -> Option<Value> {
+        self.recorded.get().cloned()
     }
 }
 
@@ -111,7 +110,7 @@ impl Structured {
 /// `recorded`; the first call wins.
 fn finish<Args>(
     description: String,
-    recorded: &Arc<Mutex<Option<Value>>>,
+    recorded: &Arc<OnceLock<Value>>,
     unwrap: fn(Args) -> Value,
 ) -> Tool
 where
@@ -122,13 +121,10 @@ where
         FINISH_STRUCTURED,
         description,
         move |call: ToolCall<Args>| async move {
-            let value = unwrap(call.data);
-            let mut recorded = recorded.lock();
-            if recorded.is_some() {
-                return Ok("already finished");
+            match recorded.set(unwrap(call.data)) {
+                Ok(()) => Ok::<_, String>("Recorded."),
+                Err(_) => Ok("already finished"),
             }
-            *recorded = Some(value);
-            Ok::<_, String>("Recorded.")
         },
     )
 }

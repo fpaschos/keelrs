@@ -219,7 +219,7 @@ async fn run_with(
                     .collect::<Result<Vec<_>, _>>()?;
                 run.answer_all(answers).map_err(|e| e.to_string())?;
                 // A recorded result ends the dispatch once its whole batch has run.
-                if let Some(value) = structured.as_ref().and_then(Structured::take) {
+                if let Some(value) = structured.as_ref().and_then(Structured::recorded) {
                     return Ok(Settled {
                         reply: String::new(),
                         messages: run.messages().iter().cloned().map(Message).collect(),
