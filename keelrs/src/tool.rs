@@ -3,6 +3,7 @@
 //! A [`Tool`] is plain keelrs data around an erased callback; the Rig driver
 //! (`agent::rig`) turns it into Rig's tool definition and result each turn.
 
+use std::any::Any;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -26,8 +27,40 @@ pub struct ToolCall<Args> {
     pub id: String,
 }
 
-/// What a tool's call settles to: its value, or the message the model reads.
-type Called = Result<Value, String>;
+/// Why a call failed, as keelrs keeps it; `agent::rig` maps it to Rig's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailKind {
+    InvalidArgs,
+    NotFound,
+    PermissionDenied,
+    Timeout,
+    Other,
+}
+
+/// A failed call: the message the model reads, and its kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failed {
+    pub(crate) kind: FailKind,
+    pub(crate) message: String,
+}
+
+impl Failed {
+    pub(crate) fn new(kind: FailKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for Failed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// What a tool's call settles to: its value, or why it failed.
+pub(crate) type Called = Result<Value, Failed>;
 
 type Run = dyn Fn(Value, String, Option<Sandbox>) -> Pin<Box<dyn Future<Output = Called> + Send>>
     + Send
@@ -64,7 +97,8 @@ impl Tool {
     /// JSON object; `ToolCall<()>` takes no arguments. `run` is cloned before
     /// each call, so `async move |call| …` closures over `Arc`s work. An `Ok`
     /// string reaches the model as text and any other value as JSON; an `Err`
-    /// reaches it as its message, and the run continues.
+    /// of any `Display` type, such as `String` or `anyhow::Error`, reaches it
+    /// as its message, and the run continues.
     ///
     /// A call is cancelled by dropping its future (a timeout, or the instance
     /// stopping): work a tool spawns outside that future needs a drop guard.
@@ -78,7 +112,7 @@ impl Tool {
         F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Serialize + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        E: fmt::Display + Send + Sync + 'static,
     {
         Self::erased(name, description, false, move |call, _| run(call))
     }
@@ -103,7 +137,7 @@ impl Tool {
         F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Serialize + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        E: fmt::Display + Send + Sync + 'static,
     {
         Self::erased(
             name,
@@ -129,7 +163,7 @@ impl Tool {
         F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Serialize + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        E: fmt::Display + Send + Sync + 'static,
     {
         Self::host(name, description, run)
     }
@@ -146,7 +180,7 @@ impl Tool {
         F: FnOnce(ToolCall<Args>, Option<Sandbox>) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Serialize + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        E: fmt::Display + Send + Sync + 'static,
     {
         let name: Arc<str> = name.into().into();
         let tool_name = name.clone();
@@ -154,12 +188,18 @@ impl Tool {
             let run = run.clone();
             let name = tool_name.clone();
             Box::pin(async move {
-                let data = arguments_into::<Args>(arguments)
-                    .map_err(|e| format!("`{name}`'s arguments do not fit: {e}"))?;
-                let value = run(ToolCall { data, id }, sandbox)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                serde_json::to_value(value).map_err(|e| e.to_string())
+                let data = arguments_into::<Args>(arguments).map_err(|e| {
+                    let message = format!("`{name}`'s arguments do not fit: {e}");
+                    Failed::new(FailKind::InvalidArgs, message)
+                })?;
+                let value = run(ToolCall { data, id }, sandbox).await.map_err(|e| {
+                    // keelrs's own tools fail with a kind; any other error is `Other`.
+                    (&e as &dyn Any)
+                        .downcast_ref::<Failed>()
+                        .cloned()
+                        .unwrap_or_else(|| Failed::new(FailKind::Other, e.to_string()))
+                })?;
+                serde_json::to_value(value).map_err(|e| Failed::new(FailKind::Other, e.to_string()))
             }) as Pin<Box<dyn Future<Output = Called> + Send>>
         };
         Self {

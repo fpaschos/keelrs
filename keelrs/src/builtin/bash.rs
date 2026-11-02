@@ -11,27 +11,30 @@ use serde::Deserialize;
 
 use super::Out;
 use crate::sandbox::{Chunk, ExecRequest, Exit, Sandbox, SandboxPath, keep_last};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BashArgs {
+struct BashArgs {
     /// The command line to run.
-    pub(crate) command: String,
+    command: String,
     /// Seconds it may run before it is stopped; no limit when not given.
-    pub(crate) timeout: Option<u64>,
+    timeout: Option<u64>,
 }
 
 pub(super) fn tool(shell: Option<&SandboxPath>) -> Tool {
     Tool::sandbox(
         "bash",
         description(shell),
-        |call: ToolCall<BashArgs>, sb: Sandbox| async move { bash(&sb, call.data).await },
+        |call: ToolCall<BashArgs>, sb: Sandbox| async move {
+            bash(&sb, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// What the model reads of `bash`, naming `shell` when it is not bash.
-pub(super) fn description(shell: Option<&SandboxPath>) -> String {
+fn description(shell: Option<&SandboxPath>) -> String {
     let mut text = format!(
         "Run a command line in the working directory, for builds, tests, git and other \
          programs. Returns its output, stderr merged into stdout, at most the last {MAX_LINES} \
@@ -54,7 +57,7 @@ pub(super) fn description(shell: Option<&SandboxPath>) -> String {
 
 /// Runs `args.command` to its end, or until it has printed
 /// [`MAX_PRINTED`]: its output's tail, then how it ended.
-pub(crate) async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
+async fn bash(sb: &Sandbox, args: BashArgs) -> Out {
     let mut request = ExecRequest::shell(args.command).merge_stderr();
     let timeout = args.timeout.map(Duration::from_secs);
     if let Some(timeout) = timeout {

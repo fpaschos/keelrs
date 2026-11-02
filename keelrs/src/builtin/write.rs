@@ -6,15 +6,16 @@ use serde::Deserialize;
 
 use super::{Out, fail, key, place};
 use crate::sandbox::{Sandbox, Stat};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WriteArgs {
+struct WriteArgs {
     /// The file to write, relative to the working directory.
-    pub(crate) path: String,
+    path: String,
     /// The file's whole new content.
-    pub(crate) content: String,
+    content: String,
 }
 
 pub(super) fn tool(seen: Seen) -> Tool {
@@ -22,13 +23,15 @@ pub(super) fn tool(seen: Seen) -> Tool {
         "write",
         "Create a file, or replace one's whole content, creating its directory. To change part \
          of a file, use `edit`.",
-        move |call: ToolCall<WriteArgs>, sb: Sandbox| async move { write(&sb, &seen, call.data).await },
+        move |call: ToolCall<WriteArgs>, sb: Sandbox| async move {
+            write(&sb, &seen, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// Writes `args.content` to `args.path`, remembered in `seen`; says whether
 /// it created the file or how long the one it replaced was.
-pub(crate) async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
+async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
     let path = place(sb, &args.path).await?;
     let before = match sb
         .stat(path.as_str())

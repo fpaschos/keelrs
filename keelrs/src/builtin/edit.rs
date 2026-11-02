@@ -11,29 +11,30 @@ use serde::Deserialize;
 
 use super::{Out, fail, key, place, read_text, text_of};
 use crate::sandbox::{ContentHash, Sandbox};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct EditArgs {
+struct EditArgs {
     /// The file to edit, relative to the working directory.
-    pub(crate) path: String,
+    path: String,
     /// The replacements, in order: each matches the text the ones before it left.
     #[schemars(length(min = 1))]
-    pub(crate) edits: Vec<Replacement>,
+    edits: Vec<Replacement>,
 }
 
 // One replacement of an `edit` call; not a doc comment, which the model would see.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Replacement {
+struct Replacement {
     /// The text to replace, copied from the file; it must match one place only.
-    pub(crate) old_text: String,
+    old_text: String,
     /// The replacement.
-    pub(crate) new_text: String,
+    new_text: String,
     /// Replace every match instead of exactly one.
     #[serde(default)]
-    pub(crate) replace_all: bool,
+    replace_all: bool,
 }
 
 pub(super) fn tool(seen: Seen) -> Tool {
@@ -46,14 +47,16 @@ pub(super) fn tool(seen: Seen) -> Tool {
          changes to one file in one call, one entry per change: they apply in order, each to \
          the text the ones before it left, and all of them or none. Read the file first. \
          Returns the changed lines with some context, so there is no need to read it again.",
-        move |call: ToolCall<EditArgs>, sb: Sandbox| async move { edit(&sb, &seen, call.data).await },
+        move |call: ToolCall<EditArgs>, sb: Sandbox| async move {
+            edit(&sb, &seen, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// Makes `args.edits` to `args.path` as rig-tools' `edit` does: from the
 /// text last seen whole, written only if the file still holds it, and
 /// otherwise from the file as it is now.
-pub(crate) async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
+async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
     let sent = args.path.as_str();
     let path = place(sb, sent).await?;
     let key = key(&path);

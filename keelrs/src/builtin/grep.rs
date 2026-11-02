@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use super::{Out, fail, fit, listing, place, relative};
 use crate::sandbox::{Sandbox, Stat};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 /// Most matches one `grep` call shows.
@@ -24,24 +25,24 @@ const MAX_SKIPPED: usize = 5;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GrepArgs {
+struct GrepArgs {
     /// The regular expression (Rust regex syntax), or the text with `literal`.
-    pub(crate) pattern: String,
+    pattern: String,
     /// The directory or file to search; default the working directory.
-    pub(crate) path: Option<String>,
+    path: Option<String>,
     /// Only files matching this glob, such as `*.rs` or `src/**/*.rs`.
-    pub(crate) glob: Option<String>,
+    glob: Option<String>,
     /// Match without regard to case.
     #[serde(default)]
-    pub(crate) ignore_case: bool,
+    ignore_case: bool,
     /// Match `pattern` as plain text, not a regular expression.
     #[serde(default)]
-    pub(crate) literal: bool,
+    literal: bool,
     /// Lines to show before and after each match.
-    pub(crate) context: Option<usize>,
+    context: Option<usize>,
     /// Also hidden files and directories (named with a leading `.`); files git ignores stay out.
     #[serde(default)]
-    pub(crate) hidden: bool,
+    hidden: bool,
 }
 
 pub(super) fn tool() -> Tool {
@@ -59,13 +60,15 @@ pub(super) fn tool() -> Tool {
             MAX_OUTPUT / 1024,
             MAX_FILE_BYTES / (1024 * 1024)
         ),
-        |call: ToolCall<GrepArgs>, sb: Sandbox| async move { grep(&sb, call.data).await },
+        |call: ToolCall<GrepArgs>, sb: Sandbox| async move {
+            grep(&sb, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// The lines matching `args.pattern` in the files under `args.path`, or in
 /// that one file, in path order.
-pub(crate) async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
+async fn grep(sb: &Sandbox, args: GrepArgs) -> Out {
     let pattern = match args.literal {
         true => regex::escape(&args.pattern),
         false => args.pattern.clone(),

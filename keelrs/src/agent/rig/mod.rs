@@ -16,10 +16,10 @@ use rig_core::catalog::Catalog;
 use rig_core::completion::{
     CompletionRequest, Effort, GenerationOptions, Reasoning, ToolDefinition,
 };
-use rig_core::message::{Message as RigMessage, ToolName};
+use rig_core::message::{Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName};
 use rig_core::operation::Completion;
 use rig_core::tool::feedback::arguments_refusal;
-use rig_core::tool::{ToolExecutionError, ToolOutput, ToolResult};
+use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
 use crate::builtin::{self, Caches};
@@ -27,6 +27,7 @@ use crate::model::Thinking;
 use crate::sandbox::Sandbox;
 use crate::skills::catalog::catalog;
 use crate::skills::tools::skill_tools;
+use crate::tool::{Called, FailKind, Failed};
 use crate::{Agent, Model, Tool};
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
@@ -198,7 +199,7 @@ async fn answer(
     tools: &HashMap<String, Tool>,
     sandbox: Option<&Sandbox>,
 ) -> Result<ToolAnswer, String> {
-    let call = match call {
+    let exec = match call {
         PendingToolCall::Execute(call) => call,
         // Arguments that are not a JSON object: Rig's feedback asks for a retry.
         PendingToolCall::Malformed(call) => return Ok(call.answer(None)),
@@ -206,30 +207,66 @@ async fn answer(
     };
     // The run only emits calls the pinned render declared.
     let tool = tools
-        .get(&**call.name())
-        .ok_or_else(|| format!("tool \"{}\" was not declared this turn", call.name()))?;
-    if let Some(refusal) = arguments_refusal(&tool.schema, call.tool_call()) {
-        let refused = ToolExecutionError::invalid_args(refusal);
-        return Ok(call.answer(ToolResult::failed(refused)));
-    }
-    let running = (tool.run)(
-        call.arguments(),
-        call.id().wire().into_owned(),
-        sandbox.filter(|_| tool.sandboxed).cloned(),
-    );
-    let called = match tool.timeout {
-        Some(limit) => tokio::time::timeout(limit, running)
-            .await
-            .unwrap_or_else(|_| Err(format!("tool \"{}\" timed out after {limit:?}", tool.name))),
-        None => running.await,
-    };
-    // A string is text, `()` empty text, any other value JSON.
-    Ok(call.answer(match called {
+        .get(&**exec.name())
+        .ok_or_else(|| format!("tool \"{}\" was not declared this turn", exec.name()))?;
+    let id = exec.id().wire().into_owned();
+    let called = self::call(tool, exec.arguments(), id, sandbox).await;
+    Ok(exec.answer(result(called)))
+}
+
+/// What Rig is answered with for `called`: a string is text, `()` empty
+/// text, any other value JSON, and a failure keeps its kind.
+fn result(called: Called) -> ToolResult {
+    match called {
         Ok(Value::String(text)) => ToolResult::success(ToolOutput::text(text)),
         Ok(Value::Null) => ToolResult::success(ToolOutput::text("")),
         Ok(value) => ToolResult::success(ToolOutput::json(value)),
-        Err(message) => ToolResult::failed(ToolExecutionError::other(message)),
-    }))
+        Err(failed) => ToolResult::failed(ToolExecutionError::new(
+            kind_of(failed.kind),
+            failed.message,
+        )),
+    }
+}
+
+/// Runs one call of `tool` exactly as a turn does: the schema refusal,
+/// decoding, the run, the timeout. What the model reads is `Ok` or `Err`.
+pub(crate) async fn call(
+    tool: &Tool,
+    arguments: Value,
+    id: String,
+    sandbox: Option<&Sandbox>,
+) -> Called {
+    // Rebuilt from the name and arguments: Rig answers a call with unparsed
+    // arguments as malformed, so one that reaches a tool never has them.
+    let name =
+        ToolName::new(&*tool.name).map_err(|e| Failed::new(FailKind::Other, e.to_string()))?;
+    let rig_call = RigToolCall::from_wire(id.clone(), ToolFunction::new(name, arguments));
+    if let Some(refusal) = arguments_refusal(&tool.schema, &rig_call) {
+        return Err(Failed::new(FailKind::InvalidArgs, refusal));
+    }
+    // The object the refusal checked, as a turn's `ExecCall::arguments` gives it.
+    let arguments = Value::Object(rig_call.function.arguments);
+    let running = (tool.run)(arguments, id, sandbox.filter(|_| tool.sandboxed).cloned());
+    match tool.timeout {
+        Some(limit) => tokio::time::timeout(limit, running)
+            .await
+            .unwrap_or_else(|_| {
+                let message = format!("tool \"{}\" timed out after {limit:?}", tool.name);
+                Err(Failed::new(FailKind::Timeout, message))
+            }),
+        None => running.await,
+    }
+}
+
+/// Rig's kind for a keelrs one.
+fn kind_of(kind: FailKind) -> ToolErrorKind {
+    match kind {
+        FailKind::InvalidArgs => ToolErrorKind::InvalidArgs,
+        FailKind::NotFound => ToolErrorKind::NotFound,
+        FailKind::PermissionDenied => ToolErrorKind::PermissionDenied,
+        FailKind::Timeout => ToolErrorKind::Timeout,
+        FailKind::Other => ToolErrorKind::Other,
+    }
 }
 
 /// The JSON schema the model is sent for a tool's `Args`; `()` takes an

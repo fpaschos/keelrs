@@ -3,8 +3,6 @@
 use keelrs::sandbox::{ExecRequest, Exit, Sandbox};
 use keelrs::{Tool, ToolCall};
 
-use crate::failure::{Failure, fail};
-
 pub(crate) fn pwd() -> Tool {
     Tool::sandbox(
         "pwd",
@@ -12,13 +10,11 @@ pub(crate) fn pwd() -> Tool {
         async |_: ToolCall<()>, sandbox: Sandbox| {
             let ran = sandbox
                 .exec(ExecRequest::argv(["pwd"]))
-                .await
-                .map_err(|e| Failure(e.to_string()))?
+                .await?
                 .run()
-                .await
-                .map_err(|e| Failure(e.to_string()))?;
+                .await?;
             if ran.exit != Exit::Code(0) {
-                return fail(ran.stderr.trim().to_owned());
+                anyhow::bail!("{}", ran.stderr.trim());
             }
             Ok(ran.stdout.trim().to_owned())
         },

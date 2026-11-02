@@ -8,18 +8,19 @@ use rig_tools::MAX_BYTES;
 
 use super::{Out, fail, fit, listing, place, relative};
 use crate::sandbox::{Sandbox, Stat};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GlobArgs {
+struct GlobArgs {
     /// The path glob, such as `**/*.rs` or `src/*`.
-    pub(crate) pattern: String,
+    pattern: String,
     /// The directory to search in; default the working directory.
-    pub(crate) path: Option<String>,
+    path: Option<String>,
     /// Also hidden files and directories (named with a leading `.`); files git ignores stay out.
     #[serde(default)]
-    pub(crate) hidden: bool,
+    hidden: bool,
 }
 
 /// Most paths one `glob` call returns.
@@ -36,12 +37,14 @@ pub(super) fn tool() -> Tool {
              Use it to find files, not `find` or `ls` in `bash`.",
             MAX_BYTES / 1024
         ),
-        |call: ToolCall<GlobArgs>, sb: Sandbox| async move { glob(&sb, call.data).await },
+        |call: ToolCall<GlobArgs>, sb: Sandbox| async move {
+            glob(&sb, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// The files under `args.path` whose paths below it match `args.pattern`.
-pub(crate) async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
+async fn glob(sb: &Sandbox, args: GlobArgs) -> Out {
     let sent = args.path.as_deref().unwrap_or(".");
     let root = place(sb, sent).await?;
     let work_dir = place(sb, ".").await?;

@@ -6,8 +6,6 @@ use keelrs::{Tool, ToolCall};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::failure::{Failure, fail};
-
 #[derive(Deserialize, JsonSchema)]
 struct GetWeather {
     /// A city name, e.g. `Athens`.
@@ -43,19 +41,16 @@ pub(crate) fn get_weather(http: reqwest::Client) -> Tool {
         "get_weather",
         "The current temperature and wind in a city.",
         async move |call: ToolCall<GetWeather>| {
-            let http_error = |e: reqwest::Error| Failure(e.to_string());
             let places: Places = http
                 .get("https://geocoding-api.open-meteo.com/v1/search")
                 .query(&[("name", call.data.city.as_str()), ("count", "1")])
                 .send()
                 .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(http_error)?
+                .and_then(reqwest::Response::error_for_status)?
                 .json()
-                .await
-                .map_err(http_error)?;
+                .await?;
             let Some(place) = places.results.into_iter().flatten().next() else {
-                return fail(format!("no city called {}", call.data.city));
+                anyhow::bail!("no city called {}", call.data.city);
             };
             let forecast: Forecast = http
                 .get("https://api.open-meteo.com/v1/forecast")
@@ -66,11 +61,9 @@ pub(crate) fn get_weather(http: reqwest::Client) -> Tool {
                 ])
                 .send()
                 .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(http_error)?
+                .and_then(reqwest::Response::error_for_status)?
                 .json()
-                .await
-                .map_err(http_error)?;
+                .await?;
             Ok(format!(
                 "{} ({}): {} °C, wind {} km/h",
                 place.name,
