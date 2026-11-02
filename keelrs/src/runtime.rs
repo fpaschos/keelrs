@@ -2,7 +2,6 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
@@ -41,11 +40,9 @@ impl Runtime {
     pub fn start(agents: impl Agents) -> Result<Self> {
         let mut registry = HashMap::new();
         for agent in agents.into_agents() {
-            match registry.entry(agent.name.clone()) {
-                Entry::Occupied(_) => return Err(Error::DuplicateAgent(agent.name)),
-                Entry::Vacant(slot) => {
-                    slot.insert(agent);
-                }
+            let name = agent.name.clone();
+            if registry.insert(name.clone(), agent).is_some() {
+                return Err(Error::DuplicateAgent(name));
             }
         }
         Ok(Self {

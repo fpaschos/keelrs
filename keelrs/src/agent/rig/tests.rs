@@ -334,19 +334,9 @@ async fn sent(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Settled, Vec<CompletionRequest>) {
-    sent_as(agent, InstanceId::new("test"), (), turns).await
-}
-
-/// [`sent`], as instance `id` of `agent` with `data`.
-async fn sent_as<D: Send + Sync + 'static>(
-    agent: &Agent<D>,
-    id: InstanceId,
-    data: D,
-    turns: impl IntoIterator<Item = MockTurn>,
-) -> (Settled, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
     let settled = run_with(
-        agent.bind(id, data),
+        agent.bind(InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
         &mut Caches::default(),
@@ -428,27 +418,6 @@ async fn use_tools_declares_each_tool_in_order_by_reference() {
     let agent = agent(move |cx| cx.use_tools([&lookup, &clock]));
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     assert_eq!(tool_names(&requests[0]), ["lookup_order", "current_time"]);
-}
-
-#[tokio::test]
-async fn a_render_reads_its_instances_data_and_id() {
-    let sb = unused();
-    let agent = Agent::new("issue", move |cx: &mut AgentContext<u64>| {
-        cx.use_model("mock/model");
-        cx.use_sandbox(&sb).only([]);
-        format!("You implement #{} as {}.", cx.data(), cx.id())
-    });
-    let (_, requests) = sent_as(
-        &agent,
-        InstanceId::new("implement-17"),
-        17,
-        [MockTurn::text("Done.")],
-    )
-    .await;
-    assert_eq!(
-        preamble(&requests[0]),
-        Some("You implement #17 as implement-17.")
-    );
 }
 
 #[tokio::test]

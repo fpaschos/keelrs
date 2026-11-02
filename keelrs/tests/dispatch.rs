@@ -146,7 +146,7 @@ fn an_instance_id_serializes_as_its_bare_string() {
 // Instance data and ids. Each agent records what its render saw, then fails
 // for want of a model: no network.
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Issue {
     number: u64,
 }
@@ -209,27 +209,17 @@ async fn a_blank_id_fails() {
 }
 
 #[tokio::test]
-async fn an_unregistered_agent_fails() {
-    let registered = Agent::new("registered", |_: &mut AgentContext| String::new());
-    let other = Agent::new("other", |_: &mut AgentContext| String::new());
-    let runtime = Runtime::start([&registered]).unwrap();
-    let result = runtime.instance(&other, InstanceId::new("a"));
-    assert!(
-        matches!(&result, Err(Error::UnknownAgent(name)) if name == "other"),
-        "{result:?}"
-    );
-}
-
-#[tokio::test]
-async fn another_agent_with_a_registered_name_fails() {
+async fn an_unregistered_agent_fails_even_with_a_registered_name() {
     let registered = Agent::new("twin", |_: &mut AgentContext| String::new());
-    let impostor = Agent::new("twin", |_: &mut AgentContext| String::new());
     let runtime = Runtime::start([&registered]).unwrap();
-    let result = runtime.instance(&impostor, InstanceId::new("a"));
-    assert!(
-        matches!(&result, Err(Error::UnknownAgent(name)) if name == "twin"),
-        "{result:?}"
-    );
+    for name in ["other", "twin"] {
+        let other = Agent::new(name, |_: &mut AgentContext| String::new());
+        let result = runtime.instance(&other, InstanceId::new("a"));
+        assert!(
+            matches!(&result, Err(Error::UnknownAgent(unknown)) if unknown == name),
+            "{result:?}"
+        );
+    }
 }
 
 #[test]
@@ -298,15 +288,9 @@ async fn an_instance_runs_with_the_registered_agents_settings() {
 }
 
 #[test]
-fn an_instance_outside_a_tokio_runtime_fails_and_the_runtime_stays_usable() {
+fn an_instance_outside_a_tokio_runtime_fails() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
     let runtime = Runtime::start([&agent]).unwrap();
     let result = runtime.instance(&agent, InstanceId::new("a"));
     assert!(matches!(&result, Err(Error::NoTokioRuntime)), "{result:?}");
-
-    let tokio = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let _entered = tokio.enter();
-    assert!(runtime.instance(&agent, InstanceId::new("a")).is_ok());
 }

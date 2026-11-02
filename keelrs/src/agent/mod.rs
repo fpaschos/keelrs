@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-pub(crate) use context::Declared;
+use context::Declared;
 pub use context::{AgentContext, BuiltinTools};
 pub use id::InstanceId;
 pub use instance::{AgentInstance, Receipt, Reply, SubmissionId};
