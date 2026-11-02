@@ -12,6 +12,9 @@ pub enum Error {
     /// Two agents given to [`Runtime::start`](crate::Runtime::start) share a name.
     #[error("two agents are named `{0}`; agent names must be unique")]
     DuplicateAgent(String),
+    /// An instance was asked for outside a Tokio runtime, which its actor needs.
+    #[error("agent instances must be created within a Tokio runtime")]
+    NoTokioRuntime,
     /// An instance was asked for by a blank id.
     #[error("instance id is blank")]
     InvalidInstanceId(InstanceId),

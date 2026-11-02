@@ -248,32 +248,69 @@ fn two_agents_with_one_name_fail_to_start() {
 }
 
 #[tokio::test]
-async fn start_takes_a_tuple_an_array_and_a_vec() {
+async fn start_takes_a_tuple_of_mixed_data_types() {
     let plain = Agent::new("plain", |_: &mut AgentContext| String::new());
-    let seen = Seen::default();
-    let with_data = recorder(&seen);
+    let with_data = recorder(&Seen::default());
     let runtime = Runtime::start((&plain, &with_data)).unwrap();
-    runtime.instance(&plain, InstanceId::new("a")).unwrap();
-    runtime
-        .instance_with(&with_data, InstanceId::new("a"), Issue { number: 1 })
-        .unwrap();
-
-    let agents: Vec<Agent<serde_json::Value>> = ["one", "two"]
-        .into_iter()
-        .map(|name| {
-            Agent::new(name, |_: &mut AgentContext<serde_json::Value>| {
-                String::new()
-            })
-        })
-        .collect();
-    let runtime = Runtime::start(&agents).unwrap();
-    for agent in &agents {
+    assert!(runtime.instance(&plain, InstanceId::new("a")).is_ok());
+    assert!(
         runtime
-            .instance_with(agent, InstanceId::new("a"), serde_json::Value::Null)
-            .unwrap();
-    }
-    let runtime = Runtime::start([&plain]).unwrap();
-    runtime.instance(&plain, InstanceId::new("a")).unwrap();
-    let runtime = Runtime::start(agents).unwrap();
-    drop(runtime);
+            .instance_with(&with_data, InstanceId::new("a"), Issue { number: 1 })
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn start_takes_an_array_vec_or_slice_by_value_or_reference() {
+    type Json = serde_json::Value;
+    let agents: [Agent<Json>; 2] =
+        ["one", "two"].map(|name| Agent::new(name, |_: &mut AgentContext<Json>| String::new()));
+    let hosts_both = |runtime: Runtime| {
+        for agent in &agents {
+            assert!(
+                runtime
+                    .instance_with(agent, InstanceId::new("a"), Json::Null)
+                    .is_ok(),
+                "{}",
+                agent.name()
+            );
+        }
+    };
+    let [one, two] = &agents;
+    let vec = agents.to_vec();
+    hosts_both(Runtime::start([one, two]).unwrap());
+    hosts_both(Runtime::start(&agents).unwrap());
+    hosts_both(Runtime::start(agents.clone()).unwrap());
+    hosts_both(Runtime::start(&vec).unwrap());
+    hosts_both(Runtime::start(vec.as_slice()).unwrap());
+    hosts_both(Runtime::start(vec).unwrap());
+}
+
+#[tokio::test]
+async fn an_instance_runs_with_the_registered_agents_settings() {
+    let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
+    let runtime = Runtime::start([&agent]).unwrap();
+    // The same agent function, but a turn cap that was never registered.
+    let capped = agent.clone().max_turns(0);
+    let instance = runtime.instance(&capped, InstanceId::new("a")).unwrap();
+    let result = instance.ask("go").await;
+    assert!(
+        matches!(&result, Err(Error::Run { outcome: Outcome::Failed { reason }, .. })
+            if reason.contains("never called `use_model`")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_instance_outside_a_tokio_runtime_fails_and_the_runtime_stays_usable() {
+    let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
+    let runtime = Runtime::start([&agent]).unwrap();
+    let result = runtime.instance(&agent, InstanceId::new("a"));
+    assert!(matches!(&result, Err(Error::NoTokioRuntime)), "{result:?}");
+
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let _entered = tokio.enter();
+    assert!(runtime.instance(&agent, InstanceId::new("a")).is_ok());
 }

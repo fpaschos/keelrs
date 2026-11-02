@@ -69,8 +69,9 @@ impl Runtime {
     ///
     /// Fails with [`Error::InvalidInstanceId`] on a blank id, and with
     /// [`Error::UnknownAgent`] unless `agent` is the very one given to
-    /// [`Runtime::start`] (not just one with its name). Must be called within
-    /// a Tokio runtime.
+    /// [`Runtime::start`] (not just one with its name); the instance runs with
+    /// that registered agent's settings. Fails with [`Error::NoTokioRuntime`]
+    /// outside a Tokio runtime.
     pub fn instance_with<D>(
         &self,
         agent: &Agent<D>,
@@ -83,13 +84,19 @@ impl Runtime {
         if id.as_str().trim().is_empty() {
             return Err(Error::InvalidInstanceId(id));
         }
-        let registered = self
+        // The registered agent, not the caller's clone, so its settings apply.
+        let Some(registered) = self
             .inner
             .agents
             .get(agent.name())
-            .and_then(|registered| registered.agent.downcast_ref::<Agent<D>>());
-        if !registered.is_some_and(|registered| registered.is(agent)) {
+            .and_then(|registered| registered.agent.downcast_ref::<Agent<D>>())
+            .filter(|registered| registered.is(agent))
+        else {
             return Err(Error::UnknownAgent(agent.name().to_owned()));
+        };
+        // Checked before the lock: the actor's spawn would panic while holding it.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(Error::NoTokioRuntime);
         }
         let instance = self
             .inner
@@ -98,7 +105,7 @@ impl Runtime {
             .unwrap()
             .entry((agent.name().to_owned(), id.clone()))
             .or_insert_with(|| {
-                AgentInstance::spawn(agent.bind(id.clone(), data), id, &self.inner.shutdown)
+                AgentInstance::spawn(registered.bind(id.clone(), data), id, &self.inner.shutdown)
             })
             .clone();
         Ok(instance)
@@ -144,11 +151,24 @@ impl fmt::Debug for AnyAgent {
 
 /// The agents [`Runtime::start`] takes: a tuple of up to 12, or an array,
 /// `Vec` or slice, of [`Agent`]s or references to them.
-pub trait Agents {
+///
+/// Sealed: only keelrs implements it.
+pub trait Agents: sealed::Sealed {
     /// Each agent, in order.
     #[doc(hidden)]
     fn into_agents(self) -> Vec<AnyAgent>;
 }
+
+mod sealed {
+    /// Keeps [`Agents`](super::Agents) to the impls in this module.
+    pub trait Sealed {}
+}
+
+impl<A: Into<AnyAgent>> sealed::Sealed for Vec<A> {}
+impl<A: Into<AnyAgent>, const N: usize> sealed::Sealed for [A; N] {}
+impl<'a, A> sealed::Sealed for &'a [A] where &'a A: Into<AnyAgent> {}
+impl<'a, A> sealed::Sealed for &'a Vec<A> where &'a A: Into<AnyAgent> {}
+impl<'a, A, const N: usize> sealed::Sealed for &'a [A; N] where &'a A: Into<AnyAgent> {}
 
 impl<A: Into<AnyAgent>> Agents for Vec<A> {
     fn into_agents(self) -> Vec<AnyAgent> {
@@ -192,6 +212,8 @@ where
 /// `Agents` for tuples of each length from 1 to 12.
 macro_rules! tuples {
     ($($name:ident)+) => {
+        impl<$($name: Into<AnyAgent>),+> sealed::Sealed for ($($name,)+) {}
+
         impl<$($name: Into<AnyAgent>),+> Agents for ($($name,)+) {
             #[allow(non_snake_case)]
             fn into_agents(self) -> Vec<AnyAgent> {
