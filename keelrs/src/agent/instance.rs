@@ -14,7 +14,7 @@ use tokio::select;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::Bound;
+use crate::agent::InstanceAgent;
 use crate::agent::rig::{self, Settled};
 use crate::builtin::Caches;
 use crate::event::Event;
@@ -34,8 +34,12 @@ pub struct AgentInstance {
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of the bound `agent`; `shutdown` cancelling aborts it.
-    pub(crate) fn spawn(agent: Bound, id: InstanceId, shutdown: &CancellationToken) -> Self {
+    /// Spawns the actor for instance `id` of `agent`; `shutdown` cancelling aborts it.
+    pub(crate) fn spawn(
+        agent: InstanceAgent,
+        id: InstanceId,
+        shutdown: &CancellationToken,
+    ) -> Self {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
         let actor = InstanceActor {
             agent,
@@ -121,7 +125,7 @@ enum Command {
 /// dispatch runs to settled before the next command, so a read always finds its
 /// message settled.
 struct InstanceActor {
-    agent: Bound,
+    agent: InstanceAgent,
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,

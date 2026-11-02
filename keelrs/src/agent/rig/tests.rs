@@ -38,7 +38,7 @@ async fn scripted_in(
 ) -> Result<Settled, String> {
     let model = MockCompletionModel::from_turns(turns);
     run_with(
-        agent.bind(InstanceId::new("test"), ()),
+        agent.for_instance(InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
         caches,
@@ -336,7 +336,7 @@ async fn sent(
 ) -> (Settled, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
     let settled = run_with(
-        agent.bind(InstanceId::new("test"), ()),
+        agent.for_instance(InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
         &mut Caches::default(),

@@ -102,7 +102,11 @@ impl Runtime {
             .lock()
             .entry((agent.name().to_owned(), id.clone()))
             .or_insert_with(|| {
-                AgentInstance::spawn(registered.bind(id.clone(), data), id, &self.inner.shutdown)
+                AgentInstance::spawn(
+                    registered.for_instance(id.clone(), data),
+                    id,
+                    &self.inner.shutdown,
+                )
             })
             .clone();
         Ok(instance)

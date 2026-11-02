@@ -72,11 +72,11 @@ impl<D> Agent<D> {
 
 impl<D: Send + Sync + 'static> Agent<D> {
     /// This agent for instance `id`, its data frozen for the instance's life.
-    pub(crate) fn bind(&self, id: InstanceId, data: D) -> Bound {
+    pub(crate) fn for_instance(&self, id: InstanceId, data: D) -> InstanceAgent {
         let (f, data) = (self.f.clone(), Arc::new(data));
-        Bound {
+        InstanceAgent {
             max_turns: self.max_turns,
-            render: Arc::new(move || {
+            f: Arc::new(move || {
                 let mut cx = AgentContext::new(data.clone(), id.clone());
                 let returned = f(&mut cx);
                 (cx.into_declared(), returned)
@@ -103,16 +103,16 @@ impl<D> fmt::Debug for Agent<D> {
     }
 }
 
-/// An agent bound to one instance's id and data: what the run loop renders.
+/// An agent as one instance runs it, with that instance's id and data: what the run loop renders.
 #[derive(Clone)]
-pub(crate) struct Bound {
+pub(crate) struct InstanceAgent {
     pub(crate) max_turns: usize,
-    render: Arc<dyn Fn() -> (Declared, String) + Send + Sync>,
+    f: Arc<dyn Fn() -> (Declared, String) + Send + Sync>,
 }
 
-impl Bound {
+impl InstanceAgent {
     /// Runs the agent function for one turn: its declarations and returned instructions.
-    pub(crate) fn declare(&self) -> (Declared, String) {
-        (self.render)()
+    pub(crate) fn render(&self) -> (Declared, String) {
+        (self.f)()
     }
 }

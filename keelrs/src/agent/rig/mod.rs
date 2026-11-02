@@ -22,7 +22,7 @@ use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
-use crate::agent::Bound;
+use crate::agent::InstanceAgent;
 use crate::builtin::{self, Caches};
 use crate::model::Thinking;
 use crate::sandbox::Sandbox;
@@ -44,10 +44,10 @@ pub(crate) struct Settled {
     pub(crate) messages: Vec<Message>,
 }
 
-/// Runs the bound `agent` on `text` after `history`, its built-in tools remembering
+/// Runs the instance's `agent` on `text` after `history`, its built-in tools remembering
 /// in `caches`; an error is the failure reason, as plain text.
 pub(crate) async fn run(
-    agent: Bound,
+    agent: InstanceAgent,
     text: String,
     history: Vec<Message>,
     caches: &mut Caches,
@@ -62,7 +62,7 @@ pub(crate) async fn run(
 
 /// [`run`], connecting the declared model with `connect`.
 async fn run_with(
-    agent: Bound,
+    agent: InstanceAgent,
     text: String,
     history: Vec<Message>,
     caches: &mut Caches,
@@ -90,7 +90,7 @@ async fn run_with(
                 prompt, history, ..
             } => {
                 // The agent function runs again before every turn (ADR 0004).
-                let (cx, returned) = agent.declare();
+                let (cx, returned) = agent.render();
                 let declared = cx.model()?;
                 let sb = cx.sandbox()?.clone();
                 let instructions = cx.instructions(&returned)?;
