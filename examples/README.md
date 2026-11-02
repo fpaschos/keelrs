@@ -20,5 +20,4 @@ set -a; source .env; set +a; cargo run -p example-hello-world
 | [`instructions`](instructions) | Templated returned instructions plus a static `use_instruction` style guide, a real reply |
 | [`tools`](tools) | Two host tools (`current_time` with no arguments, `get_weather` online) and a sandboxed `pwd` that answers with the sandbox's work dir, a real reply |
 | [`skills`](skills) | A skill folder embedded with `skill!` (with a resource the model reads) and one built with `Skill::new`, real replies |
-| [`dogfood`](dogfood) | keelrs on keelrs: pick the next `agent-ready` issue, implement it in this checkout, review it, loop back; nothing is committed (needs `gh`) |
-| [`build-review-loop`](build-review-loop) | dogfood through a sandbox reached only by bytes: seed `main` as a bundle, pick, implement and review in the clone, harvest the branch, push and open a PR from the host (needs `gh`; opens a real PR) |
+| [`build-review-loop`](build-review-loop) | keelrs on keelrs through a sandbox reached only by bytes: seed `main` as a bundle, a planner picks the next `agent-ready` issue, an implementer and a reviewer loop in the clone; harvest the branch, push and open a PR from the host (needs `gh`; opens a real PR) |

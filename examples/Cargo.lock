@@ -395,17 +395,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-dogfood"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "keelrs",
- "schemars",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "example-hello-world"
 version = "0.1.0"
 dependencies = [
