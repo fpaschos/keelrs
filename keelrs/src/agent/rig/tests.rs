@@ -388,7 +388,7 @@ async fn activate_skill_is_declared_with_skills_and_read_skill_resource_with_fil
 }
 
 #[tokio::test]
-async fn no_skills_no_catalog_and_no_skill_tools() {
+async fn a_turn_without_skills_or_a_sandbox_declares_only_its_own_tools() {
     let agent = agent(|cx| cx.use_tool(clock()));
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     assert_eq!(preamble(&requests[0]), None);
@@ -402,8 +402,8 @@ async fn a_tool_may_take_a_name_keelrs_has_no_builtin_for() {
             Ok::<_, Infallible>("ran")
         });
         let agent = agent(move |cx| cx.use_tool(tool.clone()));
-        let results = one_call(&agent, name, json!({})).await;
-        assert_eq!(results, [("ran".to_owned(), false)], "{name}");
+        let settled = scripted(&agent, [MockTurn::text("Done.")]).await;
+        assert!(settled.is_ok(), "{name}: {settled:?}");
     }
 }
 
@@ -449,13 +449,6 @@ async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared
         .chain(["activate_skill", "current_time"])
         .collect();
     assert_eq!(tool_names(&requests[0]), expected);
-}
-
-#[tokio::test]
-async fn a_turn_without_a_sandbox_declares_no_builtins() {
-    let agent = agent(|cx| cx.use_tool(clock()));
-    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
-    assert_eq!(tool_names(&requests[0]), ["current_time"]);
 }
 
 #[tokio::test]

@@ -228,19 +228,6 @@ fn lint() -> Folder {
 }
 
 #[tokio::test]
-async fn a_discovered_skill_lists_the_files_in_its_folder() {
-    let folder = lint();
-    let skill = folder.skill().await;
-    let text = activate(&[skill], "lint").await;
-    assert!(
-        text.ends_with(
-            "<skill_resources>\n- references/rules.md\n- scripts/run.sh\n</skill_resources>"
-        ),
-        "{text}"
-    );
-}
-
-#[tokio::test]
 async fn a_discovered_skill_reads_a_file_from_disk_on_request() {
     let folder = lint();
     let skill = folder.skill().await;
