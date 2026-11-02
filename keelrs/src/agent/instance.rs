@@ -11,7 +11,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::select;
@@ -83,7 +82,7 @@ impl AgentInstance {
     /// dispatch settles as [`Outcome::Failed`].
     pub async fn ask_structured<T>(&self, message: impl Into<String>) -> Result<T>
     where
-        T: DeserializeOwned + Serialize + JsonSchema + Send + 'static,
+        T: DeserializeOwned + JsonSchema + 'static,
     {
         let receipt = self
             .submit(message.into(), Some(Structured::of::<T>()))
@@ -93,7 +92,7 @@ impl AgentInstance {
             outcome: Outcome::Failed { reason },
             submission_id,
         };
-        // `finish_structured` already deserialized this value into `T`.
+        // The JSON the model sent, which `finish_structured` checked deserializes as `T`.
         let value = self
             .settled(submission_id)
             .await?

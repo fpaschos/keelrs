@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use super::*;
 
 /// Runs `agent` on one message asking for a `T`, and returns every request the model got.
-async fn structured<T: DeserializeOwned + Serialize + JsonSchema + Send + 'static>(
+async fn structured<T: DeserializeOwned + JsonSchema + 'static>(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
@@ -121,6 +121,22 @@ async fn invalid_arguments_are_a_tool_error_the_model_retries_without_a_re_ask()
     let results = results(&settled);
     assert!(results[0].1, "{results:?}");
     assert_eq!(user_texts(&settled).len(), 1, "no re-ask");
+}
+
+/// A finding whose note the program reads but never writes back out.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Finding {
+    title: String,
+    #[serde(skip_serializing)]
+    #[expect(dead_code, reason = "only the recorded JSON is checked")]
+    note: String,
+}
+
+#[tokio::test]
+async fn the_recorded_value_is_the_json_the_model_sent() {
+    let sent = json!({"title": "Typo", "note": "In the README."});
+    let (settled, _) = structured::<Finding>(&agent(|_| {}), [finish("c1", sent.clone())]).await;
+    assert_eq!(settled.unwrap().structured, Some(sent));
 }
 
 /// A reviewer's verdict.
