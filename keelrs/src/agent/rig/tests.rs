@@ -20,7 +20,7 @@ use tokio::sync::Barrier;
 use super::*;
 use crate::sandbox::unused;
 use crate::skills::tests::{Folder, haiku, sonnet};
-use crate::{AgentContext, Skill, ToolCall};
+use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 
 /// Runs `agent` on one message against a model that replies with `turns`.
 async fn scripted(
@@ -37,9 +37,13 @@ async fn scripted_in(
     caches: &mut Caches,
 ) -> Result<Settled, String> {
     let model = MockCompletionModel::from_turns(turns);
-    run_with(agent.clone(), "Go".to_owned(), Vec::new(), caches, |_| {
-        Ok(model.clone().erase())
-    })
+    run_with(
+        agent.bind(InstanceId::new("test"), ()),
+        "Go".to_owned(),
+        Vec::new(),
+        caches,
+        |_| Ok(model.clone().erase()),
+    )
     .await
 }
 
@@ -72,7 +76,7 @@ fn results(settled: &Settled) -> Vec<(String, bool)> {
 fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
     let sb = unused();
     sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         declare(cx);
     })
 }
@@ -120,7 +124,7 @@ async fn a_sandboxed_tool_gets_the_sandbox_its_turn_declared() {
     let declared = root.work_dir("keelrs-declared");
     let expected = json!({"id": declared.id().to_string(), "dir": declared.dir().to_string()});
     let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(declared.clone());
+        cx.use_sandbox(&declared);
         cx.use_tool(Tool::sandbox(
             "where_am_i",
             "Where the tool runs.",
@@ -330,9 +334,19 @@ async fn sent(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Settled, Vec<CompletionRequest>) {
+    sent_as(agent, InstanceId::new("test"), (), turns).await
+}
+
+/// [`sent`], as instance `id` of `agent` with `data`.
+async fn sent_as<D: Send + Sync + 'static>(
+    agent: &Agent<D>,
+    id: InstanceId,
+    data: D,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> (Settled, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
     let settled = run_with(
-        agent.clone(),
+        agent.bind(id, data),
         "Go".to_owned(),
         Vec::new(),
         &mut Caches::default(),
@@ -365,7 +379,7 @@ async fn the_catalog_follows_the_instructions_in_use_skill_order() {
     let sb = unused();
     let agent = Agent::new("poet", move |cx: &mut AgentContext| {
         cx.use_model("mock/model");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_skills([sonnet(), haiku()]);
         "Write poems.".into()
     });
@@ -406,6 +420,35 @@ async fn a_turn_without_skills_or_a_sandbox_declares_only_its_own_tools() {
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     assert_eq!(preamble(&requests[0]), None);
     assert_eq!(tool_names(&requests[0]), ["current_time"]);
+}
+
+#[tokio::test]
+async fn use_tools_declares_each_tool_in_order_by_reference() {
+    let (clock, lookup) = (clock(), lookup_order());
+    let agent = agent(move |cx| cx.use_tools([&lookup, &clock]));
+    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
+    assert_eq!(tool_names(&requests[0]), ["lookup_order", "current_time"]);
+}
+
+#[tokio::test]
+async fn a_render_reads_its_instances_data_and_id() {
+    let sb = unused();
+    let agent = Agent::new("issue", move |cx: &mut AgentContext<u64>| {
+        cx.use_model("mock/model");
+        cx.use_sandbox(&sb).only([]);
+        format!("You implement #{} as {}.", cx.data(), cx.id())
+    });
+    let (_, requests) = sent_as(
+        &agent,
+        InstanceId::new("implement-17"),
+        17,
+        [MockTurn::text("Done.")],
+    )
+    .await;
+    assert_eq!(
+        preamble(&requests[0]),
+        Some("You implement #17 as implement-17.")
+    );
 }
 
 #[tokio::test]
@@ -454,7 +497,7 @@ async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared
     let agent = sandboxed_agent(move |cx| {
         cx.use_tool(clock());
         cx.use_skill(haiku());
-        cx.use_sandbox(sb.clone());
+        cx.use_sandbox(&sb);
     });
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     let expected: Vec<&str> = builtin::NAMES
@@ -468,8 +511,7 @@ async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared
 async fn only_keeps_the_named_builtins_in_their_own_order() {
     let (_folder, sb) = sandboxed().await;
     let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone())
-            .only(["bash", "glob", "grep", "read"]);
+        cx.use_sandbox(&sb).only(["bash", "glob", "grep", "read"]);
     });
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     assert_eq!(tool_names(&requests[0]), ["read", "bash", "grep", "glob"]);
@@ -479,7 +521,7 @@ async fn only_keeps_the_named_builtins_in_their_own_order() {
 async fn only_with_no_names_keeps_only_the_declared_tools() {
     let (_folder, sb) = sandboxed().await;
     let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_tool(clock());
     });
     let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
@@ -490,7 +532,7 @@ async fn only_with_no_names_keeps_only_the_declared_tools() {
 async fn an_unknown_name_in_only_fails_the_run() {
     let (_folder, sb) = sandboxed().await;
     let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone()).only(["read", "shell"]);
+        cx.use_sandbox(&sb).only(["read", "shell"]);
     });
     let failed = scripted(&agent, [MockTurn::text("Done.")])
         .await
@@ -512,7 +554,7 @@ async fn a_builtin_name_is_reserved_with_or_without_only() {
         let all = sandboxed_agent({
             let (sb, mine) = (sb.clone(), mine.clone());
             move |cx| {
-                cx.use_sandbox(sb.clone());
+                cx.use_sandbox(&sb);
                 cx.use_tool(mine.clone());
             }
         });
@@ -533,7 +575,7 @@ async fn a_builtin_name_is_reserved_with_or_without_only() {
 fn agent_in(sb: &Sandbox) -> Agent {
     let sb = sb.clone();
     sandboxed_agent(move |cx| {
-        cx.use_sandbox(sb.clone());
+        cx.use_sandbox(&sb);
     })
 }
 
@@ -640,7 +682,7 @@ async fn a_failed_render_in_another_sandbox_keeps_what_the_builtins_read() {
         .unwrap();
     folder.write("a.txt", "two\n");
     let unknown = sandboxed_agent(|cx| {
-        cx.use_sandbox(unused()).only(["shell"]);
+        cx.use_sandbox(&unused()).only(["shell"]);
     });
     scripted_in(&unknown, [MockTurn::text("Done.")], &mut caches)
         .await

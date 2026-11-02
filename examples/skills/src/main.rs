@@ -22,7 +22,7 @@
 use std::path::Path;
 
 use keelrs::skills::{Discover, discover};
-use keelrs::{Agent, AgentContext, Runtime, Skill, sandbox};
+use keelrs::{Agent, AgentContext, InstanceId, Runtime, Skill, sandbox};
 
 /// The whole folder, embedded at compile time; a broken skill fails its first dispatch.
 static GREETING: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/skills/greeting");
@@ -42,24 +42,24 @@ async fn main() -> anyhow::Result<()> {
     let sb = sandbox.clone();
     let greeter = Agent::new("greeter", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_skill(&GREETING);
         "You greet people.".into()
     });
     let (sb, found) = (sandbox.clone(), discovered.clone());
     let reciter = Agent::new("reciter", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_skills(&found);
         "You recite poems.".into()
     });
     let poet = Agent::new("poet", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sandbox.clone()).only([]);
+        cx.use_sandbox(&sandbox).only([]);
         cx.use_skills([&GREETING, &haiku]);
         "You greet people and write poems.".into()
     });
-    let runtime = Runtime::start([greeter.clone(), reciter.clone(), poet.clone()]);
+    let runtime = Runtime::start([&greeter, &reciter, &poet])?;
 
     println!(
         "1. embedded: {} — {}",
@@ -67,8 +67,7 @@ async fn main() -> anyhow::Result<()> {
         GREETING.description()
     );
     let reply = runtime
-        .init(&greeter)
-        .id("demo")?
+        .instance(&greeter, InstanceId::new("demo"))?
         .ask("Hi, I'm Ada")
         .await?;
     println!("{}\n", reply.text());
@@ -79,16 +78,14 @@ async fn main() -> anyhow::Result<()> {
         println!("   skipped {}: {}", problem.path.display(), problem.reason);
     }
     let reply = runtime
-        .init(&reciter)
-        .id("demo")?
+        .instance(&reciter, InstanceId::new("demo"))?
         .ask("A limerick about a cat, please.")
         .await?;
     println!("{}\n", reply.text());
 
     println!("3. built in code, beside the embedded one: haiku, greeting");
     let reply = runtime
-        .init(&poet)
-        .id("demo")?
+        .instance(&poet, InstanceId::new("demo"))?
         .ask("A haiku about the sea, please.")
         .await?;
     println!("{}", reply.text());

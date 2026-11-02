@@ -80,6 +80,12 @@ pub struct Tool {
     pub(crate) run: Arc<Run>,
 }
 
+impl From<&Self> for Tool {
+    fn from(tool: &Self) -> Self {
+        tool.clone()
+    }
+}
+
 impl Tool {
     /// A **host tool** named `name` that the model reads `description` of
     /// and calls with arguments of type `Args`, running `run` on the host.

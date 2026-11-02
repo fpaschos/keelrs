@@ -1,11 +1,16 @@
 //! The runtime: the agents it knows and the agent instances it hosts.
 
+use std::any::Any;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Agent, AgentInstance, Error, Result};
+use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
 /// The running keelrs instance that knows the agents and hosts their instances.
 ///
@@ -18,39 +23,85 @@ pub struct Runtime {
 
 #[derive(Debug, Default)]
 struct Inner {
-    agents: HashMap<String, Agent>,
+    agents: HashMap<String, AnyAgent>,
     /// Instances already spawned, keyed by `(agent name, instance id)`, so the
     /// same id continues the same conversation.
-    instances: Mutex<HashMap<(String, String), AgentInstance>>,
+    instances: Mutex<HashMap<(String, InstanceId), AgentInstance>>,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
 
 impl Runtime {
-    /// Starts a runtime hosting `agents`.
-    pub fn start(agents: impl IntoIterator<Item = Agent>) -> Self {
-        let agents = agents
-            .into_iter()
-            .map(|a| (a.name().to_owned(), a))
-            .collect();
-        Self {
+    /// Starts a runtime hosting `agents`: a tuple, for agents with different
+    /// data types, or an array, `Vec` or slice of one type, each by value or
+    /// by reference.
+    ///
+    /// Fails with [`Error::DuplicateAgent`] when two agents share a name.
+    pub fn start(agents: impl Agents) -> Result<Self> {
+        let mut registry = HashMap::new();
+        for agent in agents.into_agents() {
+            match registry.entry(agent.name.clone()) {
+                Entry::Occupied(_) => return Err(Error::DuplicateAgent(agent.name)),
+                Entry::Vacant(slot) => {
+                    slot.insert(agent);
+                }
+            }
+        }
+        Ok(Self {
             inner: Arc::new(Inner {
-                agents,
+                agents: registry,
                 ..Inner::default()
             }),
-        }
+        })
     }
 
-    /// Addresses `agent` on this runtime; pick the instance with [`Init::id`],
-    /// or get a new one with [`Init::fresh`].
+    /// The instance `id` of an agent without data: created on first use,
+    /// continued after.
     ///
-    /// Never fails: an unknown agent errors on [`Init::id`].
-    #[must_use]
-    pub fn init(&self, agent: &Agent) -> Init {
-        Init {
-            runtime: self.inner.clone(),
-            agent: agent.name().to_owned(),
+    /// Fails as [`instance_with`](Self::instance_with) does.
+    pub fn instance(&self, agent: &Agent, id: InstanceId) -> Result<AgentInstance> {
+        self.instance_with(agent, id, ())
+    }
+
+    /// The instance `id` of `agent`, created with its frozen `data` on first
+    /// use. On an existing id the instance is reused: its original data is
+    /// kept and `data` dropped, with no error.
+    ///
+    /// Fails with [`Error::InvalidInstanceId`] on a blank id, and with
+    /// [`Error::UnknownAgent`] unless `agent` is the very one given to
+    /// [`Runtime::start`] (not just one with its name). Must be called within
+    /// a Tokio runtime.
+    pub fn instance_with<D>(
+        &self,
+        agent: &Agent<D>,
+        id: InstanceId,
+        data: D,
+    ) -> Result<AgentInstance>
+    where
+        D: Serialize + DeserializeOwned + Send + Sync + 'static,
+    {
+        if id.as_str().trim().is_empty() {
+            return Err(Error::InvalidInstanceId(id));
         }
+        let registered = self
+            .inner
+            .agents
+            .get(agent.name())
+            .and_then(|registered| registered.agent.downcast_ref::<Agent<D>>());
+        if !registered.is_some_and(|registered| registered.is(agent)) {
+            return Err(Error::UnknownAgent(agent.name().to_owned()));
+        }
+        let instance = self
+            .inner
+            .instances
+            .lock()
+            .unwrap()
+            .entry((agent.name().to_owned(), id.clone()))
+            .or_insert_with(|| {
+                AgentInstance::spawn(agent.bind(id.clone(), data), id, &self.inner.shutdown)
+            })
+            .clone();
+        Ok(instance)
     }
 }
 
@@ -60,41 +111,106 @@ impl Drop for Runtime {
     }
 }
 
-/// An agent on a runtime, waiting for an instance id.
-#[derive(Debug)]
-pub struct Init {
-    runtime: Arc<Inner>,
-    agent: String,
+/// An agent of any data type, so agents with different data can share one
+/// runtime; made from an [`Agent`] or a reference to one.
+pub struct AnyAgent {
+    name: String,
+    /// The `Agent<D>` itself, checked against the one an instance is asked for.
+    agent: Box<dyn Any + Send + Sync>,
 }
 
-impl Init {
-    /// The instance with this id: spawned on first use, continued after.
-    ///
-    /// Fails with [`Error::UnknownAgent`] when the agent was never given to
-    /// [`Runtime::start`]. Must be called within a Tokio runtime.
-    pub fn id(self, id: impl Into<String>) -> Result<AgentInstance> {
-        let id = id.into();
-        let agent = self
-            .runtime
-            .agents
-            .get(&self.agent)
-            .ok_or_else(|| Error::UnknownAgent(self.agent.clone()))?;
-        let instance = self
-            .runtime
-            .instances
-            .lock()
-            .unwrap()
-            .entry((self.agent, id.clone()))
-            .or_insert_with(|| AgentInstance::spawn(agent.clone(), id, &self.runtime.shutdown))
-            .clone();
-        Ok(instance)
-    }
-
-    /// A new instance with a generated id: a UUIDv7, unique across restarts
-    /// and ordered by time. Read it back with [`AgentInstance::id`].
-    ///
-    /// Fails as [`id`](Self::id) does.
-    pub fn fresh(self) -> Result<AgentInstance> {
-        self.id(uuid::Uuid::now_v7().to_string())
+impl<D: 'static> From<Agent<D>> for AnyAgent {
+    fn from(agent: Agent<D>) -> Self {
+        Self {
+            name: agent.name().to_owned(),
+            agent: Box::new(agent),
+        }
     }
 }
+
+impl<D: 'static> From<&Agent<D>> for AnyAgent {
+    fn from(agent: &Agent<D>) -> Self {
+        agent.clone().into()
+    }
+}
+
+impl fmt::Debug for AnyAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnyAgent")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The agents [`Runtime::start`] takes: a tuple of up to 12, or an array,
+/// `Vec` or slice, of [`Agent`]s or references to them.
+pub trait Agents {
+    /// Each agent, in order.
+    #[doc(hidden)]
+    fn into_agents(self) -> Vec<AnyAgent>;
+}
+
+impl<A: Into<AnyAgent>> Agents for Vec<A> {
+    fn into_agents(self) -> Vec<AnyAgent> {
+        self.into_iter().map(Into::into).collect()
+    }
+}
+
+impl<A: Into<AnyAgent>, const N: usize> Agents for [A; N] {
+    fn into_agents(self) -> Vec<AnyAgent> {
+        self.into_iter().map(Into::into).collect()
+    }
+}
+
+impl<'a, A> Agents for &'a [A]
+where
+    &'a A: Into<AnyAgent>,
+{
+    fn into_agents(self) -> Vec<AnyAgent> {
+        self.iter().map(Into::into).collect()
+    }
+}
+
+impl<'a, A> Agents for &'a Vec<A>
+where
+    &'a A: Into<AnyAgent>,
+{
+    fn into_agents(self) -> Vec<AnyAgent> {
+        self.as_slice().into_agents()
+    }
+}
+
+impl<'a, A, const N: usize> Agents for &'a [A; N]
+where
+    &'a A: Into<AnyAgent>,
+{
+    fn into_agents(self) -> Vec<AnyAgent> {
+        self.as_slice().into_agents()
+    }
+}
+
+/// `Agents` for tuples of each length from 1 to 12.
+macro_rules! tuples {
+    ($($name:ident)+) => {
+        impl<$($name: Into<AnyAgent>),+> Agents for ($($name,)+) {
+            #[allow(non_snake_case)]
+            fn into_agents(self) -> Vec<AnyAgent> {
+                let ($($name,)+) = self;
+                vec![$($name.into()),+]
+            }
+        }
+    };
+}
+
+tuples!(A);
+tuples!(A B);
+tuples!(A B C);
+tuples!(A B C D);
+tuples!(A B C D E);
+tuples!(A B C D E F);
+tuples!(A B C D E F G);
+tuples!(A B C D E F G H);
+tuples!(A B C D E F G H I);
+tuples!(A B C D E F G H I J);
+tuples!(A B C D E F G H I J K);
+tuples!(A B C D E F G H I J K L);

@@ -1,7 +1,7 @@
 //! Errors returned by keelrs.
 
-use crate::SubmissionId;
 use crate::sandbox::SandboxError;
+use crate::{InstanceId, SubmissionId};
 
 /// Something keelrs could not do.
 #[derive(Debug, thiserror::Error)]
@@ -9,6 +9,12 @@ pub enum Error {
     /// The agent was never given to [`Runtime::start`](crate::Runtime::start).
     #[error("unknown agent `{0}`")]
     UnknownAgent(String),
+    /// Two agents given to [`Runtime::start`](crate::Runtime::start) share a name.
+    #[error("two agents are named `{0}`; agent names must be unique")]
+    DuplicateAgent(String),
+    /// An instance was asked for by a blank id.
+    #[error("instance id is blank")]
+    InvalidInstanceId(InstanceId),
     /// A read named a submission this instance never received.
     #[error("no submission {0}")]
     SubmissionNotFound(SubmissionId),

@@ -14,10 +14,11 @@ use tokio::select;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::Bound;
 use crate::agent::rig::{self, Settled};
 use crate::builtin::Caches;
 use crate::event::Event;
-use crate::{Agent, Error, Outcome, Result};
+use crate::{Error, InstanceId, Outcome, Result};
 
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
 const INBOX_CAPACITY: usize = 1024;
@@ -27,14 +28,14 @@ const INBOX_CAPACITY: usize = 1024;
 /// A handle to the instance's actor: clones reach the same instance.
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
-    id: String,
+    id: InstanceId,
     /// The actor's inbox.
     inbox: mpsc::Sender<Command>,
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of `agent`; `shutdown` cancelling aborts it.
-    pub(crate) fn spawn(agent: Agent, id: String, shutdown: &CancellationToken) -> Self {
+    /// Spawns the actor for instance `id` of the bound `agent`; `shutdown` cancelling aborts it.
+    pub(crate) fn spawn(agent: Bound, id: InstanceId, shutdown: &CancellationToken) -> Self {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
         let actor = InstanceActor {
             agent,
@@ -49,7 +50,7 @@ impl AgentInstance {
 
     /// The id that addresses this instance.
     #[must_use]
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> &InstanceId {
         &self.id
     }
 
@@ -120,7 +121,7 @@ enum Command {
 /// dispatch runs to settled before the next command, so a read always finds its
 /// message settled.
 struct InstanceActor {
-    agent: Agent,
+    agent: Bound,
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,

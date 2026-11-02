@@ -4,12 +4,12 @@ mod common;
 
 use std::convert::Infallible;
 
-use keelrs::{Agent, AgentContext, Error, Outcome, Runtime, Skill, Tool, ToolCall};
+use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime, Skill, Tool, ToolCall};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
 async fn failure_reason(agent: Agent) -> String {
-    let runtime = Runtime::start([agent.clone()]);
-    let instance = runtime.init(&agent).id("test").unwrap();
+    let runtime = Runtime::start([&agent]).unwrap();
+    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
     match instance.ask("Say hello").await {
         Err(Error::Run {
             outcome: Outcome::Failed { reason },
@@ -24,7 +24,7 @@ async fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> A
     let sb = common::temp_sandbox().await;
     Agent::new("skilled", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         declare(cx);
         "Help.".into()
     })

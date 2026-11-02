@@ -3,14 +3,20 @@
 use std::fmt;
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+pub(crate) use context::Declared;
 pub use context::{AgentContext, BuiltinTools};
+pub use id::InstanceId;
 pub use instance::{AgentInstance, Receipt, Reply, SubmissionId};
 
 mod context;
+mod id;
 mod instance;
 pub(crate) mod rig;
 
-type AgentFn = dyn Fn(&mut AgentContext) -> String + Send + Sync;
+type AgentFn<D> = dyn Fn(&mut AgentContext<D>) -> String + Send + Sync;
 
 /// Model calls one dispatch may make unless [`Agent::max_turns`] says otherwise.
 const DEFAULT_MAX_TURNS: usize = 100;
@@ -18,19 +24,22 @@ const DEFAULT_MAX_TURNS: usize = 100;
 /// A named function that declares what the run uses and returns its instructions.
 ///
 /// It runs again before every turn and must return synchronously, as in Flue:
-/// async work lives in tools and resource factories.
-#[derive(Clone)]
-pub struct Agent {
+/// async work lives in tools and resource factories. `D` is its
+/// [instance data](AgentContext::data), `()` for none.
+pub struct Agent<D = ()> {
     name: String,
-    f: Arc<AgentFn>,
+    f: Arc<AgentFn<D>>,
     max_turns: usize,
 }
 
-impl Agent {
+impl<D> Agent<D>
+where
+    D: Serialize + DeserializeOwned + Send + Sync + 'static,
+{
     /// An agent named `name` whose function `f` runs before every turn.
     pub fn new(
         name: impl Into<String>,
-        f: impl Fn(&mut AgentContext) -> String + Send + Sync + 'static,
+        f: impl Fn(&mut AgentContext<D>) -> String + Send + Sync + 'static,
     ) -> Self {
         Self {
             name: name.into(),
@@ -38,7 +47,9 @@ impl Agent {
             max_turns: DEFAULT_MAX_TURNS,
         }
     }
+}
 
+impl<D> Agent<D> {
     /// Caps the model calls of one dispatch (default 100); reaching the cap
     /// settles it as [`Outcome::Failed`](crate::Outcome::Failed).
     #[must_use]
@@ -53,18 +64,55 @@ impl Agent {
         &self.name
     }
 
-    /// Runs the agent function for one turn: its declarations and returned instructions.
-    pub(crate) fn declare(&self) -> (AgentContext, String) {
-        let mut cx = AgentContext::default();
-        let returned = (self.f)(&mut cx);
-        (cx, returned)
+    /// Whether `other` is this very agent, not just one with its name.
+    pub(crate) fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.f, &other.f)
     }
 }
 
-impl fmt::Debug for Agent {
+impl<D: Send + Sync + 'static> Agent<D> {
+    /// This agent for instance `id`, its data frozen for the instance's life.
+    pub(crate) fn bind(&self, id: InstanceId, data: D) -> Bound {
+        let (f, data) = (self.f.clone(), Arc::new(data));
+        Bound {
+            max_turns: self.max_turns,
+            render: Arc::new(move || {
+                let mut cx = AgentContext::new(data.clone(), id.clone());
+                let returned = f(&mut cx);
+                (cx.into_declared(), returned)
+            }),
+        }
+    }
+}
+
+impl<D> Clone for Agent<D> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            f: self.f.clone(),
+            max_turns: self.max_turns,
+        }
+    }
+}
+
+impl<D> fmt::Debug for Agent<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Agent")
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+/// An agent bound to one instance's id and data: what the run loop renders.
+#[derive(Clone)]
+pub(crate) struct Bound {
+    pub(crate) max_turns: usize,
+    render: Arc<dyn Fn() -> (Declared, String) + Send + Sync>,
+}
+
+impl Bound {
+    /// Runs the agent function for one turn: its declarations and returned instructions.
+    pub(crate) fn declare(&self) -> (Declared, String) {
+        (self.render)()
     }
 }
