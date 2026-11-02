@@ -9,14 +9,16 @@ use std::sync::Arc;
 use futures::future::join_all;
 use rig_agent::run::{
     AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PendingToolCall,
-    PromptError, RunSpec, ToolAnswer, prepare_request,
+    PromptError, RetryRequest, RunSpec, ToolAnswer, prepare_request,
 };
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
 use rig_core::completion::{
     CompletionRequest, Effort, GenerationOptions, Reasoning, ToolDefinition,
 };
-use rig_core::message::{Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName};
+use rig_core::message::{
+    AssistantContent, Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName,
+};
 use rig_core::operation::Completion;
 use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
@@ -84,12 +86,9 @@ async fn run_with(
         None => text,
     };
     let mut run = AgentRun::new(RigMessage::user(text))
-        .with_history(history.iter().cloned())
+        .with_history(history)
         .max_turns(max_turns);
-    // A re-ask rebuilds the run: what the earlier runs accepted, the model
-    // calls they made, and how many re-asks there were.
-    let mut earlier: Vec<Arc<RigMessage>> = Vec::new();
-    let (mut turns_used, mut reasks) = (0, 0);
+    let mut reasks = 0;
     // Connected from the first render and kept for every turn (use_model behaviour).
     let mut connected = None;
     // The last render's tools, by name, and its sandbox, for the `CallTools`
@@ -186,6 +185,28 @@ async fn run_with(
                         .resolve_invalid_tool_call(skip)
                         .map_err(|e| e.to_string())?;
                 }
+                // A text ending, when a structured result is asked for, is re-asked
+                // in the same run: the reply stays, the re-ask follows it.
+                let called = run.accepted_turn_choice().is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| matches!(item, AssistantContent::ToolCall(_)))
+                });
+                if structured.is_some() && !called {
+                    if reasks == MAX_STRUCTURED_REASKS {
+                        return Err(format!(
+                            "ended without calling `{FINISH_STRUCTURED}` after {reasks} re-asks"
+                        ));
+                    }
+                    if run.turn() >= max_turns {
+                        return Err(format!(
+                            "ended without calling `{FINISH_STRUCTURED}`: turn limit ({max_turns}) reached"
+                        ));
+                    }
+                    reasks += 1;
+                    run.retry_model_turn(RetryRequest::Feedback(REASK.to_owned()))
+                        .map_err(|e| e.to_string())?;
+                }
             }
             AgentRunStep::CallTools { calls } => {
                 let (tools, sandbox) = pinned
@@ -201,28 +222,10 @@ async fn run_with(
                 if let Some(value) = structured.as_ref().and_then(Structured::take) {
                     return Ok(Settled {
                         reply: String::new(),
-                        messages: earlier
-                            .into_iter()
-                            .chain(run.messages().iter().cloned())
-                            .map(Message)
-                            .collect(),
+                        messages: run.messages().iter().cloned().map(Message).collect(),
                         structured: Some(value),
                     });
                 }
-            }
-            // The model ended with text, not the structured result: ask again.
-            AgentRunStep::Done(response) if structured.is_some() => {
-                if reasks == MAX_STRUCTURED_REASKS {
-                    return Err(format!(
-                        "ended without calling `{FINISH_STRUCTURED}` after {reasks} re-asks"
-                    ));
-                }
-                reasks += 1;
-                turns_used += run.turn();
-                earlier.extend(response.messages.into_iter().map(Arc::new));
-                run = AgentRun::new(RigMessage::user(REASK))
-                    .with_history(history.iter().chain(&earlier).cloned())
-                    .max_turns(max_turns.saturating_sub(turns_used));
             }
             AgentRunStep::Done(response) => {
                 return Ok(Settled {

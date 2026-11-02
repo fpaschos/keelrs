@@ -204,10 +204,20 @@ async fn a_text_reply_is_re_asked_and_a_later_finish_structured_settles() {
     let settled = settled.unwrap();
     assert_eq!(settled.structured, Some(json!({"steps": ["one"]})));
     assert_eq!(requests.len(), 2);
-    assert_eq!(
-        user_texts(&settled)[1],
-        "You ended without calling `finish_structured`. Call it now with your answer."
+    let reask = "You ended without calling `finish_structured`. Call it now with your answer.";
+    assert_eq!(user_texts(&settled)[1], reask);
+    // The re-ask follows the rejected reply in the same conversation.
+    let [.., said, asked] = requests[1].chat_history.as_slice() else {
+        panic!("too short: {:?}", requests[1].chat_history);
+    };
+    let RigMessage::Assistant(said) = said.as_ref() else {
+        panic!("not the model's reply: {said:?}");
+    };
+    assert!(
+        matches!(said.content.first(), Some(AssistantContent::Text(t)) if t.text == "Here is my plan."),
+        "{said:?}"
     );
+    assert_eq!(**asked, RigMessage::user(reask));
 }
 
 #[tokio::test]
@@ -228,6 +238,9 @@ async fn re_asks_count_toward_the_turn_limit() {
         (0..3).map(|_| MockTurn::text("Prose.")),
     )
     .await;
-    assert_eq!(settled.unwrap_err(), "turn limit (2) reached");
+    assert_eq!(
+        settled.unwrap_err(),
+        "ended without calling `finish_structured`: turn limit (2) reached"
+    );
     assert_eq!(requests.len(), 2);
 }
