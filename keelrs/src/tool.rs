@@ -6,10 +6,10 @@
 use std::any::Any;
 use std::fmt;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::{BoxFuture, FutureExt};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -62,8 +62,7 @@ impl fmt::Display for Failed {
 /// What a tool's call settles to: its value, or why it failed.
 pub(crate) type Called = Result<Value, Failed>;
 
-type Run =
-    dyn Fn(Value, String, Sandbox) -> Pin<Box<dyn Future<Output = Called> + Send>> + Send + Sync;
+type Run = dyn Fn(Value, String, Sandbox) -> BoxFuture<'static, Called> + Send + Sync;
 
 /// A named function the model may call during a turn, declared with
 /// [`AgentContext::use_tool`](crate::AgentContext::use_tool).
@@ -145,7 +144,7 @@ impl Tool {
         let run = move |arguments: Value, id: String, sandbox: Sandbox| {
             let run = run.clone();
             let name = tool_name.clone();
-            Box::pin(async move {
+            async move {
                 let data = arguments_into::<Args>(arguments).map_err(|e| {
                     let message = format!("`{name}`'s arguments do not fit: {e}");
                     Failed::new(FailKind::InvalidArgs, message)
@@ -158,7 +157,8 @@ impl Tool {
                         .unwrap_or_else(|| Failed::new(FailKind::Other, e.to_string()))
                 })?;
                 serde_json::to_value(value).map_err(|e| Failed::new(FailKind::Other, e.to_string()))
-            }) as Pin<Box<dyn Future<Output = Called> + Send>>
+            }
+            .boxed()
         };
         Self {
             name,
