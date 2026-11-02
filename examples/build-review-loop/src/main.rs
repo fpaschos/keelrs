@@ -129,11 +129,15 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Plan.
     let planned = runtime.instance(&planner, InstanceId::new("plan"))?;
-    let pick = planned.ask_structured::<Plan>("Pick the next issue.");
-    let Some(issue) = pick.await?.issue else {
+    let Some(issue) = planned
+        .ask_structured::<Plan>("Pick the next issue.")
+        .await?
+        .issue
+    else {
         println!("Nothing to do: no agent-ready issue is unblocked.");
         return Ok(());
     };
+
     let Issue { number, title } = &issue;
     println!("Picked #{number}: {title}");
     let branch = format!("keelrs/issue-{number}");
@@ -146,16 +150,17 @@ async fn main() -> anyhow::Result<()> {
         InstanceId::new(format!("implement-{number}")),
         issue.clone(),
     )?;
+
     let reviewing = runtime.instance_with(
         &reviewer,
         InstanceId::new(format!("review-{number}")),
         issue.clone(),
     )?;
-    let mut message = "Implement the issue.".to_owned();
+
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
         let implementation = implementing
-            .ask_structured::<Implementation>(message)
+            .ask_structured::<Implementation>("Implement the issue.")
             .await?;
         println!("{}", implementation.summary);
 
@@ -174,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
             sandbox.close().await?;
             return Ok(());
         }
-        message = format!(
+        let message = format!(
             "A reviewer asks for changes:\n\n- {}\n\nMake them.",
             review.findings.join("\n- ")
         );
