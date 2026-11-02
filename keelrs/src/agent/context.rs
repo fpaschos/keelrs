@@ -5,7 +5,7 @@ use crate::sandbox::Sandbox;
 use crate::{Model, Skill, Tool};
 
 /// Tool names keelrs keeps for its skill tools, with or without skills; the
-/// sandbox built-ins' names are kept too, with or without a sandbox.
+/// sandbox built-ins' names are kept too.
 const SKILL_TOOL_NAMES: [&str; 2] = ["activate_skill", "read_skill_resource"];
 
 /// What an agent function receives to make its declarations for the current turn.
@@ -16,9 +16,8 @@ pub struct AgentContext {
     instructions: Vec<String>,
     tools: Vec<Tool>,
     skills: Vec<Skill>,
-    /// The first `use_sandbox` sandbox, and how many calls this render made.
-    sandbox: Option<Sandbox>,
-    sandbox_calls: usize,
+    /// Every `use_sandbox` sandbox this render declared, in call order.
+    sandboxes: Vec<Sandbox>,
     /// The built-in tools `only` kept, when it was called.
     only: Option<Vec<String>>,
 }
@@ -70,19 +69,14 @@ impl AgentContext {
     }
 
     /// Declares the sandbox this turn's sandboxed tools act through
-    /// ([`Tool::sandbox`]); keelrs holds it only for this dispatch.
+    /// ([`Tool::sandbox`]), with keelrs's built-in tools over it, listed
+    /// before skill tools and declared tools; narrow them with
+    /// [`BuiltinTools::only`]. keelrs holds it only for this dispatch.
     ///
-    /// The turn also gets keelrs's built-in tools over it, listed before
-    /// skill tools and declared tools; narrow them with
-    /// [`BuiltinTools::only`].
-    ///
-    /// Optional, and at most once per render: a second call, or a sandboxed
-    /// tool with no sandbox declared, settles the dispatch as
-    /// [`Outcome::Failed`](crate::Outcome::Failed). keelrs never falls back
-    /// to the host.
+    /// Call it exactly once per render. No call or a second call settles the
+    /// dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
     pub fn use_sandbox(&mut self, sandbox: Sandbox) -> BuiltinTools<'_> {
-        self.sandbox_calls += 1;
-        self.sandbox.get_or_insert(sandbox);
+        self.sandboxes.push(sandbox);
         BuiltinTools {
             only: &mut self.only,
         }
@@ -148,31 +142,21 @@ impl AgentContext {
         Ok(&self.tools)
     }
 
-    /// The sandbox this render declared, if any, or why the run fails.
-    pub(crate) fn sandbox(&self) -> Result<Option<&Sandbox>, String> {
-        if self.sandbox_calls > 1 {
-            return Err(format!(
-                "`use_sandbox` was called {} times in one render; call it at most once",
-                self.sandbox_calls
-            ));
+    /// The one sandbox this render declared, or why the run fails.
+    pub(crate) fn sandbox(&self) -> Result<&Sandbox, String> {
+        match self.sandboxes.as_slice() {
+            [] => Err("the agent function never called `use_sandbox`".to_owned()),
+            [sandbox] => Ok(sandbox),
+            sandboxes => Err(format!(
+                "`use_sandbox` was called {} times in one render; call it once",
+                sandboxes.len()
+            )),
         }
-        if self.sandbox.is_none()
-            && let Some(tool) = self.tools.iter().find(|tool| tool.sandboxed)
-        {
-            return Err(format!(
-                "`{}` is a sandboxed tool, but no sandbox was declared; call `use_sandbox`",
-                tool.name
-            ));
-        }
-        Ok(self.sandbox.as_ref())
     }
 
     /// The names of the built-in tools this render gets, in [`BUILTIN_NAMES`] order:
-    /// none without a sandbox, all of them unless `only` narrowed them.
+    /// all of them unless `only` narrowed them.
     pub(crate) fn builtin_names(&self) -> Result<Vec<&'static str>, String> {
-        if self.sandbox.is_none() {
-            return Ok(Vec::new());
-        }
         let Some(kept) = &self.only else {
             return Ok(BUILTIN_NAMES.to_vec());
         };

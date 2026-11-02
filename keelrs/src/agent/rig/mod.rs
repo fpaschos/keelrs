@@ -49,7 +49,7 @@ pub(crate) async fn run(
     agent: Agent,
     text: String,
     history: Vec<Message>,
-    caches: &Caches,
+    caches: &mut Caches,
 ) -> Result<Settled, String> {
     run_with(agent, text, history, caches, |model| {
         Catalog::builtin()
@@ -64,7 +64,7 @@ async fn run_with(
     agent: Agent,
     text: String,
     history: Vec<Message>,
-    caches: &Caches,
+    caches: &mut Caches,
     connect: impl Fn(&Model) -> Result<DynModel<Completion>, String>,
 ) -> Result<Settled, String> {
     let max_turns = agent.max_turns;
@@ -73,9 +73,9 @@ async fn run_with(
         .max_turns(max_turns);
     // Connected from the first render and kept for every turn (use_model behaviour).
     let mut connected = None;
-    // The last render's tools, by name, for the `CallTools` step after its model call.
-    let mut pinned = HashMap::new();
-    let mut sandbox = None;
+    // The last render's tools, by name, and its sandbox, for the `CallTools`
+    // step after its model call.
+    let mut pinned: Option<(HashMap<String, Tool>, Sandbox)> = None;
     loop {
         let step = match run.next_step() {
             Ok(step) => step,
@@ -91,19 +91,17 @@ async fn run_with(
                 // The agent function runs again before every turn (ADR 0004).
                 let (cx, returned) = agent.declare();
                 let declared = cx.model()?;
+                let sb = cx.sandbox()?.clone();
                 let instructions = cx.instructions(&returned)?;
                 let skills = cx.skills()?;
-                // Pinned with the tools: their calls get this render's sandbox.
-                sandbox = cx.sandbox()?.cloned();
+                let names = cx.builtin_names()?;
+                let declared_tools = cx.tools()?;
                 // Flue's order: the sandbox built-ins, the skill tools, then the declared ones.
-                let builtins = match &sandbox {
-                    Some(sb) => builtin::tools(sb, &caches.seen(sb.id()), &cx.builtin_names()?),
-                    None => Vec::new(),
-                };
-                let tools: Vec<Tool> = builtins
+                // The cache is taken only once the render is valid, so a failed one keeps it.
+                let tools: Vec<Tool> = builtin::tools(&sb, &caches.seen(sb.id()), &names)
                     .into_iter()
                     .chain(skill_tools(skills))
-                    .chain(cx.tools()?.iter().cloned())
+                    .chain(declared_tools.iter().cloned())
                     .collect();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
@@ -121,10 +119,13 @@ async fn run_with(
                         )))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                pinned = tools
-                    .iter()
-                    .map(|tool| (tool.name.to_string(), tool.clone()))
-                    .collect();
+                pinned = Some((
+                    tools
+                        .iter()
+                        .map(|tool| (tool.name.to_string(), tool.clone()))
+                        .collect(),
+                    sb,
+                ));
 
                 let mut spec = RunSpec::new();
                 // The skill catalog follows the instructions (How a skill reaches the model).
@@ -167,15 +168,14 @@ async fn run_with(
                 }
             }
             AgentRunStep::CallTools { calls } => {
+                let (tools, sandbox) = pinned
+                    .as_ref()
+                    .ok_or("the run called tools before any render")?;
                 // One reply's calls run concurrently; Rig commits them in call order.
-                let answers = join_all(
-                    calls
-                        .into_iter()
-                        .map(|call| answer(call, &pinned, sandbox.as_ref())),
-                )
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
+                let answers = join_all(calls.into_iter().map(|call| answer(call, tools, sandbox)))
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
                 run.answer_all(answers).map_err(|e| e.to_string())?;
             }
             AgentRunStep::Done(response) => {
@@ -197,7 +197,7 @@ async fn run_with(
 async fn answer(
     call: PendingToolCall,
     tools: &HashMap<String, Tool>,
-    sandbox: Option<&Sandbox>,
+    sandbox: &Sandbox,
 ) -> Result<ToolAnswer, String> {
     let exec = match call {
         PendingToolCall::Execute(call) => call,
@@ -230,12 +230,7 @@ fn result(called: Called) -> ToolResult {
 
 /// Runs one call of `tool` exactly as a turn does: the schema refusal,
 /// decoding, the run, the timeout. What the model reads is `Ok` or `Err`.
-pub(crate) async fn call(
-    tool: &Tool,
-    arguments: Value,
-    id: String,
-    sandbox: Option<&Sandbox>,
-) -> Called {
+pub(crate) async fn call(tool: &Tool, arguments: Value, id: String, sandbox: &Sandbox) -> Called {
     // Rebuilt from the name and arguments: Rig answers a call with unparsed
     // arguments as malformed, so one that reaches a tool never has them.
     let name =
@@ -246,7 +241,7 @@ pub(crate) async fn call(
     }
     // The object the refusal checked, as a turn's `ExecCall::arguments` gives it.
     let arguments = Value::Object(rig_call.function.arguments);
-    let running = (tool.run)(arguments, id, sandbox.filter(|_| tool.sandboxed).cloned());
+    let running = (tool.run)(arguments, id, sandbox.clone());
     match tool.timeout {
         Some(limit) => tokio::time::timeout(limit, running)
             .await

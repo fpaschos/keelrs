@@ -64,7 +64,7 @@ fn with_file(bytes: impl Into<Vec<u8>>) -> Skill {
 async fn called(skills: &[Skill], name: &str, arguments: Value) -> String {
     let tools = skill_tools(skills);
     let tool = tools.iter().find(|tool| &*tool.name == name).unwrap();
-    match call(tool, arguments, "c1".to_owned(), None).await {
+    match call(tool, arguments, "c1".to_owned(), &crate::sandbox::unused()).await {
         Ok(Value::String(text)) => text,
         other => panic!("expected text, got {other:?}"),
     }

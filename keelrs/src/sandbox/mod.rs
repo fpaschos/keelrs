@@ -3,8 +3,9 @@
 //! A [`Sandbox`] is a cheap, cloneable handle over a [`SandboxBackend`]:
 //! this machine ([`local()`]), or later a container, microVM or remote
 //! host. The application opens it, shares it by cloning, and declares it
-//! for a turn with
-//! [`AgentContext::use_sandbox`](crate::AgentContext::use_sandbox); keelrs
+//! for every turn with
+//! [`AgentContext::use_sandbox`](crate::AgentContext::use_sandbox), which
+//! every agent calls exactly once per render; keelrs
 //! never creates or removes one on its own, and holds one only for the
 //! dispatch that declared it.
 //!
@@ -53,10 +54,14 @@ use crate::Result;
 mod listing;
 mod local;
 mod path;
+#[cfg(test)]
+mod unused;
 
 pub use listing::Listing;
 pub use local::{LocalBuilder, local};
 pub use path::SandboxPath;
+#[cfg(test)]
+pub(crate) use unused::unused;
 
 /// How much of each stream [`Execution::run`] keeps: the last 64 MiB.
 const KEPT_OUTPUT: usize = 64 * 1024 * 1024;

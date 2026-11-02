@@ -22,19 +22,14 @@
 use std::path::Path;
 
 use keelrs::skills::{Discover, discover};
-use keelrs::{Agent, AgentContext, Runtime, Skill};
+use keelrs::{Agent, AgentContext, Runtime, Skill, sandbox};
 
 /// The whole folder, embedded at compile time; a broken skill fails its first dispatch.
 static GREETING: Skill = keelrs::skill!("$CARGO_MANIFEST_DIR/skills/greeting");
 
-fn greeter(cx: &mut AgentContext) -> String {
-    cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_skill(&GREETING);
-    "You greet people.".into()
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let sandbox = sandbox::local().open().await?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("discovered");
     let discovered = discover(Discover::new().root(root)).await;
 
@@ -44,15 +39,23 @@ async fn main() -> anyhow::Result<()> {
         "Write exactly three lines of 5, 7 and 5 syllables. No title, no explanation.",
     )?;
 
-    let greeter = Agent::new("greeter", greeter);
-    let found = discovered.clone();
+    let sb = sandbox.clone();
+    let greeter = Agent::new("greeter", move |cx: &mut AgentContext| {
+        cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_skill(&GREETING);
+        "You greet people.".into()
+    });
+    let (sb, found) = (sandbox.clone(), discovered.clone());
     let reciter = Agent::new("reciter", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
         cx.use_skills(&found);
         "You recite poems.".into()
     });
     let poet = Agent::new("poet", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sandbox.clone()).only([]);
         cx.use_skills([&GREETING, &haiku]);
         "You greet people and write poems.".into()
     });

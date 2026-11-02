@@ -2,7 +2,10 @@
 
 use std::convert::Infallible;
 
-use keelrs::sandbox::{self, Sandbox};
+mod common;
+
+use common::temp_sandbox;
+use keelrs::sandbox::Sandbox;
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime, Tool, ToolCall};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
@@ -28,8 +31,10 @@ fn clock() -> Tool {
 
 #[tokio::test]
 async fn two_tools_with_one_name_fail() {
-    let agent = Agent::new("duplicate-tools", |cx: &mut AgentContext| {
+    let sb = temp_sandbox().await;
+    let agent = Agent::new("duplicate-tools", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
         cx.use_tool(clock());
         cx.use_tool(clock());
         "Tell the time.".into()
@@ -43,8 +48,10 @@ async fn two_tools_with_one_name_fail() {
 
 #[tokio::test]
 async fn a_tool_whose_arguments_are_not_an_object_fails() {
-    let agent = Agent::new("string-args", |cx: &mut AgentContext| {
+    let sb = temp_sandbox().await;
+    let agent = Agent::new("string-args", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
         cx.use_tool(Tool::host(
             "echo",
             "Echo the text.",
@@ -57,14 +64,6 @@ async fn a_tool_whose_arguments_are_not_an_object_fails() {
         reason.contains("`echo`'s arguments must be a JSON object"),
         "{reason}"
     );
-}
-
-async fn temp_sandbox() -> Sandbox {
-    sandbox::local()
-        .root(std::env::temp_dir())
-        .open()
-        .await
-        .unwrap()
 }
 
 fn listing() -> Tool {
@@ -88,21 +87,25 @@ async fn use_sandbox_twice_fails() {
     });
     let reason = failure_reason(agent).await;
     assert!(
-        reason.contains("`use_sandbox` was called 2 times"),
+        reason.contains("`use_sandbox` was called 2 times in one render; call it once"),
         "{reason}"
     );
 }
 
 #[tokio::test]
-async fn a_sandboxed_tool_without_a_sandbox_fails() {
+async fn an_agent_that_never_calls_use_sandbox_fails() {
     let agent = Agent::new("no-sandbox", |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
         cx.use_tool(listing());
         "List files.".into()
     });
     let reason = failure_reason(agent).await;
-    assert!(
-        reason.contains("`list_files` is a sandboxed tool, but no sandbox was declared"),
-        "{reason}"
-    );
+    assert_eq!(reason, "the agent function never called `use_sandbox`");
+}
+
+#[tokio::test]
+async fn a_missing_model_fails_before_a_missing_sandbox() {
+    let agent = Agent::new("nothing", |_: &mut AgentContext| "Hello.".into());
+    let reason = failure_reason(agent).await;
+    assert_eq!(reason, "the agent function never called `use_model`");
 }
