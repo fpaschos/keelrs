@@ -3,7 +3,9 @@
 mod common;
 
 use common::temp_sandbox;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime};
 use serde::{Deserialize, Serialize};
@@ -156,7 +158,7 @@ fn recorder(seen: &Seen) -> Agent<Issue> {
     let seen = seen.clone();
     Agent::new("recorder", move |cx: &mut AgentContext<Issue>| {
         let entry = (cx.id().to_string(), cx.data().number);
-        seen.lock().unwrap().push(entry);
+        seen.lock().push(entry);
         String::new()
     })
 }
@@ -174,10 +176,7 @@ async fn a_render_reads_its_instances_data_and_id() {
         .unwrap();
     let _ = a.ask("go").await;
     let _ = b.ask("go").await;
-    assert_eq!(
-        *seen.lock().unwrap(),
-        [("a".to_owned(), 1), ("b".to_owned(), 2)]
-    );
+    assert_eq!(*seen.lock(), [("a".to_owned(), 1), ("b".to_owned(), 2)]);
 }
 
 #[tokio::test]
@@ -193,10 +192,7 @@ async fn an_existing_id_keeps_its_first_data() {
         .instance_with(&agent, InstanceId::new("a"), Issue { number: 2 })
         .unwrap();
     let _ = again.ask("go").await;
-    assert_eq!(
-        *seen.lock().unwrap(),
-        [("a".to_owned(), 1), ("a".to_owned(), 1)]
-    );
+    assert_eq!(*seen.lock(), [("a".to_owned(), 1), ("a".to_owned(), 1)]);
 }
 
 #[tokio::test]

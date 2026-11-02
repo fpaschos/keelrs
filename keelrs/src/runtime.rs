@@ -4,8 +4,9 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
@@ -94,7 +95,7 @@ impl Runtime {
         else {
             return Err(Error::UnknownAgent(agent.name().to_owned()));
         };
-        // Checked before the lock: the actor's spawn would panic while holding it.
+        // Checked first: the actor's spawn panics outside a Tokio runtime.
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(Error::NoTokioRuntime);
         }
@@ -102,7 +103,6 @@ impl Runtime {
             .inner
             .instances
             .lock()
-            .unwrap()
             .entry((agent.name().to_owned(), id.clone()))
             .or_insert_with(|| {
                 AgentInstance::spawn(registered.bind(id.clone(), data), id, &self.inner.shutdown)

@@ -6,8 +6,10 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use keelrs::sandbox::{
@@ -525,7 +527,7 @@ struct Memory(Mutex<HashMap<SandboxPath, Vec<u8>>>);
 #[keelrs::async_trait]
 impl SandboxBackend for Memory {
     async fn stat(&self, path: &SandboxPath) -> Result<Stat> {
-        Ok(match self.0.lock().unwrap().get(path) {
+        Ok(match self.0.lock().get(path) {
             Some(bytes) => Stat::File {
                 size: bytes.len() as u64,
                 read_only: false,
@@ -536,7 +538,7 @@ impl SandboxBackend for Memory {
     }
 
     async fn read(&self, path: &SandboxPath, limit: u64) -> Result<Contents> {
-        let files = self.0.lock().unwrap();
+        let files = self.0.lock();
         let bytes = files.get(path).ok_or_else(|| SandboxError::Io {
             operation: "read",
             path: path.to_string(),
@@ -550,17 +552,17 @@ impl SandboxBackend for Memory {
     }
 
     async fn write(&self, path: &SandboxPath, bytes: Vec<u8>) -> Result<()> {
-        self.0.lock().unwrap().insert(path.clone(), bytes);
+        self.0.lock().insert(path.clone(), bytes);
         Ok(())
     }
 
     async fn remove(&self, path: &SandboxPath, _recursive: bool) -> Result<()> {
-        self.0.lock().unwrap().remove(path);
+        self.0.lock().remove(path);
         Ok(())
     }
 
     async fn rename(&self, from: &SandboxPath, to: &SandboxPath) -> Result<()> {
-        let mut files = self.0.lock().unwrap();
+        let mut files = self.0.lock();
         if let Some(bytes) = files.remove(from) {
             files.insert(to.clone(), bytes);
         }
@@ -568,7 +570,7 @@ impl SandboxBackend for Memory {
     }
 
     async fn list(&self, root: &SandboxPath, _glob: Option<&str>) -> Result<Vec<SandboxPath>> {
-        let files = self.0.lock().unwrap();
+        let files = self.0.lock();
         Ok(files
             .keys()
             .filter(|path| path.starts_with(root))
@@ -631,7 +633,7 @@ struct Counting {
 
 impl Counting {
     fn count(&self, call: &'static str) {
-        *self.calls.lock().unwrap().entry(call).or_default() += 1;
+        *self.calls.lock().entry(call).or_default() += 1;
     }
 }
 
@@ -689,9 +691,9 @@ impl SandboxBackend for Counting {
 
 /// The backend calls made during `work`, by name.
 async fn counted(calls: &Calls, work: impl Future<Output = ()>) -> Vec<(&'static str, usize)> {
-    calls.lock().unwrap().clear();
+    calls.lock().clear();
     work.await;
-    let mut made: Vec<_> = calls.lock().unwrap().drain().collect();
+    let mut made: Vec<_> = calls.lock().drain().collect();
     made.sort_unstable();
     made
 }
