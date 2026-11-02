@@ -86,7 +86,7 @@ where
     T: Serialize + 'static,
 {
     let recorded = recorded.clone();
-    Tool::builtin(
+    Tool::host(
         FINISH_STRUCTURED,
         description,
         move |call: ToolCall<Args>| async move {

@@ -169,23 +169,6 @@ impl Tool {
         }
     }
 
-    /// keelrs's own tools, such as `activate_skill`: host tools that only
-    /// keelrs may name with a reserved name.
-    pub(crate) fn builtin<Args, F, Fut, T, E>(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        run: F,
-    ) -> Self
-    where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
-        F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
-    {
-        Self::host(name, description, run)
-    }
-
     /// Stops a call after `timeout`; the model then reads that it timed out.
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
