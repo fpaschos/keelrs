@@ -7,18 +7,19 @@
 //! cargo run -p example-instructions
 //! ```
 
-use keelrs::{Agent, AgentContext, Runtime};
-
-/// Runs again before every turn; the returned task comes first, then `style.md`.
-fn implementer(cx: &mut AgentContext) -> String {
-    cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_instruction(include_str!("../style.md"));
-    include_str!("../task.md").replace("{{TOPIC}}", "add a `--verbose` flag to the CLI")
-}
+use keelrs::{Agent, AgentContext, Runtime, sandbox};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let implementer = Agent::new("implementer", implementer);
+    let sandbox = sandbox::local().open().await?;
+    // Runs again before every turn; the returned task comes first, then `style.md`.
+    let implementer = Agent::new("implementer", move |cx: &mut AgentContext| {
+        cx.use_model("anthropic/claude-sonnet-5-5");
+        // Only plans: none of keelrs's built-in tools.
+        cx.use_sandbox(sandbox.clone()).only([]);
+        cx.use_instruction(include_str!("../style.md"));
+        include_str!("../task.md").replace("{{TOPIC}}", "add a `--verbose` flag to the CLI")
+    });
     let runtime = Runtime::start([implementer.clone()]);
 
     let instance = runtime.init(&implementer).id("demo")?;
