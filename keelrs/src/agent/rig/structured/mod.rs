@@ -18,16 +18,16 @@ use crate::tool::{Called, FailKind, Failed};
 /// The reserved tool the model hands a structured result over with.
 pub(crate) const FINISH_STRUCTURED: &str = "finish_structured";
 
-/// The structured result one dispatch asks for: `T`'s schema, its doc comment,
-/// and a check that a value deserializes into `T`.
+/// The structured result one dispatch asks for: `finish_structured`'s schema and
+/// description, and a check that a value deserializes into `T`.
 #[derive(Debug, Clone)]
 pub(crate) struct Structured {
     /// `finish_structured`'s parameters: `T`'s schema, wrapped as `{result}` when not an object.
     schema: Value,
     /// Whether the value travels as `{"result": value}`.
     wrapped: bool,
-    /// `T`'s root doc comment.
-    doc: Option<String>,
+    /// `finish_structured`'s description, ending with `T`'s doc comment.
+    description: String,
     /// Deserializes a value into `T`; the error is what the model reads.
     check: fn(Value) -> Result<(), String>,
 }
@@ -36,10 +36,10 @@ impl Structured {
     /// The structured result `T`.
     pub(crate) fn of<T: DeserializeOwned + JsonSchema>() -> Self {
         // `args_schema` drops the root doc comment and inlines every subschema.
-        let doc = schemars::schema_for!(T)
-            .get("description")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let description = match schemars::schema_for!(T).get("description") {
+            Some(Value::String(doc)) => format!("{FINISH_DESCRIPTION}\n\n{doc}"),
+            _ => FINISH_DESCRIPTION.to_owned(),
+        };
         let mut schema = args_schema::<T>();
         let wrapped = schema.get("type").and_then(Value::as_str) != Some("object");
         if wrapped {
@@ -53,7 +53,7 @@ impl Structured {
         Self {
             schema,
             wrapped,
-            doc,
+            description,
             check: |value| {
                 serde_json::from_value::<T>(value)
                     .map(drop)
@@ -64,10 +64,6 @@ impl Structured {
 
     /// The `finish_structured` tool, recording the first value that fits in `recorded`.
     pub(super) fn tool(&self, recorded: Arc<Mutex<Option<Value>>>) -> Tool {
-        let description = match &self.doc {
-            Some(doc) => format!("{FINISH_DESCRIPTION}\n\n{doc}"),
-            None => FINISH_DESCRIPTION.to_owned(),
-        };
         let (wrapped, check) = (self.wrapped, self.check);
         let run = move |arguments: Value, _: String, _: Sandbox| {
             let recorded = recorded.clone();
@@ -92,7 +88,7 @@ impl Structured {
         };
         Tool {
             name: FINISH_STRUCTURED.into(),
-            description: description.into(),
+            description: self.description.as_str().into(),
             schema: Arc::new(self.schema.clone()),
             timeout: None,
             run: Arc::new(run),

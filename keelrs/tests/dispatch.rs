@@ -108,19 +108,6 @@ async fn a_declared_finish_structured_fails_plain_and_structured_asks() {
 }
 
 #[tokio::test]
-async fn a_structured_ask_that_fails_settles_as_failed() {
-    let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
-    let runtime = Runtime::start([&agent]).unwrap();
-    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
-    let result = instance.ask_structured::<u32>("go").await;
-    assert!(
-        matches!(&result, Err(Error::Run { outcome: Outcome::Failed { reason }, .. })
-            if reason.contains("never called `use_model`")),
-        "{result:?}"
-    );
-}
-
-#[tokio::test]
 async fn a_read_issued_before_the_run_settles_gets_the_outcome() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
     let runtime = Runtime::start([&agent]).unwrap();

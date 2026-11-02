@@ -85,10 +85,7 @@ async fn one_replys_calls_run_concurrently_and_are_committed_in_call_order() {
             ));
         }
     });
-    let both = MockTurn::from_contents([("c1", "second"), ("c2", "first")].map(|(id, name)| {
-        let function = ToolFunction::new(ToolName::new(name).unwrap(), json!({}));
-        AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(id, function))
-    }));
+    let both = reply([("c1", "second", json!({})), ("c2", "first", json!({}))]);
     let settled = tokio::time::timeout(
         Duration::from_secs(5),
         scripted(&agent, [both, MockTurn::text("Done.")]),

@@ -42,16 +42,28 @@ async fn scripted_in(
     turns: impl IntoIterator<Item = MockTurn>,
     caches: &mut Caches,
 ) -> Result<Settled, String> {
+    drive(agent, turns, None, caches).await.0
+}
+
+/// Runs `agent` on "Go", asking for `structured`, against a model that replies
+/// with `turns`; also every request the model got.
+pub(super) async fn drive(
+    agent: &Agent,
+    turns: impl IntoIterator<Item = MockTurn>,
+    structured: Option<Structured>,
+    caches: &mut Caches,
+) -> (Result<Settled, String>, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
-    run_with(
+    let settled = run_with(
         agent.for_instance(InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
-        None,
+        structured,
         caches,
         |_| Ok(model.clone().erase()),
     )
-    .await
+    .await;
+    (settled, model.requests())
 }
 
 /// Every tool result the run accepted, in order, as (text or JSON, is_error).
@@ -125,18 +137,18 @@ pub(super) async fn sent(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Settled, Vec<CompletionRequest>) {
-    let model = MockCompletionModel::from_turns(turns);
-    let settled = run_with(
-        agent.for_instance(InstanceId::new("test"), ()),
-        "Go".to_owned(),
-        Vec::new(),
-        None,
-        &mut Caches::default(),
-        |_| Ok(model.clone().erase()),
-    )
-    .await
-    .unwrap();
-    (settled, model.requests())
+    let (settled, requests) = drive(agent, turns, None, &mut Caches::default()).await;
+    (settled.unwrap(), requests)
+}
+
+/// One reply calling each `(id, tool, arguments)` in order.
+pub(super) fn reply(
+    calls: impl IntoIterator<Item = (&'static str, &'static str, Value)>,
+) -> MockTurn {
+    MockTurn::from_contents(calls.into_iter().map(|(id, name, arguments)| {
+        let function = ToolFunction::new(ToolName::new(name).unwrap(), arguments);
+        AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(id, function))
+    }))
 }
 
 /// The preamble a request carried.

@@ -1,36 +1,32 @@
 //! Structured results: the reserved `finish_structured` tool, driven through
 //! `run_with` on rig-core's scripted model.
 
-use rig_core::completion::{AssistantContent, CompletionRequest};
-use rig_core::message::{Message as RigMessage, ToolFunction, ToolName, UserContent};
-use rig_core::test_utils::{MockCompletionModel, MockTurn};
+use rig_core::completion::CompletionRequest;
+use rig_core::message::{Message as RigMessage, UserContent};
+use rig_core::test_utils::MockTurn;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use super::super::tests::{agent, clock, preamble, results, sent, tool_names};
-use super::super::{Settled, run_with};
+use super::super::Settled;
+use super::super::tests::{agent, clock, drive, preamble, reply, results, sent, tool_names};
 use super::*;
+use crate::Agent;
 use crate::builtin::Caches;
-use crate::{Agent, InstanceId};
 
 /// Runs `agent` on one message asking for a `T`, and returns every request the model got.
 async fn structured<T: DeserializeOwned + JsonSchema>(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
-    let model = MockCompletionModel::from_turns(turns);
-    let settled = run_with(
-        agent.for_instance(InstanceId::new("test"), ()),
-        "Go".to_owned(),
-        Vec::new(),
+    drive(
+        agent,
+        turns,
         Some(Structured::of::<T>()),
         &mut Caches::default(),
-        |_| Ok(model.clone().erase()),
     )
-    .await;
-    (settled, model.requests())
+    .await
 }
 
 /// A plan of work.
@@ -77,14 +73,6 @@ fn user_texts(settled: &Settled) -> Vec<String> {
         }
     }
     texts
-}
-
-/// One reply calling each `(id, tool, arguments)` in order.
-fn reply(calls: impl IntoIterator<Item = (&'static str, &'static str, Value)>) -> MockTurn {
-    MockTurn::from_contents(calls.into_iter().map(|(id, name, arguments)| {
-        let function = ToolFunction::new(ToolName::new(name).unwrap(), arguments);
-        AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(id, function))
-    }))
 }
 
 #[tokio::test]
