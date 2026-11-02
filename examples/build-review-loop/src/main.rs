@@ -59,6 +59,16 @@ struct Review {
     findings: Vec<String>,
 }
 
+impl Review {
+    /// The message that sends this review's findings back to the implementer.
+    fn feedback(&self) -> String {
+        format!(
+            "A reviewer asks for changes:\n\n- {}\n\nMake them.",
+            self.findings.join("\n- ")
+        )
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Verdict {
@@ -157,10 +167,11 @@ async fn main() -> anyhow::Result<()> {
         issue.clone(),
     )?;
 
+    let mut message = "Implement the issue.".to_owned();
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
         let implementation = implementing
-            .ask_structured::<Implementation>("Implement the issue.")
+            .ask_structured::<Implementation>(message)
             .await?;
         println!("{}", implementation.summary);
 
@@ -179,10 +190,7 @@ async fn main() -> anyhow::Result<()> {
             sandbox.close().await?;
             return Ok(());
         }
-        let message = format!(
-            "A reviewer asks for changes:\n\n- {}\n\nMake them.",
-            review.findings.join("\n- ")
-        );
+        message = review.feedback();
         println!("{message}");
     }
     bail!("#{number} is not approved after {MAX_ROUNDS} rounds")
