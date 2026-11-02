@@ -1,6 +1,6 @@
 //! The built-in tools, `read`, `write`, `edit`, `bash`, `grep`, `glob`,
-//! `delete` and `move`: sandboxed [`Tool`]s that every turn declaring a
-//! sandbox gets, unless it narrows them with
+//! `delete` and `move`: sandboxed [`Tool`]s that every turn gets, unless it
+//! narrows them with
 //! [`only`](crate::agent::BuiltinTools::only). They are built each render
 //! over that render's sandbox, as the skill tools are, and act only through
 //! [`Sandbox`]'s own methods, so they behave alike on every backend.
@@ -9,9 +9,7 @@
 //! `edit::apply`, `clip`); what rig-tools keeps private is copied, marked
 //! where it is. No Rig type leaves this module (ADR 0004, rule 2).
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
 
 use rig_core::tool::{ToolErrorKind, ToolExecutionError};
 use rig_tools::{MAX_FILE_BYTES, Seen};
@@ -36,17 +34,20 @@ pub(crate) const NAMES: [&str; 8] = [
     "read", "write", "edit", "bash", "grep", "glob", "delete", "move",
 ];
 
-/// What the built-in tools remember for one agent instance, per sandbox:
-/// what the model last read or left in each file. In memory only, and
-/// correct when empty, so losing it costs only a fresh read.
+/// What the built-in tools remember for one agent instance: what the model
+/// last read or left in each file of its current sandbox. In memory only,
+/// and correct when empty, so losing it costs only a fresh read.
 #[derive(Debug, Default)]
-pub(crate) struct Caches(Mutex<HashMap<SandboxId, Seen>>);
+pub(crate) struct Caches(Option<(SandboxId, Seen)>);
 
 impl Caches {
-    /// What this instance has seen in the sandbox `id`.
-    pub(crate) fn seen(&self, id: SandboxId) -> Seen {
-        let mut caches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        caches.entry(id).or_default().clone()
+    /// What this instance has seen in the sandbox `id`; empty when the last
+    /// render's sandbox was another.
+    pub(crate) fn seen(&mut self, id: SandboxId) -> Seen {
+        match &self.0 {
+            Some((current, seen)) if *current == id => seen.clone(),
+            _ => self.0.insert((id, Seen::default())).1.clone(),
+        }
     }
 }
 

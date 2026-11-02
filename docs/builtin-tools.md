@@ -1,6 +1,6 @@
 # Built-in tools
 
-The eight sandboxed tools every turn that declares a sandbox gets (`keelrs/src/builtin/`), narrowed with `use_sandbox(sb).only([...])`. They act only through `Sandbox` methods, so they behave alike on every backend ([sandbox.md](sandbox.md)). Their text logic is rig-tools 0.46.0-rc.1's, called where it is public and copied, marked `// Copied from rig-tools`, where it is not.
+The eight sandboxed tools every turn gets (`keelrs/src/builtin/`), narrowed with `use_sandbox(sb).only([...])`. They act only through `Sandbox` methods, so they behave alike on every backend ([sandbox.md](sandbox.md)). Their text logic is rig-tools 0.46.0-rc.1's, called where it is public and copied, marked `// Copied from rig-tools`, where it is not.
 
 ## The tools and their limits
 

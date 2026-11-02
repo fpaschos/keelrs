@@ -126,7 +126,7 @@ struct InstanceActor {
     cancel: CancellationToken,
     /// STORE: stands in for the stored `Event::Settled`s until durable storage keeps them.
     settled: HashMap<SubmissionId, Result<String, Outcome>>,
-    /// What this instance's built-in tools remember, per sandbox; never stored.
+    /// What this instance's built-in tools remember of its current sandbox; never stored.
     caches: Caches,
 }
 
@@ -159,7 +159,7 @@ impl InstanceActor {
             biased;
             // Dropping the run's future stops its model call.
             () = self.cancel.cancelled() => Err(Outcome::Aborted),
-            result = rig::run(self.agent.clone(), text, history, &self.caches) => match result {
+            result = rig::run(self.agent.clone(), text, history, &mut self.caches) => match result {
                 Ok(Settled { reply, messages }) => {
                     events.extend(messages.into_iter().map(Event::Message));
                     Ok(reply)

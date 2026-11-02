@@ -1,5 +1,6 @@
 //! Dispatch, read and ask through the public API, with no network.
 
+use keelrs::sandbox::{self, Sandbox};
 use keelrs::{Agent, AgentContext, Error, Outcome, Runtime};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
@@ -13,6 +14,14 @@ async fn failure_reason(agent: Agent) -> String {
         }) => reason,
         other => panic!("expected a failed run, got {other:?}"),
     }
+}
+
+async fn temp_sandbox() -> Sandbox {
+    sandbox::local()
+        .root(std::env::temp_dir())
+        .open()
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -45,8 +54,10 @@ async fn an_empty_model_id_fails() {
 
 #[tokio::test]
 async fn blank_use_instruction_text_fails() {
-    let agent = Agent::new("blank-instruction", |cx: &mut AgentContext| {
+    let sb = temp_sandbox().await;
+    let agent = Agent::new("blank-instruction", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
         cx.use_instruction("  ");
         "Greet.".into()
     });
@@ -59,8 +70,10 @@ async fn blank_use_instruction_text_fails() {
 
 #[tokio::test]
 async fn an_unknown_vendor_fails_with_rigs_reason() {
-    let agent = Agent::new("unknown-vendor", |cx: &mut AgentContext| {
+    let sb = temp_sandbox().await;
+    let agent = Agent::new("unknown-vendor", move |cx: &mut AgentContext| {
         cx.use_model("nope/model");
+        cx.use_sandbox(sb.clone()).only([]);
         "Greet.".into()
     });
     let reason = failure_reason(agent).await;

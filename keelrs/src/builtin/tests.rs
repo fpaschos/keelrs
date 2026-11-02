@@ -52,7 +52,7 @@ impl Fixture {
     /// One call of the built-in `name`, run as a turn runs it.
     async fn call(&self, name: &str, arguments: Value) -> Called {
         let tool = super::tools(&self.sb, &self.seen, &[name]).remove(0);
-        call(&tool, arguments, "c1".to_owned(), Some(&self.sb)).await
+        call(&tool, arguments, "c1".to_owned(), &self.sb).await
     }
 
     async fn read(&self, path: &str, offset: Option<usize>, limit: Option<usize>) -> String {

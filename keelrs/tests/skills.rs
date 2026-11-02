@@ -17,9 +17,16 @@ async fn failure_reason(agent: Agent) -> String {
     }
 }
 
-fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+/// An agent in a temp-dir sandbox, with no built-ins.
+async fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+    let sb = keelrs::sandbox::local()
+        .root(std::env::temp_dir())
+        .open()
+        .await
+        .unwrap();
     Agent::new("skilled", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
+        cx.use_sandbox(sb.clone()).only([]);
         declare(cx);
         "Help.".into()
     })
@@ -32,7 +39,8 @@ async fn a_tool_with_a_reserved_name_fails() {
             cx.use_tool(Tool::host(name, "Mine.", async |_: ToolCall<()>| {
                 Ok::<_, Infallible>("")
             }));
-        });
+        })
+        .await;
         assert_eq!(
             failure_reason(agent).await,
             format!("`{name}` is reserved for keelrs's built-in tool")
@@ -45,7 +53,8 @@ async fn two_skills_with_one_name_fail() {
     let agent = agent(|cx| {
         let haiku = Skill::new("review", "Write a haiku.", "Body.").unwrap();
         cx.use_skills([&REVIEW, &haiku]);
-    });
+    })
+    .await;
     assert_eq!(
         failure_reason(agent).await,
         "two skills are named `review`; skill names must be unique"
@@ -84,7 +93,7 @@ fn an_embedded_skill_may_hold_templates_named_like_secrets() {
 
 /// Why mounting the embedded `skill` fails its dispatch.
 async fn mount_failure(skill: &'static Skill) -> String {
-    failure_reason(agent(move |cx| cx.use_skill(skill))).await
+    failure_reason(agent(move |cx| cx.use_skill(skill)).await).await
 }
 
 #[tokio::test]

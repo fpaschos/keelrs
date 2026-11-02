@@ -62,9 +62,8 @@ impl fmt::Display for Failed {
 /// What a tool's call settles to: its value, or why it failed.
 pub(crate) type Called = Result<Value, Failed>;
 
-type Run = dyn Fn(Value, String, Option<Sandbox>) -> Pin<Box<dyn Future<Output = Called> + Send>>
-    + Send
-    + Sync;
+type Run =
+    dyn Fn(Value, String, Sandbox) -> Pin<Box<dyn Future<Output = Called> + Send>> + Send + Sync;
 
 /// A named function the model may call during a turn, declared with
 /// [`AgentContext::use_tool`](crate::AgentContext::use_tool).
@@ -77,8 +76,6 @@ pub struct Tool {
     /// The JSON schema of the arguments, sent to the model.
     pub(crate) schema: Arc<Value>,
     pub(crate) timeout: Option<Duration>,
-    /// Whether it acts through the turn's sandbox ([`Tool::sandbox`]).
-    pub(crate) sandboxed: bool,
     /// Runs one call with the model's arguments, the call's id and the turn's sandbox.
     pub(crate) run: Arc<Run>,
 }
@@ -114,7 +111,7 @@ impl Tool {
         T: Serialize + 'static,
         E: fmt::Display + Send + Sync + 'static,
     {
-        Self::erased(name, description, false, move |call, _| run(call))
+        Self::erased(name, description, move |call, _| run(call))
     }
 
     /// A **sandboxed tool**: as [`host`](Self::host), but `run` also
@@ -123,10 +120,7 @@ impl Tool {
     /// and acts only through it.
     ///
     /// keelrs guarantees which sandbox it gets: the declared one, as
-    /// narrowed to its work dir. A turn that declares a sandboxed tool but
-    /// no sandbox settles the dispatch as
-    /// [`Outcome::Failed`](crate::Outcome::Failed); keelrs never falls back
-    /// to the host.
+    /// narrowed to its work dir.
     pub fn sandbox<Args, F, Fut, T, E>(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -139,16 +133,9 @@ impl Tool {
         T: Serialize + 'static,
         E: fmt::Display + Send + Sync + 'static,
     {
-        Self::erased(
-            name,
-            description,
-            true,
-            move |call, sandbox: Option<Sandbox>| {
-                let sandbox =
-                    sandbox.expect("a sandboxed tool runs only in a turn that declared a sandbox");
-                run(call, sandbox)
-            },
-        )
+        Self::erased(name, description, move |call, sandbox: Sandbox| {
+            run(call, sandbox)
+        })
     }
 
     /// keelrs's own tools, such as `activate_skill`: host tools that only
@@ -168,23 +155,22 @@ impl Tool {
         Self::host(name, description, run)
     }
 
-    /// A tool around `run`, which gets the turn's sandbox when `sandboxed`.
+    /// A tool around `run`, which gets the turn's sandbox.
     fn erased<Args, F, Fut, T, E>(
         name: impl Into<String>,
         description: impl Into<String>,
-        sandboxed: bool,
         run: F,
     ) -> Self
     where
         Args: DeserializeOwned + JsonSchema + Send + 'static,
-        F: FnOnce(ToolCall<Args>, Option<Sandbox>) -> Fut + Clone + Send + Sync + 'static,
+        F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Serialize + 'static,
         E: fmt::Display + Send + Sync + 'static,
     {
         let name: Arc<str> = name.into().into();
         let tool_name = name.clone();
-        let run = move |arguments: Value, id: String, sandbox: Option<Sandbox>| {
+        let run = move |arguments: Value, id: String, sandbox: Sandbox| {
             let run = run.clone();
             let name = tool_name.clone();
             Box::pin(async move {
@@ -207,7 +193,6 @@ impl Tool {
             description: description.into().into(),
             schema: Arc::new(crate::agent::rig::args_schema::<Args>()),
             timeout: None,
-            sandboxed,
             run: Arc::new(run),
         }
     }
@@ -238,7 +223,6 @@ impl fmt::Debug for Tool {
         f.debug_struct("Tool")
             .field("name", &self.name)
             .field("timeout", &self.timeout)
-            .field("sandboxed", &self.sandboxed)
             .finish_non_exhaustive()
     }
 }
