@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
-use rig_core::tool::ToolExecutionError;
+use rig_core::tool::{ToolErrorKind, ToolExecutionError};
 use rig_tools::{MAX_FILE_BYTES, Seen};
 
 use crate::Tool;
 use crate::sandbox::{Contents, Listing, Sandbox, SandboxError, SandboxId, SandboxPath};
+use crate::tool::{FailKind, Failed};
 
 mod bash;
 mod edit;
@@ -70,6 +71,21 @@ pub(crate) fn tools(sandbox: &Sandbox, seen: &Seen, names: &[&str]) -> Vec<Tool>
 
 /// What a built-in tool's call settles to.
 type Out = Result<String, ToolExecutionError>;
+
+/// A built-in's refusal as keelrs keeps it, its kind kept. The built-ins
+/// use only Rig's plain constructors, so its message is all the model reads.
+impl From<ToolExecutionError> for Failed {
+    fn from(e: ToolExecutionError) -> Self {
+        let kind = match e.kind() {
+            ToolErrorKind::InvalidArgs => FailKind::InvalidArgs,
+            ToolErrorKind::NotFound => FailKind::NotFound,
+            ToolErrorKind::PermissionDenied => FailKind::PermissionDenied,
+            ToolErrorKind::Timeout => FailKind::Timeout,
+            _ => FailKind::Other,
+        };
+        Self::new(kind, e.message())
+    }
+}
 
 /// `path` from the work dir, canonical; a refusal names `path` as the model sent it.
 async fn place(sb: &Sandbox, path: &str) -> Result<SandboxPath, ToolExecutionError> {

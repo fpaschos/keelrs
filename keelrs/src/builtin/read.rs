@@ -6,17 +6,18 @@ use serde::Deserialize;
 
 use super::{Out, key, place, read_text};
 use crate::sandbox::Sandbox;
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ReadArgs {
+struct ReadArgs {
     /// The file to read, relative to the working directory.
-    pub(crate) path: String,
+    path: String,
     /// The first line to read, from 1.
-    pub(crate) offset: Option<usize>,
+    offset: Option<usize>,
     /// How many lines to read.
-    pub(crate) limit: Option<usize>,
+    limit: Option<usize>,
 }
 
 pub(super) fn tool(seen: Seen) -> Tool {
@@ -32,13 +33,15 @@ pub(super) fn tool(seen: Seen) -> Tool {
             MAX_FILE_BYTES / (1024 * 1024),
             MAX_BYTES / 1024
         ),
-        move |call: ToolCall<ReadArgs>, sb: Sandbox| async move { read(&sb, &seen, call.data).await },
+        move |call: ToolCall<ReadArgs>, sb: Sandbox| async move {
+            read(&sb, &seen, call.data).await.map_err(Failed::from)
+        },
     )
 }
 
 /// `args.path`'s lines as rig-tools' `read` shows them; its whole text is
 /// remembered in `seen` for a later `edit`.
-pub(crate) async fn read(sb: &Sandbox, seen: &Seen, args: ReadArgs) -> Out {
+async fn read(sb: &Sandbox, seen: &Seen, args: ReadArgs) -> Out {
     let path = place(sb, &args.path).await?;
     let text = read_text(sb, &path, &args.path).await?;
     let mut page = rig_tools::ReadArgs::new(args.path);

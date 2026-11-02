@@ -7,25 +7,26 @@ use serde::Deserialize;
 
 use super::{Out, fail, key, place};
 use crate::sandbox::{Sandbox, SandboxPath, Stat};
+use crate::tool::Failed;
 use crate::{Tool, ToolCall};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeleteArgs {
+struct DeleteArgs {
     /// The file to delete.
-    pub(crate) path: String,
+    path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct MoveArgs {
+struct MoveArgs {
     /// The file to move.
-    pub(crate) from: String,
+    from: String,
     /// Its new path.
-    pub(crate) to: String,
+    to: String,
     /// Replace a file already at `to`.
     #[serde(default)]
-    pub(crate) overwrite: bool,
+    overwrite: bool,
 }
 
 pub(super) fn delete_tool(seen: Seen) -> Tool {
@@ -33,7 +34,7 @@ pub(super) fn delete_tool(seen: Seen) -> Tool {
         "delete",
         "Delete a file, not with `rm` in `bash`. Directories are refused.",
         move |call: ToolCall<DeleteArgs>, sb: Sandbox| async move {
-            delete(&sb, &seen, call.data).await
+            delete(&sb, &seen, call.data).await.map_err(Failed::from)
         },
     )
 }
@@ -44,14 +45,14 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
         "Move or rename a file, not with `mv` in `bash`, creating the new path's directory. \
          Refuses directories, and an existing file at `to` unless `overwrite` is true.",
         move |call: ToolCall<MoveArgs>, sb: Sandbox| async move {
-            move_file(&sb, &seen, call.data).await
+            move_file(&sb, &seen, call.data).await.map_err(Failed::from)
         },
     )
 }
 
 /// Removes the file `args.path`, which `seen` then forgets.
 // The rules and wording are rig-tools 0.46.0-rc.1 src/delete.rs's.
-pub(crate) async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
+async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
     let sent = args.path.as_str();
     let path = place(sb, sent).await?;
     require_file(sb, &path, sent, "`delete` removes").await?;
@@ -64,7 +65,7 @@ pub(crate) async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
 
 /// Moves the file `args.from` to `args.to`; what `seen` remembers of it moves too.
 // The rules and wording are rig-tools 0.46.0-rc.1 src/move_file.rs's.
-pub(crate) async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
+async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
     let (sent_from, sent_to) = (args.from.as_str(), args.to.as_str());
     let from = place(sb, sent_from).await?;
     let to = place(sb, sent_to).await?;

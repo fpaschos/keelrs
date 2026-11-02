@@ -19,6 +19,9 @@ mod discover;
 mod frontmatter;
 pub(crate) mod tools;
 
+#[cfg(test)]
+pub(crate) mod tests;
+
 pub use discover::{Discover, Discovered, SkillProblem, discover};
 
 /// A skill an agent mounts with [`AgentContext::use_skill`](crate::AgentContext::use_skill).

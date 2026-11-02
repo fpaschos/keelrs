@@ -1,6 +1,6 @@
-//! The built-in tools against `sandbox::local()` on a temp folder: each
-//! tool's text and refusals. How they reach a turn is tested with the tool
-//! loop, in `agent::rig::tests`.
+//! The built-in tools against `sandbox::local()` on a temp folder, each call
+//! run as a turn runs it (`agent::rig::call`): each tool's text and refusals.
+//! How they are declared for a turn is tested with the tool loop.
 
 #![allow(clippy::disallowed_methods)] // the fixture files are set up on the host
 
@@ -8,17 +8,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rig_core::tool::ToolErrorKind;
 use rig_tools::Seen;
+use serde_json::{Value, json};
 
-use super::bash::{BashArgs, bash, description};
-use super::edit::{EditArgs, Replacement, edit};
-use super::files::{DeleteArgs, MoveArgs, delete, move_file};
-use super::glob::{GlobArgs, glob};
-use super::grep::{GrepArgs, grep};
-use super::read::{ReadArgs, read};
-use super::write::{WriteArgs, write};
+use crate::agent::rig::call;
 use crate::sandbox::{self, Sandbox, SandboxPath};
+use crate::tool::{Called, FailKind};
 
 /// A temp folder with a local sandbox rooted in it, removed on drop.
 struct Fixture {
@@ -54,54 +49,43 @@ impl Fixture {
         fs::read_to_string(self.dir.join(relative)).unwrap()
     }
 
+    /// One call of the built-in `name`, run as a turn runs it.
+    async fn call(&self, name: &str, arguments: Value) -> Called {
+        let tool = super::tools(&self.sb, &self.seen, &[name]).remove(0);
+        call(&tool, arguments, "c1".to_owned(), Some(&self.sb)).await
+    }
+
     async fn read(&self, path: &str, offset: Option<usize>, limit: Option<usize>) -> String {
-        let args = ReadArgs {
-            path: path.to_owned(),
-            offset,
-            limit,
-        };
-        shown(read(&self.sb, &self.seen, args).await)
+        let args = json!({"path": path, "offset": offset, "limit": limit});
+        shown(self.call("read", args).await)
     }
 
     async fn write(&self, path: &str, content: &str) -> String {
-        let args = WriteArgs {
-            path: path.to_owned(),
-            content: content.to_owned(),
-        };
-        shown(write(&self.sb, &self.seen, args).await)
+        shown(
+            self.call("write", json!({"path": path, "content": content}))
+                .await,
+        )
     }
 
     /// One `edit` call of `path`, each edit `(old_text, new_text, replace_all)`.
     async fn edit(&self, path: &str, edits: &[(&str, &str, bool)]) -> String {
-        let edits = edits
+        let edits: Vec<Value> = edits
             .iter()
-            .map(|&(old, new, all)| Replacement {
-                old_text: old.to_owned(),
-                new_text: new.to_owned(),
-                replace_all: all,
-            })
+            .map(|&(old, new, all)| json!({"old_text": old, "new_text": new, "replace_all": all}))
             .collect();
-        let args = EditArgs {
-            path: path.to_owned(),
-            edits,
-        };
-        shown(edit(&self.sb, &self.seen, args).await)
+        shown(
+            self.call("edit", json!({"path": path, "edits": edits}))
+                .await,
+        )
     }
 
     async fn delete(&self, path: &str) -> String {
-        let args = DeleteArgs {
-            path: path.to_owned(),
-        };
-        shown(delete(&self.sb, &self.seen, args).await)
+        shown(self.call("delete", json!({"path": path})).await)
     }
 
     async fn move_file(&self, from: &str, to: &str, overwrite: bool) -> String {
-        let args = MoveArgs {
-            from: from.to_owned(),
-            to: to.to_owned(),
-            overwrite,
-        };
-        shown(move_file(&self.sb, &self.seen, args).await)
+        let args = json!({"from": from, "to": to, "overwrite": overwrite});
+        shown(self.call("move", args).await)
     }
 
     fn exists(&self, relative: &str) -> bool {
@@ -109,34 +93,21 @@ impl Fixture {
     }
 
     async fn glob(&self, pattern: &str, path: Option<&str>, hidden: bool) -> String {
-        let args = GlobArgs {
-            pattern: pattern.to_owned(),
-            path: path.map(str::to_owned),
-            hidden,
-        };
-        shown(glob(&self.sb, args).await)
+        let args = json!({"pattern": pattern, "path": path, "hidden": hidden});
+        shown(self.call("glob", args).await)
     }
 
-    async fn grep(&self, pattern: &str, more: impl FnOnce(&mut GrepArgs)) -> String {
-        let mut args = GrepArgs {
-            pattern: pattern.to_owned(),
-            path: None,
-            glob: None,
-            ignore_case: false,
-            literal: false,
-            context: None,
-            hidden: false,
-        };
-        more(&mut args);
-        shown(grep(&self.sb, args).await)
+    /// One `grep` call of `pattern`, with the arguments in `more` besides it.
+    async fn grep(&self, pattern: &str, mut more: Value) -> String {
+        more["pattern"] = json!(pattern);
+        shown(self.call("grep", more).await)
     }
 
     async fn bash(&self, command: &str, timeout: Option<u64>) -> String {
-        let args = BashArgs {
-            command: command.to_owned(),
-            timeout,
-        };
-        shown(bash(&self.sb, args).await)
+        shown(
+            self.call("bash", json!({"command": command, "timeout": timeout}))
+                .await,
+        )
     }
 
     /// A small project: ignored, hidden and nested files beside the visible ones.
@@ -170,8 +141,12 @@ pub fn thrice(x: i32) -> i32 {
 ";
 
 /// A tool's text, or its refusal as `Err: …`.
-fn shown(out: super::Out) -> String {
-    out.unwrap_or_else(|e| format!("Err: {e}"))
+fn shown(called: Called) -> String {
+    match called {
+        Ok(Value::String(text)) => text,
+        Ok(other) => panic!("a built-in returns text, not {other}"),
+        Err(failed) => format!("Err: {failed}"),
+    }
 }
 
 impl Drop for Fixture {
@@ -190,58 +165,12 @@ async fn read_shows_a_whole_file() {
 }
 
 #[tokio::test]
-async fn read_shows_a_range_and_where_to_read_on() {
+async fn read_of_a_missing_file_is_not_found_and_names_the_path_it_was_given() {
     let fx = Fixture::new().await;
-    fx.put("a.txt", "one\ntwo\nthree\n");
-    assert_eq!(
-        fx.read("a.txt", Some(2), Some(1)).await,
-        "two\n[1 more lines; read on with offset 3]\n"
-    );
-}
-
-#[tokio::test]
-async fn read_shows_crlf_lines_without_their_cr() {
-    let fx = Fixture::new().await;
-    fx.put("a.txt", "one\r\ntwo\r\n");
-    assert_eq!(fx.read("a.txt", None, None).await, "one\ntwo\n");
-}
-
-#[tokio::test]
-async fn read_from_past_the_end_says_how_long_the_file_is() {
-    let fx = Fixture::new().await;
-    fx.put("a.txt", "one\ntwo\nthree\n");
-    assert_eq!(
-        fx.read("a.txt", Some(5), Some(10)).await,
-        "[offset 5 is past the end: the file has 3 lines]\n"
-    );
-}
-
-#[tokio::test]
-async fn read_cuts_long_lines_to_fit_and_says_so() {
-    let fx = Fixture::new().await;
-    let long = "x".repeat(640);
-    let text: String = (0..475).map(|n| format!("{n} {long}\n")).collect();
-    fx.put("data.txt", &text);
-    let shown = fx.read("data.txt", None, None).await;
-    let lines: Vec<&str> = shown.lines().collect();
-    assert_eq!(lines.len(), 476);
-    assert!(lines[0].starts_with("0 x") && lines[0].ends_with(" […]"));
-    assert!(
-        lines[475].starts_with("[475 lines were cut at ")
-            && lines[475]
-                .ends_with(" characters to fit 50 KB; a smaller limit shows more of each]"),
-        "{}",
-        lines[475]
-    );
-}
-
-#[tokio::test]
-async fn read_of_a_missing_file_names_the_path_it_was_given() {
-    let fx = Fixture::new().await;
-    assert_eq!(
-        fx.read("src/missing.rs", None, None).await,
-        "Err: src/missing.rs: no such file"
-    );
+    let args = json!({"path": "src/missing.rs"});
+    let failed = fx.call("read", args).await.unwrap_err();
+    assert_eq!(failed.kind, FailKind::NotFound);
+    assert_eq!(failed.message, "src/missing.rs: no such file");
 }
 
 // write
@@ -257,26 +186,16 @@ async fn write_creates_a_file_and_its_folders() {
 }
 
 #[tokio::test]
-async fn a_read_only_file_and_a_path_outside_are_refused_as_permission_denied() {
+async fn a_read_only_file_is_refused_as_permission_denied() {
     use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new().await;
     fx.put("frozen.txt", "old\n");
     let path = fx.dir.join("frozen.txt");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
-    let kind = |path: &str| {
-        let args = WriteArgs {
-            path: path.to_owned(),
-            content: "new\n".to_owned(),
-        };
-        let (sb, seen) = (&fx.sb, &fx.seen);
-        async move { write(sb, seen, args).await.unwrap_err().kind() }
-    };
-    assert_eq!(kind("frozen.txt").await, ToolErrorKind::PermissionDenied);
-    assert_eq!(
-        kind("../escaped.txt").await,
-        ToolErrorKind::PermissionDenied
-    );
+    let args = json!({"path": "frozen.txt", "content": "new\n"});
+    let failed = fx.call("write", args).await.unwrap_err();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(failed.kind, FailKind::PermissionDenied);
 }
 
 #[tokio::test]
@@ -295,14 +214,16 @@ async fn write_replaces_a_file_it_cannot_read() {
 }
 
 #[tokio::test]
-async fn write_through_a_dangling_link_out_of_the_work_dir_is_refused() {
+async fn write_through_a_dangling_link_out_of_the_work_dir_is_refused_as_permission_denied() {
     let fx = Fixture::new().await;
     let outside = fx.dir.with_extension("outside");
     std::os::unix::fs::symlink(outside.join("new.txt"), fx.dir.join("out.txt")).unwrap();
-    assert_eq!(
-        fx.write("out.txt", "x").await,
-        "Err: out.txt is outside the work dir"
-    );
+    let failed = fx
+        .call("write", json!({"path": "out.txt", "content": "x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(failed.kind, FailKind::PermissionDenied);
+    assert_eq!(failed.message, "out.txt is outside the work dir");
     assert!(!outside.exists());
 }
 
@@ -333,113 +254,6 @@ async fn edit_replaces_exact_text_and_shows_the_lines_around_it() {
 }
 
 #[tokio::test]
-async fn edit_matches_loosely_and_says_so() {
-    let fx = Fixture::new().await;
-    fx.put("src/lib.rs", LIB);
-    let edited = fx
-        .edit(
-            "src/lib.rs",
-            &[(
-                "    format!(\"Hello, {name}\")",
-                "    format!(\"Hi, {name}\")",
-                false,
-            )],
-        )
-        .await;
-    assert_eq!(
-        edited,
-        "Edited src/lib.rs: line 2.\nNote: `old_text` matched only after evening out trailing whitespace and quote, dash or space characters; copy text exactly next time\n[lines 1-5]\npub fn greet(name: &str) -> String {\n    format!(\"Hi, {name}\")\n}\n\npub fn twice(x: i32) -> i32 {"
-    );
-}
-
-#[tokio::test]
-async fn edit_refuses_an_old_text_that_matches_several_places() {
-    let fx = Fixture::new().await;
-    fx.put("src/lib.rs", LIB);
-    assert_eq!(
-        fx.edit("src/lib.rs", &[("pub fn", "fn", false)]).await,
-        "Err: `old_text` matches 3 places, starting at lines 1, 5, 9; add the lines around the one to change so it matches once, or set `replace_all` to change every one. `src/lib.rs` was not changed; fix the edit and send it again."
-    );
-    assert_eq!(fx.get("src/lib.rs"), LIB);
-}
-
-#[tokio::test]
-async fn edit_refuses_an_old_text_found_nowhere() {
-    let fx = Fixture::new().await;
-    fx.put("src/lib.rs", LIB);
-    assert_eq!(
-        fx.edit("src/lib.rs", &[("zzz qqq", "x", false)]).await,
-        "Err: `old_text` was not found, not even ignoring trailing whitespace, and nothing in the file is close to it; check the path and the text. `src/lib.rs` was not changed; fix the edit and send it again."
-    );
-}
-
-#[tokio::test]
-async fn edit_names_every_failed_entry_and_changes_nothing() {
-    let fx = Fixture::new().await;
-    fx.put("src/lib.rs", LIB);
-    fx.read("src/lib.rs", None, None).await;
-    let refused = fx
-        .edit(
-            "src/lib.rs",
-            &[
-                ("nope one", "x", false),
-                ("x * 2", "x + x", false),
-                ("nope two", "y", false),
-            ],
-        )
-        .await;
-    assert!(
-        refused.starts_with("Err: 2 of the 3 edits failed:\nedits[0]: ")
-            && refused.contains("\nedits[2]: ")
-            && refused.ends_with(
-                "No edit was applied, so `src/lib.rs` was not changed. Send all 3 edits again, \
-                 with these fixed."
-            ),
-        "{refused}"
-    );
-    assert_eq!(fx.get("src/lib.rs"), LIB);
-}
-
-#[tokio::test]
-async fn edit_applies_entries_in_order_even_where_they_overlap() {
-    let fx = Fixture::new().await;
-    fx.put("a.rs", "fn area(w: u32, h: u32) -> u32 {\n    w * h\n}\n");
-    fx.read("a.rs", None, None).await;
-    fx.edit(
-        "a.rs",
-        &[
-            (
-                "fn area(w: u32, h: u32) -> u32 {\n    w * h",
-                "fn area(w: u64, h: u64) -> u64 {\n    w * h",
-                false,
-            ),
-            ("    w * h", "    w.saturating_mul(h)", false),
-        ],
-    )
-    .await;
-    assert_eq!(
-        fx.get("a.rs"),
-        "fn area(w: u64, h: u64) -> u64 {\n    w.saturating_mul(h)\n}\n"
-    );
-    let refused = fx
-        .edit(
-            "a.rs",
-            &[
-                ("u64", "u32", true),
-                ("-> u64 {", "-> Option<u64> {", false),
-            ],
-        )
-        .await;
-    assert!(
-        refused.starts_with(
-            "Err: edits[1]: `old_text` was in the file, but edits[0], applied before it, \
-             changed that text"
-        ),
-        "{refused}"
-    );
-}
-
-#[tokio::test]
 async fn edit_of_text_found_nowhere_shows_the_closest_text() {
     let fx = Fixture::new().await;
     fx.put(
@@ -463,28 +277,6 @@ async fn edit_of_text_found_nowhere_shows_the_closest_text() {
             && !missed.contains("read it again"),
         "{missed}"
     );
-}
-
-#[tokio::test]
-async fn edit_with_replace_all_changes_every_match() {
-    let fx = Fixture::new().await;
-    fx.put("src/lib.rs", LIB);
-    assert_eq!(
-        fx.edit("src/lib.rs", &[("i32", "i64", true)]).await,
-        "Edited src/lib.rs: 4 replacements, lines 5, 9.\n[lines 2-11]\n    format!(“Hello, {name}”)\n}\n\npub fn twice(x: i64) -> i64 {\n    x * 2\n}\n\npub fn thrice(x: i64) -> i64 {\n    x * 3\n}"
-    );
-    assert_eq!(fx.get("src/lib.rs"), LIB.replace("i32", "i64"));
-}
-
-#[tokio::test]
-async fn edit_keeps_crlf_line_endings() {
-    let fx = Fixture::new().await;
-    fx.put("crlf.txt", "a\r\nb\r\nc\r\n");
-    assert_eq!(
-        fx.edit("crlf.txt", &[("b", "B", false)]).await,
-        "Edited crlf.txt: line 2.\n[lines 1-3]\na\nB\nc"
-    );
-    assert_eq!(fx.get("crlf.txt"), "a\r\nB\r\nc\r\n");
 }
 
 #[tokio::test]
@@ -656,18 +448,15 @@ async fn glob_with_hidden_lists_hidden_files_but_never_ignored_ones() {
 }
 
 #[tokio::test]
-async fn glob_says_when_nothing_matches() {
+async fn glob_refuses_a_bad_glob_as_invalid_args_saying_why() {
     let fx = Fixture::new().await;
     fx.project();
-    assert_eq!(fx.glob("**/*.py", None, false).await, "No files found.");
-}
-
-#[tokio::test]
-async fn glob_refuses_a_bad_glob_saying_why() {
-    let fx = Fixture::new().await;
-    fx.project();
-    let bad = fx.glob("src/[", None, false).await;
-    assert!(bad.starts_with("Err: bad glob: "), "{bad}");
+    let failed = fx
+        .call("glob", json!({"pattern": "src/["}))
+        .await
+        .unwrap_err();
+    assert_eq!(failed.kind, FailKind::InvalidArgs);
+    assert!(failed.message.starts_with("bad glob: "), "{failed}");
 }
 
 #[tokio::test]
@@ -748,12 +537,8 @@ async fn grep_finds_every_matching_line_whatever_the_line_ends() {
     for (index, (text, pattern, ignore_case)) in cases.into_iter().enumerate() {
         let file = format!("{index}.txt");
         fx.put(&file, text);
-        let found = fx
-            .grep(pattern, |args| {
-                args.path = Some(file.clone());
-                args.ignore_case = ignore_case;
-            })
-            .await;
+        let args = json!({"path": file, "ignore_case": ignore_case});
+        let found = fx.grep(pattern, args).await;
         assert!(
             found.starts_with(&format!("{file}:2: ")) && found.lines().count() == 1,
             "{pattern:?} in {text:?}: {found}"
@@ -766,7 +551,7 @@ async fn grep_stops_at_100_kb_however_much_context_is_asked() {
     let fx = Fixture::new().await;
     fx.put("long.txt", &format!("{}\n", "x".repeat(99)).repeat(2000));
     fx.put("short.txt", "x\n");
-    let found = fx.grep("x", |args| args.context = Some(100_000)).await;
+    let found = fx.grep("x", json!({"context": 100_000})).await;
     let (shown, note) = found.rsplit_once('\n').unwrap();
     assert!(shown.len() <= 100 * 1024, "{}", shown.len());
     assert!(shown.starts_with("long.txt:1: x"));
@@ -778,7 +563,7 @@ async fn grep_lists_matching_lines_leaving_out_ignored_and_hidden_files() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
-        fx.grep("fn ", |_| {}).await,
+        fx.grep("fn ", json!({})).await,
         "README.md:1: # fn readme
 docs/guide.md:1: fn guide
 src/deep/x.rs:1: fn deep() {}
@@ -794,7 +579,8 @@ async fn grep_with_hidden_searches_hidden_files_but_never_ignored_ones() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
-        fx.grep("fn (hidden|generated)", |a| a.hidden = true).await,
+        fx.grep("fn (hidden|generated)", json!({"hidden": true}))
+            .await,
         ".hidden/notes.rs:1: fn hidden() {}"
     );
 }
@@ -804,15 +590,10 @@ async fn grep_searches_a_path_or_one_file_and_only_files_matching_a_glob() {
     let fx = Fixture::new().await;
     fx.project();
     let in_src = fx
-        .grep(r"x \* \d", |a| {
-            a.path = Some("src".to_owned());
-            a.glob = Some("*.rs".to_owned());
-        })
+        .grep(r"x \* \d", json!({"path": "src", "glob": "*.rs"}))
         .await;
     assert_eq!(in_src, "src/lib.rs:6:     x * 2\nsrc/lib.rs:10:     x * 3");
-    let one_file = fx
-        .grep("thrice", |a| a.path = Some("src/lib.rs".to_owned()))
-        .await;
+    let one_file = fx.grep("thrice", json!({"path": "src/lib.rs"})).await;
     assert_eq!(one_file, "src/lib.rs:9: pub fn thrice(x: i32) -> i32 {");
 }
 
@@ -821,11 +602,11 @@ async fn grep_matches_literal_text_and_ignores_case_when_asked() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
-        fx.grep("x * 2", |a| a.literal = true).await,
+        fx.grep("x * 2", json!({"literal": true})).await,
         "src/lib.rs:6:     x * 2"
     );
     assert_eq!(
-        fx.grep("FN MAIN", |a| a.ignore_case = true).await,
+        fx.grep("FN MAIN", json!({"ignore_case": true})).await,
         "src/main.rs:1: fn main() {"
     );
 }
@@ -835,7 +616,7 @@ async fn grep_shows_context_lines_and_separates_groups() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
-        fx.grep(r"x \* [23]", |a| a.context = Some(1)).await,
+        fx.grep(r"x \* [23]", json!({"context": 1})).await,
         "src/lib.rs-5- pub fn twice(x: i32) -> i32 {
 src/lib.rs:6:     x * 2
 src/lib.rs-7- }
@@ -852,14 +633,14 @@ async fn grep_names_the_files_it_could_not_search() {
     fx.put("a.txt", "needle\n");
     fs::write(fx.dir.join("b.bin"), b"needle \xff\n").unwrap();
     assert_eq!(
-        fx.grep("needle", |_| {}).await,
+        fx.grep("needle", json!({})).await,
         "a.txt:1: needle\n[not searched, over 16 MB, not UTF-8 or unreadable: b.bin]"
     );
     for n in 0..6 {
         fs::write(fx.dir.join(format!("c{n}.bin")), b"\xff").unwrap();
     }
     assert_eq!(
-        fx.grep("haystack", |_| {}).await,
+        fx.grep("haystack", json!({})).await,
         "No matches.\n[not searched, over 16 MB, not UTF-8 or unreadable: \
          b.bin, c0.bin, c1.bin, c2.bin, c3.bin, and 2 more]"
     );
@@ -870,7 +651,7 @@ async fn grep_with_the_largest_context_shows_the_whole_file() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "one\ntwo\nthree\n");
     assert_eq!(
-        fx.grep("two", |a| a.context = Some(usize::MAX)).await,
+        fx.grep("two", json!({"context": usize::MAX})).await,
         "a.txt-1- one\na.txt:2: two\na.txt-3- three"
     );
 }
@@ -880,7 +661,7 @@ async fn grep_stops_at_100_matches_and_cuts_lines_at_500_characters() {
     let fx = Fixture::new().await;
     let wide = "hit ".repeat(200);
     fx.put("many.txt", &format!("{wide}\n").repeat(150));
-    let found = fx.grep("hit", |_| {}).await;
+    let found = fx.grep("hit", json!({})).await;
     let lines: Vec<&str> = found.lines().collect();
     assert_eq!(lines.len(), 101);
     assert_eq!(lines[0], format!("many.txt:1: {}", &wide[..500]));
@@ -902,7 +683,7 @@ async fn grep_finds_matches_in_every_file_in_path_order_however_many_files() {
         fx.put(&format!("many/{n:03}.txt"), text);
     }
     assert_eq!(
-        fx.grep("hit", |_| {}).await,
+        fx.grep("hit", json!({})).await,
         "many/000.txt:1: hit\nmany/149.txt:1: hit"
     );
 }
@@ -911,10 +692,10 @@ async fn grep_finds_matches_in_every_file_in_path_order_however_many_files() {
 async fn grep_says_when_nothing_matches_and_refuses_a_bad_pattern() {
     let fx = Fixture::new().await;
     fx.project();
-    assert_eq!(fx.grep("nowhere at all", |_| {}).await, "No matches.");
-    let bad = fx.grep("(", |_| {}).await;
+    assert_eq!(fx.grep("nowhere at all", json!({})).await, "No matches.");
+    let bad = fx.grep("(", json!({})).await;
     assert!(bad.starts_with("Err: bad pattern: "), "{bad}");
-    let bad = fx.grep("fn", |a| a.glob = Some("**/{a".to_owned())).await;
+    let bad = fx.grep("fn", json!({"glob": "**/{a"})).await;
     assert!(bad.starts_with("Err: bad glob: "), "{bad}");
 }
 
@@ -1037,8 +818,9 @@ async fn bash_names_the_signal_that_ended_a_command_and_what_likely_sent_it() {
 
 #[test]
 fn bash_names_a_shell_that_is_not_bash() {
-    let bash = description(Some(&SandboxPath::new("/bin/bash").unwrap()));
-    let sh = description(Some(&SandboxPath::new("/bin/sh").unwrap()));
+    let description =
+        |shell: &str| super::bash::tool(Some(&SandboxPath::new(shell).unwrap())).description;
+    let (bash, sh) = (description("/bin/bash"), description("/bin/sh"));
     assert!(!bash.contains("not bash"), "{bash}");
     assert!(
         sh.contains("The shell is `/bin/sh`, not bash: write POSIX sh"),

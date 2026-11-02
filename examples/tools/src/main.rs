@@ -9,7 +9,6 @@
 //! cargo run -p example-tools
 //! ```
 
-mod failure;
 mod pwd;
 mod time;
 mod weather;
