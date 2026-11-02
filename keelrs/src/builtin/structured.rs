@@ -1,11 +1,10 @@
 //! `finish_structured`: the built-in tool a dispatch that asks for a structured
 //! result gets, and the messages the driver adds around it.
 
-use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -40,34 +39,21 @@ struct Wrapped<T> {
     result: T,
 }
 
-/// The JSON the model sent, once it deserializes as a `T`. It is kept as sent, so
-/// reading it back as `T` gives what this check saw, and `T` needs no `Serialize`.
-struct Checked<T>(Value, PhantomData<fn() -> T>);
+// The JSON the model sent, once it deserializes as a `T`, with `T`'s schema. It is kept
+// as sent, so reading it back as `T` gives what this check saw, and `T` needs no `Serialize`.
+// A plain comment: the derive would put a doc comment in `T`'s schema.
+#[derive(JsonSchema)]
+#[schemars(transparent)]
+struct Checked<T>(
+    #[schemars(with = "T")] Value,
+    #[schemars(skip)] PhantomData<fn() -> T>,
+);
 
 impl<'de, T: DeserializeOwned> Deserialize<'de> for Checked<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = Value::deserialize(deserializer)?;
         T::deserialize(&value).map_err(D::Error::custom)?;
         Ok(Self(value, PhantomData))
-    }
-}
-
-/// `T`'s schema, unchanged.
-impl<T: JsonSchema> JsonSchema for Checked<T> {
-    fn inline_schema() -> bool {
-        T::inline_schema()
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        T::schema_name()
-    }
-
-    fn schema_id() -> Cow<'static, str> {
-        T::schema_id()
-    }
-
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        T::json_schema(generator)
     }
 }
 
