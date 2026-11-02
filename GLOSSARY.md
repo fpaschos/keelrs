@@ -35,6 +35,10 @@ _Avoid_: Ask, send, prompt
 The claim ticket for one dispatched message, used to read its reply later.
 _Avoid_: Admission, ticket
 
+**Render**:
+One run of the agent function, before a turn's model call; what it declares holds for that turn only.
+_Avoid_: Config run, call, iteration
+
 **Turn**:
 One model call within a dispatch, with the agent function run before it; a dispatch takes one turn, plus one more for
 each round of tool calls.
@@ -58,16 +62,20 @@ A tool that acts only through the sandbox its turn declares.
 _Avoid_: Harness tool, remote tool
 
 **Built-in tool**:
-A sandboxed tool that keelrs ships (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `delete`, `move`). A turn that declares a sandbox gets all of them unless it narrows them with `only`, and their names stay reserved even when a tool is left out.
+A sandboxed tool that keelrs ships (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `delete`, `move`). Every turn gets all of them unless it narrows them with `only`, and their names stay reserved even when a tool is left out.
 _Avoid_: Default tool, core tool, harness tool
 
 **Sandbox**:
-Where sandboxed tools read files and run commands: this machine, or a container, microVM or remote host. The application owns it and may share one between many agents; the agent itself always runs outside it.
+Where sandboxed tools read files and run commands: this machine, or a container, microVM or remote host. Every agent declares exactly one on every turn. The application owns it and may share one between many agents; the agent itself always runs outside it.
 _Avoid_: Workspace, environment, box
 
 **Sandbox key**:
 The name the application gives a sandbox so it can be found again, such as one key for every agent working on one task.
-_Avoid_: Sandbox id, run id
+_Avoid_: Run id
+
+**Sandbox id**:
+The identity keelrs gives a sandbox, unique within the running process and shared by its clones and narrowed work dirs; it tells two sandboxes apart, and is lost on restart.
+_Avoid_: Sandbox key
 
 **Work dir**:
 The directory inside a sandbox that one agent works in: relative paths start there and file tools cannot leave it.
