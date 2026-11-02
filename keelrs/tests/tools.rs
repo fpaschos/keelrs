@@ -6,12 +6,12 @@ mod common;
 
 use common::temp_sandbox;
 use keelrs::sandbox::Sandbox;
-use keelrs::{Agent, AgentContext, Error, Outcome, Runtime, Tool, ToolCall};
+use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime, Tool, ToolCall};
 
 /// Asks a fresh instance of `agent` one message and returns its failure reason.
 async fn failure_reason(agent: Agent) -> String {
-    let runtime = Runtime::start([agent.clone()]);
-    let instance = runtime.init(&agent).id("test").unwrap();
+    let runtime = Runtime::start([&agent]).unwrap();
+    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
     match instance.ask("Say hello").await {
         Err(Error::Run {
             outcome: Outcome::Failed { reason },
@@ -34,7 +34,7 @@ async fn two_tools_with_one_name_fail() {
     let sb = temp_sandbox().await;
     let agent = Agent::new("duplicate-tools", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_tool(clock());
         cx.use_tool(clock());
         "Tell the time.".into()
@@ -51,7 +51,7 @@ async fn a_tool_whose_arguments_are_not_an_object_fails() {
     let sb = temp_sandbox().await;
     let agent = Agent::new("string-args", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone()).only([]);
+        cx.use_sandbox(&sb).only([]);
         cx.use_tool(Tool::host(
             "echo",
             "Echo the text.",
@@ -81,8 +81,8 @@ async fn use_sandbox_twice_fails() {
     let sb = temp_sandbox().await;
     let agent = Agent::new("two-sandboxes", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(sb.clone());
-        cx.use_sandbox(sb.clone());
+        cx.use_sandbox(&sb);
+        cx.use_sandbox(&sb);
         "List files.".into()
     });
     let reason = failure_reason(agent).await;

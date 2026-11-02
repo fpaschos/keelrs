@@ -1,7 +1,9 @@
 //! Structured results: an agent ends by calling a report tool, whose arguments the flow takes.
 
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use keelrs::{AgentInstance, Tool, ToolCall};
 use schemars::JsonSchema;
@@ -40,22 +42,26 @@ where
             self.name,
             description,
             move |call: ToolCall<T>| async move {
-                *slot.lock().unwrap() = Some(call.data);
+                *slot.lock() = Some(call.data);
                 Ok::<_, Infallible>("Recorded.")
             },
         )
     }
 
     /// Asks `instance` `message` and takes its report, asking once more if it ended without one.
-    pub async fn ask(&self, instance: &AgentInstance, message: String) -> anyhow::Result<T> {
-        self.slot.lock().unwrap().take();
+    pub async fn ask(
+        &self,
+        instance: &AgentInstance,
+        message: impl Into<String>,
+    ) -> anyhow::Result<T> {
+        self.slot.lock().take();
         instance.ask(message).await?;
-        if let Some(report) = self.slot.lock().unwrap().take() {
+        if let Some(report) = self.slot.lock().take() {
             return Ok(report);
         }
         let nudge = format!("You ended without calling `{}`. Call it now.", self.name);
         instance.ask(nudge).await?;
-        let report = self.slot.lock().unwrap().take();
+        let report = self.slot.lock().take();
         report.ok_or_else(|| {
             anyhow::anyhow!("`{}` ended without calling `{}`", instance.id(), self.name)
         })

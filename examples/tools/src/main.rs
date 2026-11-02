@@ -14,7 +14,7 @@ mod time;
 mod weather;
 
 use keelrs::sandbox;
-use keelrs::{Agent, AgentContext, Runtime};
+use keelrs::{Agent, AgentContext, InstanceId, Runtime};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,22 +24,22 @@ async fn main() -> anyhow::Result<()> {
         .open()
         .await?
         .work_dir("src");
-    let http = reqwest::Client::new();
+    // Built once, outside the agent: it keeps its HTTP client across turns.
+    let weather = weather::get_weather(reqwest::Client::new());
 
     let assistant = Agent::new("assistant", move |cx: &mut AgentContext| {
         cx.use_model("anthropic/claude-sonnet-5-5");
         // None of keelrs's built-in tools: `pwd` is this example's one sandboxed tool.
-        cx.use_sandbox(sandbox.clone()).only([]);
+        cx.use_sandbox(&sandbox).only([]);
         cx.use_tool(time::current_time());
-        cx.use_tool(weather::get_weather(http.clone()));
+        cx.use_tool(&weather);
         cx.use_tool(pwd::pwd());
         "You answer questions with your tools; never guess a fact a tool can give you.".into()
     });
-    let runtime = Runtime::start([assistant.clone()]);
+    let runtime = Runtime::start([&assistant])?;
 
     let reply = runtime
-        .init(&assistant)
-        .id("demo")?
+        .instance(&assistant, InstanceId::new("demo"))?
         .ask("What time is it, what's the weather in Athens, and which directory do you work in?")
         .await?;
     println!("{}", reply.text());

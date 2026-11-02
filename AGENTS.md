@@ -36,6 +36,10 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 - Two workspaces: the root and `examples/` (own `Cargo.lock`). Run each command for both, the second with `--manifest-path examples/Cargo.toml`.
 - If a change has no `cargo` command (e.g. workspace lints or `[workspace.package]`), ask the user before editing the manifest by hand.
 
+## Code
+
+Blocking locks (`Mutex`, `RwLock`, `Condvar`) come from `parking_lot`, in both workspaces; `.clippy.toml`'s `disallowed-types` enforces it. A lock held across an `.await` is `tokio::sync`'s.
+
 ## Checks
 
 Run before you call a change done, once per workspace (the second time add `--manifest-path examples/Cargo.toml`); all must pass:

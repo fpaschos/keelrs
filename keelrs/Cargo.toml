@@ -17,6 +17,7 @@ futures.workspace = true
 ignore.workspace = true
 include_dir.workspace = true
 libc.workspace = true
+parking_lot.workspace = true
 process-wrap = { workspace = true, features = ["tokio1", "process-session"] }
 regex.workspace = true
 rig-agent.workspace = true

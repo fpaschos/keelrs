@@ -3,7 +3,6 @@
 //! the push and the pull request are the flow's, so no token enters the sandbox.
 
 use std::io;
-use std::sync::LazyLock;
 
 use keelrs::{Tool, ToolCall};
 use schemars::JsonSchema;
@@ -11,7 +10,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 /// Lists the issues a planner picks from.
-pub static ISSUES: LazyLock<Tool> = LazyLock::new(|| {
+pub fn issues() -> Tool {
     Tool::host(
         "issues",
         "List the open issues labelled `agent-ready`, with their number, title, body and labels, \
@@ -30,7 +29,7 @@ pub static ISSUES: LazyLock<Tool> = LazyLock::new(|| {
             .await
         },
     )
-});
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct IssueArgs {
@@ -39,7 +38,7 @@ struct IssueArgs {
 }
 
 /// Reads one issue with its comments.
-pub static ISSUE: LazyLock<Tool> = LazyLock::new(|| {
+pub fn issue() -> Tool {
     Tool::host(
         "issue",
         "Read one GitHub issue with its comments, as JSON.",
@@ -55,7 +54,7 @@ pub static ISSUE: LazyLock<Tool> = LazyLock::new(|| {
             .await
         },
     )
-});
+}
 
 /// Fetches `branch` from `bundle` into this checkout, pushes it to `origin` and opens a pull
 /// request into `main`; returns its URL.

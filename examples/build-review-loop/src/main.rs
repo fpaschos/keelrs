@@ -24,9 +24,9 @@ use std::sync::LazyLock;
 
 use anyhow::bail;
 use keelrs::sandbox::{self, Sandbox};
-use keelrs::{Agent, AgentContext, Runtime};
+use keelrs::{Agent, AgentContext, InstanceId, Runtime};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::report::Report;
 
@@ -37,11 +37,12 @@ const MAX_ROUNDS: usize = 3;
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Plan {
     /// The issue to implement next; null when no issue is ready.
-    issue: Option<Picked>,
+    issue: Option<Issue>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Picked {
+/// The issue an implementer and a reviewer work on: their instance data.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct Issue {
     number: u64,
     title: String,
 }
@@ -75,39 +76,42 @@ static REVIEW: LazyLock<Report<Review>> = LazyLock::new(|| Report::new("report_r
 
 /// Picks the next issue, looking only.
 fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone())
+    cx.use_sandbox(sandbox)
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_tool(host::ISSUES.clone());
-    cx.use_tool(host::ISSUE.clone());
+    cx.use_tools([host::issues(), host::issue()]);
     cx.use_tool(PLAN.tool("Report the issue you picked, or none. Call once, last."));
     include_str!("../prompts/plan.md").into()
 }
 
-/// Changes the working tree for one issue.
-fn implementer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone());
+/// Changes the working tree for its issue.
+fn implementer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
+    let Issue { number, title } = cx.data();
+    let task = format!("You implement #{number}: {title}.");
+    cx.use_sandbox(sandbox);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_tool(host::ISSUE.clone());
+    cx.use_tool(host::issue());
     cx.use_tool(IMPLEMENTATION.tool("Report the outcome. Call once, as the very last step."));
-    include_str!("../prompts/implement.md").into()
+    format!("{}\n\n{task}", include_str!("../prompts/implement.md"))
 }
 
-/// Reviews the change on another model, looking only.
-fn reviewer(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
-    cx.use_sandbox(sandbox.clone())
+/// Reviews the change to its issue on another model, looking only.
+fn reviewer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
+    let Issue { number, title } = cx.data();
+    let task = format!("You review #{number}: {title}.");
+    cx.use_sandbox(sandbox)
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-opus-5-5");
-    cx.use_tool(host::ISSUE.clone());
+    cx.use_tool(host::issue());
     cx.use_tool(REVIEW.tool("Report your verdict. Call once, last."));
-    include_str!("../prompts/review.md").into()
+    format!("{}\n\n{task}", include_str!("../prompts/review.md"))
 }
 
 /// An agent function over its own clone of `sandbox`.
-fn agent(
+fn agent<D: 'static>(
     sandbox: &Sandbox,
-    declare: fn(&mut AgentContext, &Sandbox) -> String,
-) -> impl Fn(&mut AgentContext) -> String + Send + Sync + 'static {
+    declare: fn(&mut AgentContext<D>, &Sandbox) -> String,
+) -> impl Fn(&mut AgentContext<D>) -> String + Send + Sync + 'static {
     let sandbox = sandbox.clone();
     move |cx| declare(cx, &sandbox)
 }
@@ -132,43 +136,48 @@ async fn main() -> anyhow::Result<()> {
     let planner = Agent::new("planner", agent(&work, planner));
     let implementer = Agent::new("implementer", agent(&work, implementer)).max_turns(300);
     let reviewer = Agent::new("reviewer", agent(&work, reviewer));
-    let runtime = Runtime::start([planner.clone(), implementer.clone(), reviewer.clone()]);
+    let runtime = Runtime::start((&planner, &implementer, &reviewer))?;
 
     // 1. Plan.
-    let planned = runtime.init(&planner).id("plan")?;
-    let Some(Picked { number, title }) = PLAN
-        .ask(&planned, "Pick the next issue.".into())
-        .await?
-        .issue
-    else {
+    let planned = runtime.instance(&planner, InstanceId::new("plan"))?;
+    let Some(issue) = PLAN.ask(&planned, "Pick the next issue.").await?.issue else {
         println!("Nothing to do: no agent-ready issue is unblocked.");
         return Ok(());
     };
+    let Issue { number, title } = &issue;
     println!("Picked #{number}: {title}");
     let branch = format!("keelrs/issue-{number}");
     git::run(&work, ["git", "switch", "--create", branch.as_str()]).await?;
 
     // 2. Implement and review, sending findings back to the same implementer conversation.
-    let implementing = runtime
-        .init(&implementer)
-        .id(format!("implement-{number}"))?;
-    let reviewing = runtime.init(&reviewer).id(format!("review-{number}"))?;
-    let mut message = format!("Implement issue #{number}: {title}");
+    // Each conversation is about this issue: its instance data.
+    let implementing = runtime.instance_with(
+        &implementer,
+        InstanceId::new(format!("implement-{number}")),
+        issue.clone(),
+    )?;
+    let reviewing = runtime.instance_with(
+        &reviewer,
+        InstanceId::new(format!("review-{number}")),
+        issue.clone(),
+    )?;
+    let mut message = "Implement the issue.".to_owned();
     for round in 1..=MAX_ROUNDS {
         println!("Round {round}: implementing");
         let implementation = IMPLEMENTATION.ask(&implementing, message).await?;
         println!("{}", implementation.summary);
 
         println!("Round {round}: reviewing");
-        let ask = format!("Review issue #{number}: the uncommitted changes.");
-        let review = REVIEW.ask(&reviewing, ask).await?;
+        let review = REVIEW
+            .ask(&reviewing, "Review the uncommitted changes.")
+            .await?;
         if review.verdict == Verdict::Approve {
             println!("Approved.");
             // 3. Commit, harvest and open the pull request, on the host.
             git::commit_all(&work, &format!("#{number}: {title}")).await?;
             let bundle = git::harvest(&sandbox, "main", &branch).await?;
             let body = format!("Closes #{number}.\n\n{}", implementation.summary);
-            let url = host::open_pr(bundle, &branch, &title, &body).await?;
+            let url = host::open_pr(bundle, &branch, title, &body).await?;
             println!("Opened {url}");
             sandbox.close().await?;
             return Ok(());

@@ -11,6 +11,7 @@ anyhow.workspace = true
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
+parking_lot.workspace = true
 
 [lints]
 workspace = true
