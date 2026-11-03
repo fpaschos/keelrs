@@ -61,11 +61,11 @@ pub async fn open_pr(
     title: &str,
     body: &str,
 ) -> anyhow::Result<String> {
-    let file = std::env::temp_dir().join("keelrs-build-review-loop-harvest.bundle");
+    let file = crate::git::temp_bundle("harvest");
     tokio::fs::write(&file, bundle).await?;
     let refspec = format!("{branch}:{branch}");
-    host.run(["git", "fetch", &file.to_string_lossy(), &refspec])
-        .await?;
+    host.run(["git", "fetch", &file, &refspec]).await?;
+    tokio::fs::remove_file(&file).await?;
     host.run(["git", "push", "origin", branch]).await?;
     let pr = [
         "gh", "pr", "create", "--head", branch, "--base", "main", "--title", title, "--body", body,

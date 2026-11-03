@@ -16,10 +16,11 @@ const MAX_BUNDLE: u64 = 64 * 1024 * 1024;
 /// Bundles `branch` of the `host` checkout into `sandbox` and clones it at [`WORK`], committing
 /// as the loop's identity; `origin` in the clone is the bundle, so `origin/<branch>` is the base.
 pub async fn seed(host: &Sandbox, sandbox: &Sandbox, branch: &str) -> anyhow::Result<()> {
-    let out = std::env::temp_dir().join("keelrs-build-review-loop-seed.bundle");
-    let out = out.to_string_lossy();
+    let out = temp_bundle("seed");
     host.run(["git", "bundle", "create", &out, branch]).await?;
-    sandbox.write(SEED, tokio::fs::read(&*out).await?).await?;
+    let bundle = tokio::fs::read(&out).await?;
+    tokio::fs::remove_file(&out).await?;
+    sandbox.write(SEED, bundle).await?;
     sandbox
         .run(["git", "clone", "--branch", branch, SEED, WORK])
         .await?;
@@ -34,6 +35,18 @@ pub async fn seed(host: &Sandbox, sandbox: &Sandbox, branch: &str) -> anyhow::Re
     ])
     .await?;
     Ok(())
+}
+
+/// A host temp file for a `name` bundle, its own to this run so two runs don't share it.
+pub fn temp_bundle(name: &str) -> String {
+    let file = format!(
+        "keelrs-build-review-loop-{name}-{}.bundle",
+        std::process::id()
+    );
+    std::env::temp_dir()
+        .join(file)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Commits everything in `work` with `message`, unless nothing changed.
