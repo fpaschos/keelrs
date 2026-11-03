@@ -25,6 +25,7 @@ use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 
 mod builtin;
 mod call;
+mod locks;
 mod skills;
 mod structured;
 mod turns;
@@ -90,6 +91,25 @@ fn results(settled: &Settled) -> Vec<(String, bool)> {
         }
     }
     results
+}
+
+/// A local sandbox on a fresh temp folder, which is removed on drop.
+async fn sandboxed() -> (Folder, Sandbox) {
+    let folder = Folder::new();
+    let sb = crate::sandbox::local()
+        .root(&folder.0)
+        .open()
+        .await
+        .unwrap();
+    (folder, sb)
+}
+
+/// An agent on the mock model whose built-ins act through `sb`.
+fn agent_in(sb: &Sandbox) -> Agent {
+    let sb = sb.clone();
+    sandboxed_agent(move |cx| {
+        cx.use_sandbox(&sb);
+    })
 }
 
 /// An agent on the mock model, in an unused sandbox with no built-ins.
