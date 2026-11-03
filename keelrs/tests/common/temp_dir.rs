@@ -1,5 +1,7 @@
 //! A temp dir with a local sandbox on it, for the sandbox tests.
 
+#![allow(clippy::disallowed_methods)] // the dir is made and removed on the host
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

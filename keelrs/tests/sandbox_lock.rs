@@ -1,14 +1,16 @@
 //! Per-file locks through the public API: `Sandbox::lock` and `lock_all`
-//! on a local sandbox. Each test opens its own sandbox, so its own locks.
-
-mod common;
+//! on a local sandbox, each test on its own temp dir.
 
 use std::future::Future;
 use std::time::Duration;
 
-use common::temp_sandbox;
 use keelrs::Error;
 use keelrs::sandbox::SandboxError;
+
+#[path = "common/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::{TempDir, open};
 
 /// `work`, or a panic naming `what` if it takes over a second.
 async fn within<T>(what: &str, work: impl Future<Output = T>) -> T {
@@ -19,7 +21,8 @@ async fn within<T>(what: &str, work: impl Future<Output = T>) -> T {
 
 #[tokio::test]
 async fn a_lock_out_of_the_work_dir_is_refused_and_holds_nothing() {
-    let sb = temp_sandbox().await;
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
 
     let refused = sb.lock("../outside").await;
     assert!(
@@ -39,7 +42,8 @@ async fn a_lock_out_of_the_work_dir_is_refused_and_holds_nothing() {
 
 #[tokio::test]
 async fn a_locked_file_waits_for_its_holder_on_every_clone() {
-    let sb = temp_sandbox().await;
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
     let held = sb.lock("sub/f").await.unwrap();
 
     let sub = sb.work_dir("sub");
@@ -55,7 +59,8 @@ async fn a_locked_file_waits_for_its_holder_on_every_clone() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lock_all_in_opposite_orders_does_not_deadlock() {
-    let sb = temp_sandbox().await;
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
     for _ in 0..50 {
         let (one, two) = (sb.clone(), sb.clone());
         let one = tokio::spawn(async move {

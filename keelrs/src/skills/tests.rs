@@ -200,6 +200,11 @@ impl Folder {
         self
     }
 
+    /// What the folder holds at `relative`; `None` when nothing is there.
+    pub(crate) fn read(&self, relative: &str) -> Option<String> {
+        fs::read_to_string(self.0.join(relative)).ok()
+    }
+
     /// The one skill discovered in this folder.
     async fn skill(&self) -> Skill {
         let discovered = discover(Discover::new().root(&self.0)).await;
