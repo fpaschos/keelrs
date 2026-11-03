@@ -84,10 +84,9 @@ impl AgentInstance {
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let receipt = self
+        let Receipt { submission_id } = self
             .submit(message.into(), Some(Structured::of::<T>()))
             .await?;
-        let submission_id = receipt.submission_id;
         let failed = |reason: String| Error::Run {
             outcome: Outcome::Failed { reason },
             submission_id,

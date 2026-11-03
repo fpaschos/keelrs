@@ -1,5 +1,4 @@
-//! `finish_structured`: the built-in tool a dispatch that asks for a structured
-//! result gets, and the messages the driver adds around it.
+//! The per-dispatch `finish_structured` tool and its driver messages.
 
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
@@ -20,17 +19,14 @@ pub(crate) const FINISH_STRUCTURED: &str = "finish_structured";
 /// Re-asks allowed after ending with text.
 pub(crate) const MAX_STRUCTURED_REASKS: usize = 3;
 
-/// What follows a message that asks for a structured result.
 pub(crate) const FOOTER: &str = "When the task is complete, call `finish_structured` with your \
     answer as its arguments. The arguments are checked against its schema; if they don't match \
     you get an error and can try again. Don't answer in plain text: only a successful \
     `finish_structured` call counts.";
 
-/// The message a re-ask sends.
 pub(crate) const REASK: &str =
     "You ended without calling `finish_structured`. Call it now with your answer.";
 
-/// What `finish_structured` tells the model, before `T`'s doc comment.
 const FINISH_DESCRIPTION: &str = "Call this once, when the task is complete, with your final \
     answer as the arguments. They are validated against the schema; the first successful call wins.";
 
@@ -116,9 +112,7 @@ fn result_schema<T: JsonSchema>() -> Value {
                     .join("\n\n");
             }
             if schema.contains_key("properties") {
-                schema
-                    .entry("additionalProperties")
-                    .or_insert(Value::Bool(false));
+                schema.entry("additionalProperties").or_insert(false.into());
             }
         }));
     settings.inline_subschemas = true;
