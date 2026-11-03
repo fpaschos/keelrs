@@ -46,6 +46,7 @@ use std::time::{Duration, SystemTime};
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::{FutureExt as _, Stream, StreamExt as _};
+use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
@@ -119,7 +120,7 @@ impl ContentHash {
     }
 }
 
-/// What a sandbox could not do.
+/// What a sandbox operation failed with.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SandboxError {
@@ -155,6 +156,28 @@ pub enum SandboxError {
         /// What went wrong, as plain text.
         message: String,
     },
+    /// A command ran but did not exit 0: a non-zero code, a signal, its
+    /// timeout or a kill.
+    #[error("`{command}` ended with {}: {}", ran.exit, tail(&ran.stderr))]
+    CommandFailed {
+        /// What ran: its argv or its shell line.
+        command: Command,
+        /// What it printed and how it ended.
+        ran: Ran,
+    },
+}
+
+/// How many of stderr's last lines a [`SandboxError::CommandFailed`] message keeps.
+const TAIL_LINES: usize = 5;
+
+/// The last [`TAIL_LINES`] lines of `stderr`, trimmed, so a message stays short.
+fn tail(stderr: &str) -> &str {
+    let stderr = stderr.trim_end();
+    let start = stderr
+        .rmatch_indices('\n')
+        .nth(TAIL_LINES - 1)
+        .map_or(0, |(at, _)| at + 1);
+    stderr[start..].trim_start()
 }
 
 /// A sandbox's identity, unique within this process: what tells two
@@ -507,6 +530,37 @@ impl Sandbox {
         self.race("exec", self.backend.exec(request)).await
     }
 
+    /// Runs `command` to its end in the work dir (as [`exec`](Self::exec)
+    /// does) and returns its stdout with every trailing `\n` and `\r`
+    /// removed. A command that does not exit 0 (a non-zero code, a signal,
+    /// its timeout or a kill) fails with [`SandboxError::CommandFailed`],
+    /// which carries what it printed.
+    ///
+    /// Output is text: bytes that are not UTF-8 are replaced, line by line,
+    /// by the backend. For binary output, have the command write a file and
+    /// [`read`](Self::read) it.
+    ///
+    /// ```no_run
+    /// # async fn f(work: keelrs::sandbox::Sandbox) -> keelrs::Result<()> {
+    /// use keelrs::sandbox::ExecRequest;
+    ///
+    /// work.run(["git", "add", "--all"]).await?;
+    /// work.run(ExecRequest::shell("set -e\ncargo fmt --check")).await?;
+    /// work.run(ExecRequest::argv(["python3", "-"]).stdin("print(1)")).await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn run(&self, command: impl Into<ExecRequest>) -> Result<String> {
+        let request = command.into();
+        let command = request.command.clone();
+        let ran = self.exec(request).await?.run().await?;
+        if ran.exit != Exit::Code(0) {
+            return Err(SandboxError::CommandFailed { command, ran }.into());
+        }
+        let mut stdout = ran.stdout;
+        stdout.truncate(stdout.trim_end_matches(['\n', '\r']).len());
+        Ok(stdout)
+    }
+
     /// Removes the sandbox through its backend; afterwards every clone's
     /// operations fail with [`SandboxError::Died`].
     pub async fn close(self) -> Result<()> {
@@ -563,7 +617,7 @@ impl fmt::Debug for Sandbox {
 }
 
 /// What a command runs: a shell line or a program with its arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
     /// A line for the sandbox's [shell](Sandbox::shell), run with `-c`.
     Shell(String),
@@ -571,9 +625,19 @@ pub enum Command {
     Argv(Vec<String>),
 }
 
+impl fmt::Display for Command {
+    /// The shell line, or the arguments joined by spaces.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Shell(line) => f.write_str(line),
+            Self::Argv(argv) => f.write_str(&argv.join(" ")),
+        }
+    }
+}
+
 /// A command to run in a sandbox, built with [`shell`](Self::shell) or
 /// [`argv`](Self::argv).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ExecRequest {
     /// What runs.
@@ -661,6 +725,18 @@ impl ExecRequest {
     }
 }
 
+impl<S: Into<String>, const N: usize> From<[S; N]> for ExecRequest {
+    fn from(argv: [S; N]) -> Self {
+        Self::argv(argv)
+    }
+}
+
+impl<S: Into<String>> From<Vec<S>> for ExecRequest {
+    fn from(argv: Vec<S>) -> Self {
+        Self::argv(argv)
+    }
+}
+
 /// A piece of a running command's output, as it comes: usually whole lines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Chunk {
@@ -671,7 +747,7 @@ pub enum Chunk {
 }
 
 /// How a command ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Exit {
     /// It exited with this code.
     Code(i32),
@@ -683,8 +759,20 @@ pub enum Exit {
     Killed,
 }
 
+impl fmt::Display for Exit {
+    /// `exit code 1`, `signal 9`, `its timeout` or `a kill`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Code(code) => write!(f, "exit code {code}"),
+            Self::Signaled(signal) => write!(f, "signal {signal}"),
+            Self::TimedOut => f.write_str("its timeout"),
+            Self::Killed => f.write_str("a kill"),
+        }
+    }
+}
+
 /// What a command printed and how it ended, from [`Execution::run`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ran {
     /// The last 64 MiB of stdout (all output, with `merge_stderr`).
     pub stdout: String,

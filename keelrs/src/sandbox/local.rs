@@ -64,6 +64,7 @@ pub fn local() -> LocalBuilder {
 pub struct LocalBuilder {
     root: Option<PathBuf>,
     env: Vec<(String, Option<String>)>,
+    inherit_env: bool,
 }
 
 impl LocalBuilder {
@@ -75,9 +76,27 @@ impl LocalBuilder {
         self
     }
 
-    /// Sets `name` to `value` for every command, over the allowlisted host
-    /// variables (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
-    /// `LC_*`, `TZ`, `TERM`, `TMPDIR`) and the default
+    /// Gives every command this process's whole environment instead of the
+    /// allowlist: for the host, where trusted code uses this machine's
+    /// secrets (`gh`'s token, an SSH agent). [`env`](Self::env) and
+    /// [`env_remove`](Self::env_remove) still apply on top. Never declare
+    /// such a sandbox to an agent whose `bash` must not see them.
+    ///
+    /// ```no_run
+    /// # async fn f() -> keelrs::Result<()> {
+    /// let host = keelrs::sandbox::local().inherit_env().open().await?; // the current dir
+    /// # Ok(()) }
+    /// ```
+    #[must_use]
+    pub fn inherit_env(mut self) -> Self {
+        self.inherit_env = true;
+        self
+    }
+
+    /// Sets `name` to `value` for every command, over the host variables
+    /// (the allowlist `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+    /// `LC_*`, `TZ`, `TERM`, `TMPDIR`, or all of them with
+    /// [`inherit_env`](Self::inherit_env)) and the default
     /// `GIT_TERMINAL_PROMPT=0`.
     #[must_use]
     pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -112,7 +131,11 @@ impl LocalBuilder {
         let root = sandbox_path("open", &root)?;
         let shell = sandbox_path("open", &shell)?;
         let mut env: Vec<(String, String)> = std::env::vars()
-            .filter(|(name, _)| ENV_ALLOWLIST.contains(&name.as_str()) || name.starts_with("LC_"))
+            .filter(|(name, _)| {
+                self.inherit_env
+                    || ENV_ALLOWLIST.contains(&name.as_str())
+                    || name.starts_with("LC_")
+            })
             .collect();
         env.push(("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()));
         apply(&mut env, self.env);
