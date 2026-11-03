@@ -12,7 +12,7 @@ use crate::Result;
 
 /// The per-file locks of one sandbox, shared by every clone and narrowed
 /// work dir. Holds only the files locked or waited on right now.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct FileLocks(parking_lot::Mutex<HashMap<SandboxPath, Arc<Mutex<()>>>>);
 
 /// Files of one sandbox held against the built-in file tools and other
@@ -23,18 +23,15 @@ pub(crate) struct FileLocks(parking_lot::Mutex<HashMap<SandboxPath, Arc<Mutex<()
 /// write started under it is still running, as `Local`'s `spawn_blocking`
 /// work does; that write can then overlap the next holder's. The stale
 /// check in `edit` catches it afterwards.
+#[derive(Debug)]
 #[must_use = "the lock is released when this is dropped"]
-pub struct FileLock(Vec<Entry>);
-
-impl std::fmt::Debug for FileLock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list()
-            .entries(self.0.iter().map(|entry| &entry.path))
-            .finish()
-    }
+pub struct FileLock {
+    /// Released, each in turn, when dropped.
+    _held: Vec<Entry>,
 }
 
 /// One held file of a [`FileLock`].
+#[derive(Debug)]
 struct Entry {
     guard: Option<OwnedMutexGuard<()>>,
     lock: Arc<Mutex<()>>,
@@ -103,6 +100,6 @@ impl Sandbox {
             entry.guard = Some(lock.lock_owned().await);
             held.push(entry);
         }
-        Ok(FileLock(held))
+        Ok(FileLock { _held: held })
     }
 }
