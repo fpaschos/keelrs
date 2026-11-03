@@ -6,8 +6,9 @@
 //!
 //! The sandbox is `keelrs::sandbox::local`, rooted at a scratch directory standing in for a
 //! remote one: [`git::seed`], [`git::harvest`] and keelrs's built-in tools reach it only
-//! through `Sandbox`, so they work on any backend. GitHub stays on the host: agents read issues
-//! through the `issues` and `issue` host tools, and the flow pushes.
+//! through `Sandbox`, so they work on any backend. GitHub stays on the host, opened as a trusted
+//! `Sandbox` with this machine's environment (`inherit_env`): agents read issues through the
+//! `issues` and `issue` host tools, and the flow pushes.
 //!
 //! Needs `ANTHROPIC_API_KEY`, and `gh` logged in. Run from the repository root with
 //!
@@ -67,42 +68,43 @@ enum Verdict {
 }
 
 /// Picks the next issue, looking only.
-fn planner(cx: &mut AgentContext, sandbox: &Sandbox) -> String {
+fn planner(cx: &mut AgentContext, sandbox: &Sandbox, host: &Sandbox) -> String {
     cx.use_sandbox(sandbox)
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_tools([host::issues(), host::issue()]);
+    cx.use_tools([host::issues(host), host::issue(host)]);
     include_str!("../prompts/plan.md").into()
 }
 
 /// Changes the working tree for its issue.
-fn implementer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
+fn implementer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox, host: &Sandbox) -> String {
     let Issue { number, title } = cx.data();
     let task = format!("You implement #{number}: {title}.");
     cx.use_sandbox(sandbox);
     cx.use_model("anthropic/claude-sonnet-5-5");
-    cx.use_tool(host::issue());
+    cx.use_tool(host::issue(host));
     format!("{}\n\n{task}", include_str!("../prompts/implement.md"))
 }
 
 /// Reviews the change to its issue on another model, looking only.
-fn reviewer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox) -> String {
+fn reviewer(cx: &mut AgentContext<Issue>, sandbox: &Sandbox, host: &Sandbox) -> String {
     let Issue { number, title } = cx.data();
     let task = format!("You review #{number}: {title}.");
     cx.use_sandbox(sandbox)
         .only(["read", "grep", "glob", "bash"]);
     cx.use_model("anthropic/claude-opus-5-5");
-    cx.use_tool(host::issue());
+    cx.use_tool(host::issue(host));
     format!("{}\n\n{task}", include_str!("../prompts/review.md"))
 }
 
-/// An agent function over its own clone of `sandbox`.
+/// An agent function over its own clones of `sandbox` and `host`.
 fn agent<D: 'static>(
     sandbox: &Sandbox,
-    declare: fn(&mut AgentContext<D>, &Sandbox) -> String,
+    host: &Sandbox,
+    declare: fn(&mut AgentContext<D>, &Sandbox, &Sandbox) -> String,
 ) -> impl Fn(&mut AgentContext<D>) -> String + Send + Sync + 'static {
-    let sandbox = sandbox.clone();
-    move |cx| declare(cx, &sandbox)
+    let (sandbox, host) = (sandbox.clone(), host.clone());
+    move |cx| declare(cx, &sandbox, &host)
 }
 
 /// The sandbox's root: emptied on each run. The only line a remote backend changes is the
@@ -118,13 +120,14 @@ fn scratch() -> std::io::Result<PathBuf> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let host = sandbox::local().inherit_env().open().await?;
     let sandbox = sandbox::local().root(scratch()?).open().await?;
-    git::seed(&sandbox, "main").await?;
+    git::seed(&host, &sandbox, "main").await?;
     let work = sandbox.work_dir(git::WORK);
 
-    let planner = Agent::new("planner", agent(&work, planner));
-    let implementer = Agent::new("implementer", agent(&work, implementer)).max_turns(300);
-    let reviewer = Agent::new("reviewer", agent(&work, reviewer));
+    let planner = Agent::new("planner", agent(&work, &host, planner));
+    let implementer = Agent::new("implementer", agent(&work, &host, implementer)).max_turns(300);
+    let reviewer = Agent::new("reviewer", agent(&work, &host, reviewer));
     let runtime = Runtime::start((&planner, &implementer, &reviewer))?;
 
     // 1. Plan.
@@ -141,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let Issue { number, title } = &issue;
     println!("Picked #{number}: {title}");
     let branch = format!("keelrs/issue-{number}");
-    git::run(&work, ["git", "switch", "--create", branch.as_str()]).await?;
+    work.run(["git", "switch", "--create", &branch]).await?;
 
     // 2. Implement and review, sending findings back to the same implementer conversation.
     // Each conversation is about this issue: its instance data.
@@ -173,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
             git::commit_all(&work, &format!("#{number}: {title}")).await?;
             let bundle = git::harvest(&sandbox, "main", &branch).await?;
             let body = format!("Closes #{number}.\n\n{}", implementation.summary);
-            let url = host::open_pr(bundle, &branch, title, &body).await?;
+            let url = host::open_pr(&host, bundle, &branch, title, &body).await?;
             println!("Opened {url}");
             sandbox.close().await?;
             return Ok(());

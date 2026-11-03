@@ -67,6 +67,10 @@ _Avoid_: Invocation
 A tool whose code acts on the machine the agent runs on; it is trusted, and it is where secrets are used, so the model sees only its arguments and result.
 _Avoid_: Local tool, unsafe tool
 
+**Host**:
+This machine opened as a trusted sandbox for the flow's own commands, with its full environment; offered, never required.
+_Avoid_: Local sandbox (for this use), machine
+
 **Sandboxed tool**:
 A tool that acts only through the sandbox its turn declares.
 _Avoid_: Harness tool, remote tool
