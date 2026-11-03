@@ -127,6 +127,22 @@ impl Tool {
     ///
     /// keelrs guarantees which sandbox it gets: the declared one, as
     /// narrowed to its work dir.
+    ///
+    /// A reply's calls run concurrently. A tool that changes files takes
+    /// [`sb.lock(path)`](Sandbox::lock) around its read-modify-write, as
+    /// the built-in file tools do, so they don't overwrite each other;
+    /// several files with one [`sb.lock_all`](Sandbox::lock_all):
+    ///
+    /// ```no_run
+    /// # use keelrs::{Tool, ToolCall, sandbox::Sandbox};
+    /// Tool::sandbox("bump", "Bump the version.", async |_: ToolCall<()>, sb: Sandbox| {
+    ///     let _held = sb.lock("VERSION").await?;
+    ///     let text = String::from_utf8_lossy(&sb.read("VERSION", 64).await?.bytes).into_owned();
+    ///     let next = text.trim().parse::<u32>().unwrap_or(0) + 1;
+    ///     sb.write("VERSION", next.to_string()).await?;
+    ///     Ok::<_, keelrs::Error>(next)
+    /// });
+    /// ```
     pub fn sandbox<Args, F, Fut, T, E>(
         name: impl Into<String>,
         description: impl Into<String>,

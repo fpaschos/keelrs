@@ -2,17 +2,6 @@
 
 use super::*;
 
-/// A local sandbox on a fresh temp folder, which is removed on drop.
-async fn sandboxed() -> (Folder, Sandbox) {
-    let folder = Folder::new();
-    let sb = crate::sandbox::local()
-        .root(&folder.0)
-        .open()
-        .await
-        .unwrap();
-    (folder, sb)
-}
-
 #[tokio::test]
 async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared_tools() {
     let (_folder, sb) = sandboxed().await;
@@ -80,14 +69,6 @@ async fn a_builtin_name_is_reserved_with_or_without_only() {
             );
         }
     }
-}
-
-/// An agent on the mock model whose built-ins act through `sb`.
-fn agent_in(sb: &Sandbox) -> Agent {
-    let sb = sb.clone();
-    sandboxed_agent(move |cx| {
-        cx.use_sandbox(&sb);
-    })
 }
 
 /// The model reads `path`, then is done.

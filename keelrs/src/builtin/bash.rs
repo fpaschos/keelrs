@@ -42,7 +42,8 @@ fn description(shell: Option<&SandboxPath>) -> String {
          {} MB, unless `timeout` (seconds) is given. Terminal escape codes are dropped and \
          secrets it prints, such as API keys and private keys, show as [REDACTED]; `read` \
          shows a file exactly. Use `read`, `grep`, `glob`, `edit` and `write` for files, not `cat`, \
-         `grep`, `find`, `sed` or `echo`.",
+         `grep`, `find`, `sed` or `echo`. Don't change files with it in the same reply as \
+         `write`, `edit`, `delete` or `move` calls on them.",
         MAX_BYTES / 1024,
         MAX_PRINTED / (1024 * 1024)
     );

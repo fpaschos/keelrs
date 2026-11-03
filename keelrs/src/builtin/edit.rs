@@ -9,7 +9,7 @@ use rig_tools::{Seen, clip};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, key, place, read_text, text_of};
+use super::{Out, fail, key, read_text, text_of};
 use crate::sandbox::{ContentHash, Sandbox};
 use crate::tool::Failed;
 use crate::{Tool, ToolCall};
@@ -58,8 +58,9 @@ pub(super) fn tool(seen: Seen) -> Tool {
 /// otherwise from the file as it is now.
 async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
     let sent = args.path.as_str();
-    let path = place(sb, sent).await?;
-    let key = key(&path);
+    let held = sb.lock(sent).await.map_err(|e| fail(sent, e))?;
+    let path = &held.paths()[0];
+    let key = key(path);
     let edits: Vec<rig_tools::Replacement> = args
         .edits
         .iter()
@@ -88,7 +89,7 @@ async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
     }
     let text = match held {
         Some(text) => text,
-        None => read_text(sb, &path, sent).await?,
+        None => read_text(sb, path, sent).await?,
     };
     let changed = seen
         .hash(&key)

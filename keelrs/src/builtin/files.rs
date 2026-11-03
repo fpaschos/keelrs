@@ -5,7 +5,7 @@ use rig_tools::Seen;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, key, place};
+use super::{Out, fail, key};
 use crate::sandbox::{Sandbox, SandboxPath, Stat};
 use crate::tool::Failed;
 use crate::{Tool, ToolCall};
@@ -54,9 +54,10 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
 // The rules and wording are rig-tools 0.46.0-rc.1 src/delete.rs's.
 async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
     let sent = args.path.as_str();
-    let path = place(sb, sent).await?;
-    require_file(sb, &path, sent, "`delete` removes").await?;
-    seen.forget(&key(&path));
+    let held = sb.lock(sent).await.map_err(|e| fail(sent, e))?;
+    let path = &held.paths()[0];
+    require_file(sb, path, sent, "`delete` removes").await?;
+    seen.forget(&key(path));
     sb.remove(path.as_str(), false)
         .await
         .map_err(|e| fail(sent, e))?;
@@ -67,9 +68,16 @@ async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
 // The rules and wording are rig-tools 0.46.0-rc.1 src/move_file.rs's.
 async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
     let (sent_from, sent_to) = (args.from.as_str(), args.to.as_str());
-    let from = place(sb, sent_from).await?;
-    let to = place(sb, sent_to).await?;
-    require_file(sb, &from, sent_from, "`move` moves").await?;
+    let held = match sb.lock_all([sent_from, sent_to]).await {
+        Ok(held) => held,
+        // The error is the first failing path's: name that one.
+        Err(e) if sb.canonical(sent_from).await.is_ok() => return Err(fail(sent_to, e)),
+        Err(e) => return Err(fail(sent_from, e)),
+    };
+    let [from, to] = held.paths() else {
+        unreachable!("one path each for `from` and `to`")
+    };
+    require_file(sb, from, sent_from, "`move` moves").await?;
     if from == to {
         return Err(ToolExecutionError::invalid_args(format!(
             "{sent_from} and {sent_to} are the same file"
@@ -89,7 +97,7 @@ async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
             )));
         }
     }
-    let (from_key, to_key) = (key(&from), key(&to));
+    let (from_key, to_key) = (key(from), key(to));
     let moved = seen.text(&from_key);
     let hash = seen.hash(&from_key);
     seen.forget(&from_key);
