@@ -48,6 +48,20 @@ async fn move_renames_a_file_creating_the_new_folders() {
 }
 
 #[tokio::test]
+async fn move_out_of_the_work_dir_names_the_path_that_leads_out() {
+    let fx = Fixture::new().await;
+    fx.put("a.rs", "a");
+    assert_eq!(
+        fx.move_file("a.rs", "../out.rs", false).await,
+        "Err: ../out.rs is outside the work dir"
+    );
+    assert_eq!(
+        fx.move_file("../out.rs", "a.rs", false).await,
+        "Err: ../out.rs is outside the work dir"
+    );
+}
+
+#[tokio::test]
 async fn move_refuses_a_directory() {
     let fx = Fixture::new().await;
     fx.put("src/lib.rs", LIB);

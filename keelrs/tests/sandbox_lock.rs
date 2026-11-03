@@ -57,6 +57,24 @@ async fn a_locked_file_waits_for_its_holder_on_every_clone() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn a_lock_names_its_files_canonical_in_the_order_given() {
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
+
+    let held = sb.lock_all(["b", "sub/../a", "./b"]).await.unwrap();
+    let root = dir.0.to_str().unwrap();
+    let paths: Vec<&str> = held.paths().iter().map(|path| path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            format!("{root}/b"),
+            format!("{root}/a"),
+            format!("{root}/b")
+        ]
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lock_all_in_opposite_orders_does_not_deadlock() {
     let dir = TempDir::new();

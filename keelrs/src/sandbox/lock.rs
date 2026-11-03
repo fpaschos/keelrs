@@ -26,8 +26,19 @@ pub(crate) struct FileLocks(parking_lot::Mutex<HashMap<SandboxPath, Arc<Mutex<()
 #[derive(Debug)]
 #[must_use = "the lock is released when this is dropped"]
 pub struct FileLock {
+    paths: Vec<SandboxPath>,
     /// Released, each in turn, when dropped.
     _held: Vec<Entry>,
+}
+
+impl FileLock {
+    /// The files it holds, canonical, one per path it was given and in
+    /// that order: act on these, not on the paths given, so the file
+    /// changed is the file locked.
+    #[must_use]
+    pub fn paths(&self) -> &[SandboxPath] {
+        &self.paths
+    }
 }
 
 /// One held file of a [`FileLock`].
@@ -81,14 +92,15 @@ impl Sandbox {
             .race("canonical", self.backend.canonical_all(&joined).map(Ok))
             .await?;
         let work_dir = self.real_work_dir().await?;
-        let mut paths = canonical
+        let paths = canonical
             .into_iter()
             .map(|path| inside(path?, work_dir.clone()))
             .collect::<Result<Vec<_>>>()?;
-        paths.sort();
-        paths.dedup();
-        let mut held = Vec::with_capacity(paths.len());
-        for path in paths {
+        let mut sorted = paths.clone();
+        sorted.sort();
+        sorted.dedup();
+        let mut held = Vec::with_capacity(sorted.len());
+        for path in sorted {
             // Cloned under the map mutex, so a releasing holder sees this waiter.
             let lock = self.locks.0.lock().entry(path.clone()).or_default().clone();
             let mut entry = Entry {
@@ -100,6 +112,6 @@ impl Sandbox {
             entry.guard = Some(lock.lock_owned().await);
             held.push(entry);
         }
-        Ok(FileLock { _held: held })
+        Ok(FileLock { paths, _held: held })
     }
 }

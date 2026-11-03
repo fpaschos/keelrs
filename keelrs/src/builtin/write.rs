@@ -4,7 +4,7 @@ use rig_tools::{MAX_FILE_BYTES, Seen};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{Out, fail, key, place};
+use super::{Out, fail, key};
 use crate::sandbox::{Sandbox, Stat};
 use crate::tool::Failed;
 use crate::{Tool, ToolCall};
@@ -32,11 +32,8 @@ pub(super) fn tool(seen: Seen) -> Tool {
 /// Writes `args.content` to `args.path`, remembered in `seen`; says whether
 /// it created the file or how long the one it replaced was.
 async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
-    let path = place(sb, &args.path).await?;
-    let _held = sb
-        .lock(path.as_str())
-        .await
-        .map_err(|e| fail(&args.path, e))?;
+    let held = sb.lock(&args.path).await.map_err(|e| fail(&args.path, e))?;
+    let path = &held.paths()[0];
     let before = match sb
         .stat(path.as_str())
         .await
@@ -56,10 +53,10 @@ async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
     };
     if let Err(e) = sb.write(path.as_str(), args.content.as_bytes()).await {
         // It may or may not have been written: the next edit reads the file.
-        seen.forget(&key(&path));
+        seen.forget(&key(path));
         return Err(fail(&args.path, e));
     }
-    seen.saw_whole(&key(&path), &args.content);
+    seen.saw_whole(&key(path), &args.content);
     Ok(wrote(&args.path, before))
 }
 
