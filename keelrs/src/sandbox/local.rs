@@ -81,12 +81,6 @@ impl LocalBuilder {
     /// secrets (`gh`'s token, an SSH agent). [`env`](Self::env) and
     /// [`env_remove`](Self::env_remove) still apply on top. Never declare
     /// such a sandbox to an agent whose `bash` must not see them.
-    ///
-    /// ```no_run
-    /// # async fn f() -> keelrs::Result<()> {
-    /// let host = keelrs::sandbox::local().inherit_env().open().await?; // the current dir
-    /// # Ok(()) }
-    /// ```
     #[must_use]
     pub fn inherit_env(mut self) -> Self {
         self.inherit_env = true;

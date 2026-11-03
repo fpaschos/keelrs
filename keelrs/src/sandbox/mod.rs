@@ -167,15 +167,12 @@ pub enum SandboxError {
     },
 }
 
-/// How many of stderr's last lines a [`SandboxError::CommandFailed`] message keeps.
-const TAIL_LINES: usize = 5;
-
-/// The last [`TAIL_LINES`] lines of `stderr`, trimmed, so a message stays short.
+/// The last 5 lines of `stderr`, trimmed, so a message stays short.
 fn tail(stderr: &str) -> &str {
     let stderr = stderr.trim_end();
     let start = stderr
         .rmatch_indices('\n')
-        .nth(TAIL_LINES - 1)
+        .nth(4)
         .map_or(0, |(at, _)| at + 1);
     stderr[start..].trim_start()
 }
@@ -626,7 +623,6 @@ pub enum Command {
 }
 
 impl fmt::Display for Command {
-    /// The shell line, or the arguments joined by spaces.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Shell(line) => f.write_str(line),
@@ -760,7 +756,6 @@ pub enum Exit {
 }
 
 impl fmt::Display for Exit {
-    /// `exit code 1`, `signal 9`, `its timeout` or `a kill`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Code(code) => write!(f, "exit code {code}"),
