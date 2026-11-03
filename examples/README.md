@@ -21,3 +21,13 @@ set -a; source .env; set +a; cargo run -p example-hello-world
 | [`tools`](tools) | Two host tools (`current_time` with no arguments, `get_weather` online) and a sandboxed `pwd` that answers with the sandbox's work dir, a real reply |
 | [`skills`](skills) | A skill folder embedded with `skill!` (with a resource the model reads) and one built with `Skill::new`, real replies |
 | [`build-review-loop`](build-review-loop) | keelrs on keelrs through a sandbox reached only by bytes: seed `main` as a bundle, a planner picks the next `agent-ready` issue, an implementer and a reviewer loop in the clone; harvest the branch, push and open a PR from the host (needs `gh`; opens a real PR) |
+
+`build-review-loop` runs from the repository root, needs `gh` logged in with push rights, and opens a
+real PR on the remote. It picks the next unblocked `agent-ready` issue, so keep only the issue you
+mean it to take labelled.
+
+```
+ (\_/)
+ (o.o)
+ (> <)
+```
