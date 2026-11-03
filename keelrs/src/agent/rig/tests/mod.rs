@@ -48,7 +48,7 @@ async fn scripted_in(
 
 /// Runs `agent` on "Go", asking for `structured`, against a model that replies
 /// with `turns`; also every request the model got.
-pub(super) async fn drive(
+async fn drive(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
     structured: Option<Structured>,
@@ -68,7 +68,7 @@ pub(super) async fn drive(
 }
 
 /// Every tool result the run accepted, in order, as (text or JSON, is_error).
-pub(super) fn results(settled: &Settled) -> Vec<(String, bool)> {
+fn results(settled: &Settled) -> Vec<(String, bool)> {
     let mut results = Vec::new();
     for message in &settled.messages {
         let RigMessage::User { content, .. } = message.0.as_ref() else {
@@ -93,7 +93,7 @@ pub(super) fn results(settled: &Settled) -> Vec<(String, bool)> {
 }
 
 /// An agent on the mock model, in an unused sandbox with no built-ins.
-pub(super) fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
     let sb = unused();
     sandboxed_agent(move |cx| {
         cx.use_sandbox(&sb).only([]);
@@ -110,7 +110,7 @@ fn sandboxed_agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) 
     })
 }
 
-pub(super) fn clock() -> Tool {
+fn clock() -> Tool {
     Tool::host(
         "current_time",
         "The current time.",
@@ -134,7 +134,7 @@ fn lookup_order() -> Tool {
 }
 
 /// Runs `agent` like [`scripted`] and returns every request the model got.
-pub(super) async fn sent(
+async fn sent(
     agent: &Agent,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Settled, Vec<CompletionRequest>) {
@@ -143,9 +143,7 @@ pub(super) async fn sent(
 }
 
 /// One reply calling each `(id, tool, arguments)` in order.
-pub(super) fn reply(
-    calls: impl IntoIterator<Item = (&'static str, &'static str, Value)>,
-) -> MockTurn {
+fn reply(calls: impl IntoIterator<Item = (&'static str, &'static str, Value)>) -> MockTurn {
     MockTurn::from_contents(calls.into_iter().map(|(id, name, arguments)| {
         let function = ToolFunction::new(ToolName::new(name).unwrap(), arguments);
         AssistantContent::ToolCall(rig_core::message::ToolCall::from_wire(id, function))
@@ -153,7 +151,7 @@ pub(super) fn reply(
 }
 
 /// The preamble a request carried.
-pub(super) fn preamble(request: &CompletionRequest) -> Option<&str> {
+fn preamble(request: &CompletionRequest) -> Option<&str> {
     match request.chat_history.first()?.as_ref() {
         RigMessage::System { content } => Some(content),
         _ => None,
@@ -161,7 +159,7 @@ pub(super) fn preamble(request: &CompletionRequest) -> Option<&str> {
 }
 
 /// The names of the tools a request declared.
-pub(super) fn tool_names(request: &CompletionRequest) -> Vec<String> {
+fn tool_names(request: &CompletionRequest) -> Vec<String> {
     request
         .tools
         .iter()

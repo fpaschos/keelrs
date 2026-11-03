@@ -43,14 +43,6 @@ async fn activate_skill_is_declared_with_skills_and_read_skill_resource_with_fil
 }
 
 #[tokio::test]
-async fn a_turn_without_skills_or_a_sandbox_declares_only_its_own_tools() {
-    let agent = agent(|cx| cx.use_tool(clock()));
-    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
-    assert_eq!(preamble(&requests[0]), None);
-    assert_eq!(tool_names(&requests[0]), ["current_time"]);
-}
-
-#[tokio::test]
 async fn a_multi_line_description_is_one_catalog_line() {
     let agent = agent(|cx| {
         cx.use_skill(Skill::new("haiku", "Write a haiku.\nShort ones.\n", "Body.").unwrap());

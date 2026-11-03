@@ -30,20 +30,6 @@ fn finish(id: &str, arguments: Value) -> MockTurn {
     MockTurn::tool_call(id, FINISH_STRUCTURED, arguments)
 }
 
-#[tokio::test]
-async fn a_valid_finish_structured_settles_with_its_value_without_calling_the_model_again() {
-    let (settled, requests) = structured::<Plan>(
-        &agent(|_| {}),
-        [
-            finish("c1", json!({"steps": ["one"]})),
-            MockTurn::text("Never reached."),
-        ],
-    )
-    .await;
-    assert_eq!(settled.unwrap().structured, Some(json!({"steps": ["one"]})));
-    assert_eq!(requests.len(), 1);
-}
-
 /// The text of every user message the run accepted, in order, skipping tool results.
 fn user_texts(settled: &Settled) -> Vec<String> {
     let mut texts = Vec::new();
@@ -140,7 +126,7 @@ async fn the_recorded_value_is_the_json_the_model_sent() {
 }
 
 /// A reviewer's verdict.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum Verdict {
     Approve,
@@ -204,6 +190,7 @@ async fn a_plain_run_has_no_footer_and_no_finish_structured() {
     let agent = agent(|cx| cx.use_tool(clock()));
     let (settled, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
     assert_eq!(user_texts(&settled), ["Go"]);
+    assert_eq!(preamble(&requests[0]), None);
     assert_eq!(tool_names(&requests[0]), ["current_time"]);
 }
 
@@ -258,5 +245,118 @@ async fn re_asks_count_toward_the_turn_limit() {
         settled.unwrap_err(),
         "ended without calling `finish_structured`: turn limit (2) reached"
     );
+    assert_eq!(requests.len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_model_turn_is_not_re_asked_as_a_missing_result() {
+    let (settled, requests) = structured::<Plan>(
+        &agent(|_| {}),
+        [
+            MockTurn::text("").with_finish_reason(rig_core::completion::FinishReason::Length),
+            finish("c1", json!({"steps": []})),
+        ],
+    )
+    .await;
+    let reason = settled.unwrap_err();
+    assert!(reason.contains("max_tokens"), "{reason}");
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
+async fn a_nullable_scalar_result_can_settle_as_null() {
+    let (settled, requests) =
+        structured::<Option<String>>(&agent(|_| {}), [finish("c1", json!({"result": null}))]).await;
+    assert_eq!(settled.unwrap().structured, Some(Value::Null));
+    assert_eq!(
+        requests[0].tools[0].parameters,
+        json!({
+            "type": "object",
+            "properties": {"result": {"type": ["string", "null"]}},
+            "required": ["result"],
+            "additionalProperties": false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_unit_result_keeps_its_empty_object_arguments() {
+    let (settled, requests) = structured::<()>(&agent(|_| {}), [finish("c1", json!({}))]).await;
+    assert_eq!(settled.unwrap().structured, Some(Value::Null));
+    assert_eq!(
+        requests[0].tools[0].parameters,
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
+    );
+}
+
+#[tokio::test]
+async fn a_nullable_object_result_can_be_null_or_an_object() {
+    for value in [Value::Null, json!({"steps": ["one"]})] {
+        let (settled, requests) =
+            structured::<Option<Plan>>(&agent(|_| {}), [finish("c1", json!({"result": value}))])
+                .await;
+        assert_eq!(settled.unwrap().structured, Some(value));
+        assert_eq!(requests.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn nullable_array_elements_keep_their_type_checks() {
+    let value = json!(["one", null]);
+    let (settled, requests) = structured::<Vec<Option<String>>>(
+        &agent(|_| {}),
+        [
+            finish("c1", json!({"result": [123]})),
+            finish("c2", json!({"result": value})),
+        ],
+    )
+    .await;
+    let settled = settled.unwrap();
+    assert_eq!(settled.structured, Some(value));
+    assert!(results(&settled)[0].1, "a number is not a nullable string");
+    assert_eq!(requests.len(), 2);
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct Note {
+    text: Option<String>,
+}
+
+#[tokio::test]
+async fn an_optional_result_field_accepts_null_or_omission() {
+    for value in [json!({"text": null}), json!({})] {
+        let (settled, _) = structured::<Note>(&agent(|_| {}), [finish("c1", value)]).await;
+        let note: Note = serde_json::from_value(settled.unwrap().structured.unwrap()).unwrap();
+        assert_eq!(note.text, None);
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct Tree {
+    #[schemars(length(min = 1))]
+    label: String,
+    children: Vec<Self>,
+}
+
+#[tokio::test]
+async fn a_wrapped_recursive_result_checks_its_descendants_schema() {
+    let invalid = json!([{"label": "root", "children": [{"label": "", "children": []}]}]);
+    let valid = json!([{"label": "root", "children": [{"label": "leaf", "children": []}]}]);
+    let (settled, requests) = structured::<Vec<Tree>>(
+        &agent(|_| {}),
+        [
+            finish("c1", json!({"result": invalid})),
+            finish("c2", json!({"result": valid})),
+        ],
+    )
+    .await;
+    let settled = settled.unwrap();
+    assert!(
+        results(&settled)[0].1,
+        "a descendant's empty label is refused"
+    );
+    let trees: Vec<Tree> = serde_json::from_value(settled.structured.unwrap()).unwrap();
+    assert_eq!(trees[0].label, "root");
+    assert_eq!(trees[0].children[0].label, "leaf");
     assert_eq!(requests.len(), 2);
 }

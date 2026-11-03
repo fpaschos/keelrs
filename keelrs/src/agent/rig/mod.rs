@@ -13,6 +13,7 @@ use rig_agent::run::{
 };
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
+use rig_core::completion::message::turn_failure;
 use rig_core::completion::{
     CompletionRequest, Effort, GenerationOptions, Reasoning, ToolDefinition,
 };
@@ -187,12 +188,18 @@ async fn run_with(
                 }
                 // A text ending, when a structured result is asked for, is re-asked
                 // in the same run: the reply stays, the re-ask follows it.
-                let called = run.accepted_turn_choice().is_some_and(|items| {
-                    items
+                if structured.is_some()
+                    && turn_failure(
+                        &response.choice,
+                        response.head().stop.as_ref(),
+                        response.finish_reason().as_ref(),
+                    )
+                    .is_none()
+                    && !response
+                        .choice
                         .iter()
                         .any(|item| matches!(item, AssistantContent::ToolCall(_)))
-                });
-                if structured.is_some() && !called {
+                {
                     if reasks == MAX_STRUCTURED_REASKS {
                         return Err(format!(
                             "ended without calling `{FINISH_STRUCTURED}` after {reasks} re-asks"

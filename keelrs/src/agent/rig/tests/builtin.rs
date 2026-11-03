@@ -40,17 +40,6 @@ async fn only_keeps_the_named_builtins_in_their_own_order() {
 }
 
 #[tokio::test]
-async fn only_with_no_names_keeps_only_the_declared_tools() {
-    let (_folder, sb) = sandboxed().await;
-    let agent = sandboxed_agent(move |cx| {
-        cx.use_sandbox(&sb).only([]);
-        cx.use_tool(clock());
-    });
-    let (_, requests) = sent(&agent, [MockTurn::text("Done.")]).await;
-    assert_eq!(tool_names(&requests[0]), ["current_time"]);
-}
-
-#[tokio::test]
 async fn an_unknown_name_in_only_fails_the_run() {
     let (_folder, sb) = sandboxed().await;
     let agent = sandboxed_agent(move |cx| {
