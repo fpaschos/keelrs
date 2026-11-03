@@ -33,6 +33,10 @@ pub(super) fn tool(seen: Seen) -> Tool {
 /// it created the file or how long the one it replaced was.
 async fn write(sb: &Sandbox, seen: &Seen, args: WriteArgs) -> Out {
     let path = place(sb, &args.path).await?;
+    let _held = sb
+        .lock(path.as_str())
+        .await
+        .map_err(|e| fail(&args.path, e))?;
     let before = match sb
         .stat(path.as_str())
         .await

@@ -53,12 +53,14 @@ use crate::Result;
 
 mod listing;
 mod local;
+mod lock;
 mod path;
 #[cfg(test)]
 mod unused;
 
 pub use listing::Listing;
 pub use local::{LocalBuilder, local};
+pub use lock::FileLock;
 pub use path::SandboxPath;
 #[cfg(test)]
 pub(crate) use unused::unused;
@@ -305,6 +307,11 @@ pub trait SandboxBackend: Send + Sync + 'static {
 /// there but are not caged. Every clone shares one backend: once
 /// [`close`](Self::close)d, operations on any clone fail with
 /// [`SandboxError::Died`]. Dropping a handle removes nothing.
+///
+/// The built-in file tools on one sandbox don't overwrite each other's
+/// changes: each holds its files' [`lock`](Self::lock) while it changes
+/// them. Agents sharing a sandbox still see each other's changes; give
+/// agents that must not their own work dir or worktree.
 #[derive(Clone)]
 pub struct Sandbox {
     id: SandboxId,
@@ -313,6 +320,8 @@ pub struct Sandbox {
     real_work_dir: Arc<OnceCell<SandboxPath>>,
     backend: Arc<dyn SandboxBackend>,
     closed: CancellationToken,
+    /// Per-file locks, shared by clones.
+    locks: Arc<lock::FileLocks>,
 }
 
 impl Sandbox {
@@ -325,6 +334,7 @@ impl Sandbox {
             real_work_dir: Arc::default(),
             backend: Arc::new(backend),
             closed: CancellationToken::new(),
+            locks: Arc::default(),
         }
     }
 

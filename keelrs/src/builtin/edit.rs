@@ -59,6 +59,7 @@ pub(super) fn tool(seen: Seen) -> Tool {
 async fn edit(sb: &Sandbox, seen: &Seen, args: EditArgs) -> Out {
     let sent = args.path.as_str();
     let path = place(sb, sent).await?;
+    let _held = sb.lock(path.as_str()).await.map_err(|e| fail(sent, e))?;
     let key = key(&path);
     let edits: Vec<rig_tools::Replacement> = args
         .edits

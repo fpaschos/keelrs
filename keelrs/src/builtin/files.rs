@@ -55,6 +55,7 @@ pub(super) fn move_tool(seen: Seen) -> Tool {
 async fn delete(sb: &Sandbox, seen: &Seen, args: DeleteArgs) -> Out {
     let sent = args.path.as_str();
     let path = place(sb, sent).await?;
+    let _held = sb.lock(path.as_str()).await.map_err(|e| fail(sent, e))?;
     require_file(sb, &path, sent, "`delete` removes").await?;
     seen.forget(&key(&path));
     sb.remove(path.as_str(), false)
@@ -69,6 +70,10 @@ async fn move_file(sb: &Sandbox, seen: &Seen, args: MoveArgs) -> Out {
     let (sent_from, sent_to) = (args.from.as_str(), args.to.as_str());
     let from = place(sb, sent_from).await?;
     let to = place(sb, sent_to).await?;
+    let _held = sb
+        .lock_all([from.as_str(), to.as_str()])
+        .await
+        .map_err(|e| fail(sent_from, e))?;
     require_file(sb, &from, sent_from, "`move` moves").await?;
     if from == to {
         return Err(ToolExecutionError::invalid_args(format!(
