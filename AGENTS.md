@@ -38,6 +38,8 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 ## Code
 
+Build on keelrs's own abstractions, so like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. When one does not fit, generalize it, drop it, or propose a replacement to the user before writing a parallel path.
+
 Blocking locks (`Mutex`, `RwLock`, `Condvar`) come from `parking_lot`, in both workspaces; `.clippy.toml`'s `disallowed-types` enforces it. A lock held across an `.await` is `tokio::sync`'s.
 
 ## Checks

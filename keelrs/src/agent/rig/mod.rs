@@ -9,20 +9,26 @@ use std::sync::Arc;
 use futures::future::join_all;
 use rig_agent::run::{
     AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PendingToolCall,
-    PromptError, RunSpec, ToolAnswer, prepare_request,
+    PromptError, RetryRequest, RunSpec, ToolAnswer, prepare_request,
 };
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
+use rig_core::completion::message::turn_failure;
 use rig_core::completion::{
     CompletionRequest, Effort, GenerationOptions, Reasoning, ToolDefinition,
 };
-use rig_core::message::{Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName};
+use rig_core::message::{
+    AssistantContent, Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName,
+};
 use rig_core::operation::Completion;
 use rig_core::tool::feedback::arguments_refusal;
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
 use crate::agent::InstanceAgent;
+use crate::builtin::structured::{
+    FINISH_STRUCTURED, FOOTER, MAX_STRUCTURED_REASKS, REASK, Structured,
+};
 use crate::builtin::{self, Caches};
 use crate::model::Thinking;
 use crate::sandbox::Sandbox;
@@ -42,17 +48,21 @@ pub(crate) struct Settled {
     pub(crate) reply: String,
     /// What the run accepted, prompt first, excluding the input history.
     pub(crate) messages: Vec<Message>,
+    /// The structured result `finish_structured` recorded, when one was asked for.
+    pub(crate) structured: Option<Value>,
 }
 
 /// Runs the instance's `agent` on `text` after `history`, its built-in tools remembering
-/// in `caches`; an error is the failure reason, as plain text.
+/// in `caches`; an error is the failure reason, as plain text. With `structured`, the
+/// run must end with a successful `finish_structured` call.
 pub(crate) async fn run(
     agent: InstanceAgent,
     text: String,
     history: Vec<Message>,
+    structured: Option<Structured>,
     caches: &mut Caches,
 ) -> Result<Settled, String> {
-    run_with(agent, text, history, caches, |model| {
+    run_with(agent, text, history, structured, caches, |model| {
         Catalog::builtin()
             .connect(model.id.as_str())
             .map_err(|e| e.to_string())
@@ -65,13 +75,21 @@ async fn run_with(
     agent: InstanceAgent,
     text: String,
     history: Vec<Message>,
+    structured: Option<Structured>,
     caches: &mut Caches,
     connect: impl Fn(&Model) -> Result<DynModel<Completion>, String>,
 ) -> Result<Settled, String> {
     let max_turns = agent.max_turns;
+    let history: Vec<Arc<RigMessage>> = history.into_iter().map(|m| m.0).collect();
+    // The footer is stored with the message it asks a structured result for.
+    let text = match structured {
+        Some(_) => format!("{text}\n\n{FOOTER}"),
+        None => text,
+    };
     let mut run = AgentRun::new(RigMessage::user(text))
-        .with_history(history.into_iter().map(|m| m.0))
+        .with_history(history)
         .max_turns(max_turns);
+    let mut reasks = 0;
     // Connected from the first render and kept for every turn (use_model behaviour).
     let mut connected = None;
     // The last render's tools, by name, and its sandbox, for the `CallTools`
@@ -103,6 +121,7 @@ async fn run_with(
                     .into_iter()
                     .chain(skill_tools(skills))
                     .chain(declared_tools.iter().cloned())
+                    .chain(structured.as_ref().map(|s| s.tool.clone()))
                     .collect();
                 let (model, thinking) = match &mut connected {
                     Some(connected) => connected,
@@ -167,6 +186,34 @@ async fn run_with(
                         .resolve_invalid_tool_call(skip)
                         .map_err(|e| e.to_string())?;
                 }
+                // A text ending, when a structured result is asked for, is re-asked
+                // in the same run: the reply stays, the re-ask follows it.
+                if structured.is_some()
+                    && turn_failure(
+                        &response.choice,
+                        response.head().stop.as_ref(),
+                        response.finish_reason().as_ref(),
+                    )
+                    .is_none()
+                    && !response
+                        .choice
+                        .iter()
+                        .any(|item| matches!(item, AssistantContent::ToolCall(_)))
+                {
+                    if reasks == MAX_STRUCTURED_REASKS {
+                        return Err(format!(
+                            "ended without calling `{FINISH_STRUCTURED}` after {reasks} re-asks"
+                        ));
+                    }
+                    if run.turn() >= max_turns {
+                        return Err(format!(
+                            "ended without calling `{FINISH_STRUCTURED}`: turn limit ({max_turns}) reached"
+                        ));
+                    }
+                    reasks += 1;
+                    run.retry_model_turn(RetryRequest::Feedback(REASK.to_owned()))
+                        .map_err(|e| e.to_string())?;
+                }
             }
             AgentRunStep::CallTools { calls } => {
                 let (tools, sandbox) = pinned
@@ -178,6 +225,14 @@ async fn run_with(
                     .into_iter()
                     .collect::<Result<Vec<_>, _>>()?;
                 run.answer_all(answers).map_err(|e| e.to_string())?;
+                // A recorded result ends the dispatch once its whole batch has run.
+                if let Some(value) = structured.as_ref().and_then(Structured::recorded) {
+                    return Ok(Settled {
+                        reply: String::new(),
+                        messages: run.messages().iter().cloned().map(Message).collect(),
+                        structured: Some(value),
+                    });
+                }
             }
             AgentRunStep::Done(response) => {
                 return Ok(Settled {
@@ -187,6 +242,7 @@ async fn run_with(
                         .into_iter()
                         .map(|m| Message(Arc::new(m)))
                         .collect(),
+                    structured: None,
                 });
             }
         }

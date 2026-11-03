@@ -3,6 +3,7 @@
 //! Private and minimal for now: just enough to rebuild the history for the next
 //! dispatch and to answer reads, once durable storage keeps them (`STORE:`).
 
+use crate::agent::SettledValue;
 use crate::agent::rig::Message;
 use crate::{Outcome, SubmissionId};
 
@@ -14,9 +15,9 @@ use crate::{Outcome, SubmissionId};
 pub(crate) enum Event {
     /// A message the run accepted (the user's prompt or the assistant's turn).
     Message(Message),
-    /// The dispatched message settled: its reply text, or how it failed.
+    /// The dispatched message settled: its reply text and structured result, or how it failed.
     Settled {
         submission_id: SubmissionId,
-        result: Result<String, Outcome>,
+        result: Result<SettledValue, Outcome>,
     },
 }

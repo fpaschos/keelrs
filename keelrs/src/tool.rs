@@ -6,10 +6,10 @@
 use std::any::Any;
 use std::fmt;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::{BoxFuture, FutureExt};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -62,8 +62,7 @@ impl fmt::Display for Failed {
 /// What a tool's call settles to: its value, or why it failed.
 pub(crate) type Called = Result<Value, Failed>;
 
-type Run =
-    dyn Fn(Value, String, Sandbox) -> Pin<Box<dyn Future<Output = Called> + Send>> + Send + Sync;
+type Run = dyn Fn(Value, String, Sandbox) -> BoxFuture<'static, Called> + Send + Sync;
 
 /// A named function the model may call during a turn, declared with
 /// [`AgentContext::use_tool`](crate::AgentContext::use_tool).
@@ -111,11 +110,11 @@ impl Tool {
         run: F,
     ) -> Self
     where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        Args: DeserializeOwned + JsonSchema + 'static,
         F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
+        T: Serialize,
+        E: fmt::Display + 'static,
     {
         // A host tool is a sandboxed one that ignores its sandbox.
         Self::sandbox(name, description, move |call, _| run(call))
@@ -134,18 +133,18 @@ impl Tool {
         run: F,
     ) -> Self
     where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
+        Args: DeserializeOwned + JsonSchema + 'static,
         F: FnOnce(ToolCall<Args>, Sandbox) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
+        T: Serialize,
+        E: fmt::Display + 'static,
     {
         let name: Arc<str> = name.into().into();
         let tool_name = name.clone();
         let run = move |arguments: Value, id: String, sandbox: Sandbox| {
             let run = run.clone();
             let name = tool_name.clone();
-            Box::pin(async move {
+            async move {
                 let data = arguments_into::<Args>(arguments).map_err(|e| {
                     let message = format!("`{name}`'s arguments do not fit: {e}");
                     Failed::new(FailKind::InvalidArgs, message)
@@ -158,7 +157,8 @@ impl Tool {
                         .unwrap_or_else(|| Failed::new(FailKind::Other, e.to_string()))
                 })?;
                 serde_json::to_value(value).map_err(|e| Failed::new(FailKind::Other, e.to_string()))
-            }) as Pin<Box<dyn Future<Output = Called> + Send>>
+            }
+            .boxed()
         };
         Self {
             name,
@@ -167,23 +167,6 @@ impl Tool {
             timeout: None,
             run: Arc::new(run),
         }
-    }
-
-    /// keelrs's own tools, such as `activate_skill`: host tools that only
-    /// keelrs may name with a reserved name.
-    pub(crate) fn builtin<Args, F, Fut, T, E>(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        run: F,
-    ) -> Self
-    where
-        Args: DeserializeOwned + JsonSchema + Send + 'static,
-        F: FnOnce(ToolCall<Args>) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Serialize + 'static,
-        E: fmt::Display + Send + Sync + 'static,
-    {
-        Self::host(name, description, run)
     }
 
     /// Stops a call after `timeout`; the model then reads that it timed out.

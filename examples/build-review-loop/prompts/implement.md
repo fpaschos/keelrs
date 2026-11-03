@@ -14,14 +14,11 @@ While you work:
 - Use `read`, `edit` and `write` for files, `grep` and `glob` to find them, and `bash` for
   `cargo` and `git`. There is no `gh`: GitHub is reached only through `issue`.
 - The working tree may hold changes you did not make. Never discard, revert, stash or check them
-  out, even when a reviewer asks; leave them as they are and name them in your report.
+  out, even when a reviewer asks; leave them as they are and name them in your summary.
 
 When it is done:
 - Run every check in `AGENTS.md`, for both workspaces, until they all pass.
 - Leave the changes uncommitted. Do not commit, switch branches, push, open a pull request, or
   change the issue.
 
-End by calling `report_implementation` once, as the very last step.
-
-When a later message reports review findings, fix them, run the checks again, and call
-`report_implementation` again.
+When a later message reports review findings, fix them and run the checks again.

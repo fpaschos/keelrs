@@ -113,3 +113,7 @@ _Avoid_: Done, finished, completed
 **Reply**:
 The settled outcome of one dispatched message.
 _Avoid_: Response, answer
+
+**Structured result**:
+A typed value a dispatched message settles with, which the model hands over by calling a tool; a caller asks for one per message.
+_Avoid_: Report, output, final result
