@@ -520,12 +520,7 @@ impl Sandbox {
         let path = self
             .race("canonical", self.backend.canonical(&joined))
             .await?;
-        let work_dir = self.real_work_dir().await?;
-        if path.starts_with(&work_dir) {
-            Ok(path)
-        } else {
-            Err(SandboxError::OutsideWorkDir { path, work_dir }.into())
-        }
+        inside(path, self.real_work_dir().await?)
     }
 
     /// The work dir, canonical.
@@ -546,6 +541,15 @@ impl Sandbox {
             .run_until_cancelled(work)
             .await
             .unwrap_or_else(|| Err(SandboxError::Died { operation }.into()))
+    }
+}
+
+/// The canonical `path`, or the error when it is outside the canonical `work_dir`.
+fn inside(path: SandboxPath, work_dir: SandboxPath) -> Result<SandboxPath> {
+    if path.starts_with(&work_dir) {
+        Ok(path)
+    } else {
+        Err(SandboxError::OutsideWorkDir { path, work_dir }.into())
     }
 }
 

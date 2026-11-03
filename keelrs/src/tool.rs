@@ -130,7 +130,8 @@ impl Tool {
     ///
     /// A reply's calls run concurrently. A tool that changes files takes
     /// [`sb.lock(path)`](Sandbox::lock) around its read-modify-write, as
-    /// the built-in file tools do, so they don't overwrite each other:
+    /// the built-in file tools do, so they don't overwrite each other;
+    /// several files with one [`sb.lock_all`](Sandbox::lock_all):
     ///
     /// ```no_run
     /// # use keelrs::{Tool, ToolCall, sandbox::Sandbox};

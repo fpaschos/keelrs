@@ -7,7 +7,7 @@ use std::sync::Arc;
 use futures::FutureExt as _;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use super::{Sandbox, SandboxError, SandboxPath};
+use super::{Sandbox, SandboxPath, inside};
 use crate::Result;
 
 /// The per-file locks of one sandbox, shared by every clone and narrowed
@@ -63,7 +63,9 @@ impl Sandbox {
     /// Holds `path` against the built-in file tools and other holders on
     /// this sandbox until the guard drops. Take it around a whole
     /// read-modify-write. Resolved as [`canonical`](Self::canonical) does,
-    /// so it fails outside the work dir.
+    /// so it fails outside the work dir. For several files, take them all
+    /// with one [`lock_all`](Self::lock_all): one `lock` after another can
+    /// deadlock against another holder, such as a built-in `move`.
     pub async fn lock(&self, path: impl AsRef<str>) -> Result<FileLock> {
         self.lock_all([path]).await
     }
@@ -82,14 +84,10 @@ impl Sandbox {
             .race("canonical", self.backend.canonical_all(&joined).map(Ok))
             .await?;
         let work_dir = self.real_work_dir().await?;
-        let mut paths = Vec::with_capacity(canonical.len());
-        for path in canonical {
-            let path = path?;
-            if !path.starts_with(&work_dir) {
-                return Err(SandboxError::OutsideWorkDir { path, work_dir }.into());
-            }
-            paths.push(path);
-        }
+        let mut paths = canonical
+            .into_iter()
+            .map(|path| inside(path?, work_dir.clone()))
+            .collect::<Result<Vec<_>>>()?;
         paths.sort();
         paths.dedup();
         let mut held = Vec::with_capacity(paths.len());
