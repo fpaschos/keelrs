@@ -158,7 +158,7 @@ pub enum SandboxError {
     },
     /// A command ran but did not exit 0: a non-zero code, a signal, its
     /// timeout or a kill.
-    #[error("`{command}` ended with {}: {}", ran.exit, tail(&ran.stderr))]
+    #[error("`{command}` ended with {}{}", ran.exit, reason(ran))]
     CommandFailed {
         /// What ran: its argv or its shell line.
         command: Command,
@@ -167,14 +167,18 @@ pub enum SandboxError {
     },
 }
 
-/// The last 5 lines of `stderr`, trimmed, so a message stays short.
-fn tail(stderr: &str) -> &str {
-    let stderr = stderr.trim_end();
-    let start = stderr
-        .rmatch_indices('\n')
-        .nth(4)
-        .map_or(0, |(at, _)| at + 1);
-    stderr[start..].trim_start()
+/// `: ` and the last 5 lines of stderr, or of stdout when stderr is empty
+/// (as with `merge_stderr`), so a message stays short; empty when both are.
+fn reason(ran: &Ran) -> String {
+    let text = match ran.stderr.trim_end() {
+        "" => ran.stdout.trim_end(),
+        stderr => stderr,
+    };
+    let start = text.rmatch_indices('\n').nth(4).map_or(0, |(at, _)| at + 1);
+    match text[start..].trim_start() {
+        "" => String::new(),
+        tail => format!(": {tail}"),
+    }
 }
 
 /// A sandbox's identity, unique within this process: what tells two

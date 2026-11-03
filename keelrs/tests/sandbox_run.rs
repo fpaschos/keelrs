@@ -42,6 +42,20 @@ async fn a_command_that_exits_non_zero_fails_with_what_it_printed() {
 }
 
 #[tokio::test]
+async fn a_failure_with_nothing_on_stderr_gives_the_tail_of_stdout_or_no_reason() {
+    let dir = TempDir::new();
+    let sb = open(&dir).await;
+    let merged = ExecRequest::shell("echo broke >&2; exit 1").merge_stderr();
+    let error = sb.run(merged).await.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "`echo broke >&2; exit 1` ended with exit code 1: broke"
+    );
+    let error = sb.run(["false"]).await.unwrap_err();
+    assert_eq!(error.to_string(), "`false` ended with exit code 1");
+}
+
+#[tokio::test]
 async fn a_command_past_its_timeout_fails_timed_out() {
     let dir = TempDir::new();
     let sb = open(&dir).await;
