@@ -1,6 +1,6 @@
 allow-mixed-uninlined-format-args = false
 
-# Blocking locks come from `parking_lot` (AGENTS.md, Code).
+# Blocking locks come from `parking_lot`.
 disallowed-types = [
   { path = "std::sync::Mutex", reason = "use `parking_lot::Mutex`", replacement = "parking_lot::Mutex" },
   { path = "std::sync::RwLock", reason = "use `parking_lot::RwLock`", replacement = "parking_lot::RwLock" },
