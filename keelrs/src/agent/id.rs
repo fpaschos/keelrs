@@ -1,4 +1,4 @@
-//! The id that names an agent instance.
+//! The ids that name an agent instance and a dispatch.
 
 use std::fmt;
 
@@ -36,5 +36,24 @@ impl InstanceId {
 impl fmt::Display for InstanceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// The name keelrs gives one dispatch when it is made: unique everywhere and
+/// kept across restarts. The receipt carries it, and every event the dispatch
+/// causes is marked with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DispatchId(uuid::Uuid);
+
+impl DispatchId {
+    pub(crate) fn fresh() -> Self {
+        Self(uuid::Uuid::now_v7())
+    }
+}
+
+impl fmt::Display for DispatchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }

@@ -31,7 +31,7 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 - Pins live only in each workspace's `[workspace.dependencies]`, as exact `=` versions (ADR 0001, 0002). A new crate: seed its pin there by hand (ask first, as below), then `cargo add -p <crate> <name>` with **no version**, so it writes `workspace = true`. Seed and add together: `cargo remove` deletes every unused workspace entry.
 - `keelrs` in an example: hand-write `keelrs.workspace = true`; `cargo add` fails on it.
 - New crates or examples: `cargo new` / `cargo init` (e.g. `cargo new --vcs none examples/<name>`).
-- Lock file: `cargo update` / `cargo generate-lockfile`; never edit `Cargo.lock` directly.
+- Lock file: `cargo update` / `cargo generate-lockfile`.
 - Upgrades: `cargo outdated -R` to see what's behind; `cargo upgrade --pinned` (from `cargo-edit`, installed) to raise the pins, `--dry-run` first, `--incompatible` for breaking bumps; `cargo set-version` for crate versions.
 - Two workspaces: the root and `examples/` (own `Cargo.lock`). Run each command for both, the second with `--manifest-path examples/Cargo.toml`.
 - If a change has no `cargo` command (e.g. workspace lints or `[workspace.package]`), ask the user before editing the manifest by hand.
@@ -40,11 +40,18 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 Build on keelrs's own abstractions, so like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. When one does not fit, generalize it, drop it, or propose a replacement to the user before writing a parallel path.
 
-Blocking locks (`Mutex`, `RwLock`, `Condvar`) come from `parking_lot`, in both workspaces; `.clippy.toml`'s `disallowed-types` enforces it. A lock held across an `.await` is `tokio::sync`'s.
+Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options and build it once the user approves.
+
+- **State**: a new field, or state moved or regrouped between types.
+- **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
+- **Types and names**: a new type, trait or module, or a renamed one.
+- **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
+
+Tests follow the design, never shape it. A behaviour no agreed seam reaches waits for one, or goes untested for now; wrapping existing state in a new type so a test can reach it is the antipattern. TDD tests are scaffolding: once the loop is green, review them: unify, move to the agreed public seam, or delete the ones that only restate the code.
 
 ## Checks
 
-Run before you call a change done, once per workspace (the second time add `--manifest-path examples/Cargo.toml`); all must pass:
+Run before you call a change done, in both workspaces; all must pass:
 
 ```sh
 cargo fmt --all --check
@@ -53,4 +60,4 @@ cargo test --locked --workspace
 cargo deny check   # examples: cargo deny --manifest-path examples/Cargo.toml check
 ```
 
-Lints are `warn` in the manifests; `-D warnings` here is the gate. A change to `keelrs` can stale `examples/Cargo.lock`: refresh it with `cargo update --manifest-path examples/Cargo.toml -p keelrs` before the locked examples checks.
+A change to `keelrs` can stale `examples/Cargo.lock`: refresh it with `cargo update --manifest-path examples/Cargo.toml -p keelrs` before the locked examples checks.

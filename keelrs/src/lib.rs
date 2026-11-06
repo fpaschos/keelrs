@@ -19,7 +19,7 @@ mod error;
 mod event;
 mod tool;
 
-pub use agent::{Agent, AgentContext, AgentInstance, InstanceId, Receipt, Reply, SubmissionId};
+pub use agent::{Agent, AgentContext, AgentInstance, DispatchId, InstanceId, Receipt, Reply};
 /// Implements a [`SandboxBackend`](sandbox::SandboxBackend) with `async fn`s.
 pub use async_trait::async_trait;
 pub use error::{Error, Outcome, Result};

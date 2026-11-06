@@ -122,12 +122,13 @@ async fn a_read_issued_before_the_run_settles_gets_the_outcome() {
         assert!(
             matches!(
                 &result,
-                Err(Error::Run { outcome: Outcome::Failed { .. }, submission_id })
-                    if *submission_id == receipt.submission_id()
+                Err(Error::Run { outcome: Outcome::Failed { .. }, dispatch_id })
+                    if *dispatch_id == receipt.dispatch_id()
             ),
             "{result:?}"
         );
     }
+    assert_ne!(first.dispatch_id(), second.dispatch_id());
 }
 
 #[tokio::test]
@@ -145,7 +146,7 @@ async fn reading_a_receipt_on_another_instance_fails() {
         .unwrap()
         .read(&receipt)
         .await;
-    assert!(matches!(result, Err(Error::SubmissionNotFound(id)) if id == receipt.submission_id()));
+    assert!(matches!(result, Err(Error::DispatchNotFound(id)) if id == receipt.dispatch_id()));
 }
 
 #[test]
@@ -208,19 +209,37 @@ async fn a_render_reads_its_instances_data_and_id() {
 }
 
 #[tokio::test]
-async fn an_existing_id_keeps_its_first_data() {
-    let seen = Seen::default();
-    let agent = recorder(&seen);
+async fn an_existing_id_with_equal_data_continues_the_same_instance() {
+    let agent = recorder(&Seen::default());
     let runtime = Runtime::start([&agent]).unwrap();
     let first = runtime
         .instance_with(&agent, InstanceId::new("a"), Issue { number: 1 })
         .unwrap();
-    let _ = first.ask("go").await;
+    let receipt = first.dispatch("go").await.unwrap();
     let again = runtime
-        .instance_with(&agent, InstanceId::new("a"), Issue { number: 2 })
+        .instance_with(&agent, InstanceId::new("a"), Issue { number: 1 })
         .unwrap();
-    let _ = again.ask("go").await;
-    assert_eq!(*seen.lock(), [("a".to_owned(), 1), ("a".to_owned(), 1)]);
+    // The dispatch made through `first` is read back through `again`.
+    let result = again.read(&receipt).await;
+    assert!(
+        matches!(&result, Err(Error::Run { dispatch_id, .. }) if *dispatch_id == receipt.dispatch_id()),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_existing_id_with_other_data_fails() {
+    let agent = recorder(&Seen::default());
+    let runtime = Runtime::start([&agent]).unwrap();
+    runtime
+        .instance_with(&agent, InstanceId::new("a"), Issue { number: 1 })
+        .unwrap();
+    let result = runtime.instance_with(&agent, InstanceId::new("a"), Issue { number: 2 });
+    assert!(
+        matches!(&result, Err(Error::InstanceDataConflict { agent, id })
+            if agent == "recorder" && id.as_str() == "a"),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
