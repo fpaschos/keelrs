@@ -7,6 +7,7 @@
 //! result in memory to answer reads.
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -19,7 +20,7 @@ use crate::agent::InstanceAgent;
 use crate::agent::rig::{self, Settled};
 use crate::builtin::Caches;
 use crate::builtin::structured::Structured;
-use crate::event::{Event, Stream};
+use crate::event::{Event, EventId, Seq, StoredEvent};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
@@ -47,7 +48,9 @@ impl AgentInstance {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
         let actor = InstanceActor {
             agent,
-            stream: Stream::new(name, id.clone()),
+            name,
+            id: id.clone(),
+            last: Seq::default(),
             inbox: receiver,
             cancel: shutdown.child_token(),
             settled: HashMap::new(),
@@ -178,8 +181,11 @@ pub(crate) struct SettledValue {
 /// message settled.
 struct InstanceActor {
     agent: InstanceAgent,
-    /// The instance's event stream, which this actor alone numbers.
-    stream: Stream,
+    /// The agent's name, which with `id` names the instance's event stream.
+    name: String,
+    id: InstanceId,
+    /// The `seq` of the instance's last event; this actor alone numbers them.
+    last: Seq,
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,
@@ -243,7 +249,26 @@ impl InstanceActor {
             dispatch_id,
             result: result.clone(),
         });
-        let stored = self.stream.append(dispatch_id, events);
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
+        let stored: Vec<StoredEvent> = events
+            .into_iter()
+            .map(|event| {
+                self.last = self.last.next();
+                StoredEvent {
+                    id: EventId::fresh(),
+                    agent: self.name.clone(),
+                    instance: self.id.clone(),
+                    seq: self.last,
+                    dispatch: Some(dispatch_id),
+                    at,
+                    event,
+                }
+            })
+            .collect();
         // STORE: append `stored` to durable storage, before answering reads.
         drop(stored);
         self.settled.insert(dispatch_id, result);
