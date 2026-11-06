@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
@@ -69,11 +70,10 @@ impl Runtime {
     /// Fails with [`Error::InstanceDataConflict`] when the instance already
     /// exists with other data, and with [`Error::InvalidInstanceData`] when
     /// `data` does not serialize. Fails with [`Error::InvalidInstanceId`] on a
-    /// blank id, and with
-    /// [`Error::UnknownAgent`] unless `agent` is the very one given to
-    /// [`Runtime::start`] (not just one with its name); the instance runs with
-    /// that registered agent's settings. Fails with [`Error::NoTokioRuntime`]
-    /// outside a Tokio runtime.
+    /// blank id, and with [`Error::UnknownAgent`] unless `agent` is the very
+    /// one given to [`Runtime::start`] (not just one with its name); the
+    /// instance runs with that registered agent's settings. Fails with
+    /// [`Error::NoTokioRuntime`] outside a Tokio runtime.
     pub fn instance_with<D>(
         &self,
         agent: &Agent<D>,
@@ -100,29 +100,36 @@ impl Runtime {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(Error::NoTokioRuntime);
         }
+        let name = agent.name().to_owned();
         let json = serde_json::to_value(&data).map_err(|e| Error::InvalidInstanceData {
-            agent: agent.name().to_owned(),
+            agent: name.clone(),
             id: id.clone(),
             reason: e.to_string(),
         })?;
-        let mut instances = self.inner.instances.lock();
-        let key = (agent.name().to_owned(), id);
-        if let Some((instance, kept)) = instances.get(&key) {
-            if *kept != json {
-                let (agent, id) = key;
-                return Err(Error::InstanceDataConflict { agent, id });
+        match self
+            .inner
+            .instances
+            .lock()
+            .entry((name.clone(), id.clone()))
+        {
+            Entry::Occupied(entry) => {
+                let (instance, kept) = entry.get();
+                if *kept != json {
+                    return Err(Error::InstanceDataConflict { agent: name, id });
+                }
+                Ok(instance.clone())
             }
-            return Ok(instance.clone());
+            Entry::Vacant(entry) => {
+                let instance = AgentInstance::spawn(
+                    name,
+                    registered.for_instance(id.clone(), data),
+                    id,
+                    &self.inner.shutdown,
+                );
+                entry.insert((instance.clone(), json));
+                Ok(instance)
+            }
         }
-        let id = key.1.clone();
-        let instance = AgentInstance::spawn(
-            key.0.clone(),
-            registered.for_instance(id.clone(), data),
-            id,
-            &self.inner.shutdown,
-        );
-        instances.insert(key, (instance.clone(), json));
-        Ok(instance)
     }
 }
 

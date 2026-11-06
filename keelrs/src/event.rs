@@ -15,7 +15,6 @@ use crate::{DispatchId, InstanceId, Outcome};
 pub(crate) struct EventId(uuid::Uuid);
 
 impl EventId {
-    /// A new UUIDv7.
     pub(crate) fn fresh() -> Self {
         Self(uuid::Uuid::now_v7())
     }
@@ -29,7 +28,6 @@ impl EventId {
 pub(crate) struct Seq(u64);
 
 impl Seq {
-    /// The position after this one.
     pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
     }

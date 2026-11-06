@@ -47,7 +47,6 @@ impl fmt::Display for InstanceId {
 pub struct DispatchId(uuid::Uuid);
 
 impl DispatchId {
-    /// A new UUIDv7.
     pub(crate) fn fresh() -> Self {
         Self(uuid::Uuid::now_v7())
     }
