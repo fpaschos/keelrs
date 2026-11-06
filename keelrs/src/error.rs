@@ -1,7 +1,7 @@
 //! Errors returned by keelrs.
 
 use crate::sandbox::SandboxError;
-use crate::{InstanceId, SubmissionId};
+use crate::{DispatchId, InstanceId};
 
 /// Something keelrs could not do.
 #[derive(Debug, thiserror::Error)]
@@ -18,16 +18,34 @@ pub enum Error {
     /// An instance was asked for by a blank id.
     #[error("instance id is blank")]
     InvalidInstanceId(InstanceId),
-    /// A read named a submission this instance never received.
-    #[error("no submission {0}")]
-    SubmissionNotFound(SubmissionId),
+    /// An existing instance was asked for with data other than it was created with.
+    #[error("instance `{id}` of agent `{agent}` exists with other data")]
+    InstanceDataConflict {
+        /// The agent's name.
+        agent: String,
+        /// The instance's id.
+        id: InstanceId,
+    },
+    /// An instance's data could not be serialized, so it cannot be kept or compared.
+    #[error("data for instance `{id}` of agent `{agent}` could not be serialized: {reason}")]
+    InvalidInstanceData {
+        /// The agent's name.
+        agent: String,
+        /// The instance's id.
+        id: InstanceId,
+        /// Why serialization failed, as plain text.
+        reason: String,
+    },
+    /// A read named a dispatch this instance never received.
+    #[error("no dispatch {0}")]
+    DispatchNotFound(DispatchId),
     /// The dispatched message settled without a reply.
-    #[error("agent run {} (submission {submission_id})", outcome.describe())]
+    #[error("agent run {} (dispatch {dispatch_id})", outcome.describe())]
     Run {
         /// How the message settled.
         outcome: Outcome,
-        /// The message that settled.
-        submission_id: SubmissionId,
+        /// The dispatch that settled.
+        dispatch_id: DispatchId,
     },
     /// A sandbox could not do what was asked.
     #[error(transparent)]

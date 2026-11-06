@@ -8,6 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
@@ -25,8 +26,8 @@ pub struct Runtime {
 struct Inner {
     agents: HashMap<String, AnyAgent>,
     /// Instances already spawned, keyed by `(agent name, instance id)`, so the
-    /// same id continues the same conversation.
-    instances: Mutex<HashMap<(String, InstanceId), AgentInstance>>,
+    /// same id continues the same conversation; each with its data as JSON.
+    instances: Mutex<HashMap<(String, InstanceId), (AgentInstance, Value)>>,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
@@ -62,10 +63,13 @@ impl Runtime {
     }
 
     /// The instance `id` of `agent`, created with its frozen `data` on first
-    /// use. On an existing id the instance is reused: its original data is
-    /// kept and `data` dropped, with no error.
+    /// use and continued after when `data` is equal (compared as serialized
+    /// JSON).
     ///
-    /// Fails with [`Error::InvalidInstanceId`] on a blank id, and with
+    /// Fails with [`Error::InstanceDataConflict`] when the instance already
+    /// exists with other data, and with [`Error::InvalidInstanceData`] when
+    /// `data` does not serialize. Fails with [`Error::InvalidInstanceId`] on a
+    /// blank id, and with
     /// [`Error::UnknownAgent`] unless `agent` is the very one given to
     /// [`Runtime::start`] (not just one with its name); the instance runs with
     /// that registered agent's settings. Fails with [`Error::NoTokioRuntime`]
@@ -96,19 +100,28 @@ impl Runtime {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(Error::NoTokioRuntime);
         }
-        let instance = self
-            .inner
-            .instances
-            .lock()
-            .entry((agent.name().to_owned(), id.clone()))
-            .or_insert_with(|| {
-                AgentInstance::spawn(
-                    registered.for_instance(id.clone(), data),
-                    id,
-                    &self.inner.shutdown,
-                )
-            })
-            .clone();
+        let json = serde_json::to_value(&data).map_err(|e| Error::InvalidInstanceData {
+            agent: agent.name().to_owned(),
+            id: id.clone(),
+            reason: e.to_string(),
+        })?;
+        let mut instances = self.inner.instances.lock();
+        let key = (agent.name().to_owned(), id);
+        if let Some((instance, kept)) = instances.get(&key) {
+            if *kept != json {
+                let (agent, id) = key;
+                return Err(Error::InstanceDataConflict { agent, id });
+            }
+            return Ok(instance.clone());
+        }
+        let id = key.1.clone();
+        let instance = AgentInstance::spawn(
+            key.0.clone(),
+            registered.for_instance(id.clone(), data),
+            id,
+            &self.inner.shutdown,
+        );
+        instances.insert(key, (instance.clone(), json));
         Ok(instance)
     }
 }

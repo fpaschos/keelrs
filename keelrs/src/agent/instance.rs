@@ -7,8 +7,6 @@
 //! result in memory to answer reads.
 
 use std::collections::HashMap;
-use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -21,8 +19,8 @@ use crate::agent::InstanceAgent;
 use crate::agent::rig::{self, Settled};
 use crate::builtin::Caches;
 use crate::builtin::structured::Structured;
-use crate::event::Event;
-use crate::{Error, InstanceId, Outcome, Result};
+use crate::event::{Event, Stream};
+use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
 const INBOX_CAPACITY: usize = 1024;
@@ -38,8 +36,10 @@ pub struct AgentInstance {
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of `agent`; `shutdown` cancelling aborts it.
+    /// Spawns the actor for instance `id` of `agent`, named `name`; `shutdown`
+    /// cancelling aborts it.
     pub(crate) fn spawn(
+        name: String,
         agent: InstanceAgent,
         id: InstanceId,
         shutdown: &CancellationToken,
@@ -47,6 +47,7 @@ impl AgentInstance {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
         let actor = InstanceActor {
             agent,
+            stream: Stream::new(name, id.clone()),
             inbox: receiver,
             cancel: shutdown.child_token(),
             settled: HashMap::new(),
@@ -84,16 +85,16 @@ impl AgentInstance {
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let Receipt { submission_id } = self
+        let Receipt { dispatch_id } = self
             .submit(message.into(), Some(Structured::of::<T>()))
             .await?;
         let failed = |reason: String| Error::Run {
             outcome: Outcome::Failed { reason },
-            submission_id,
+            dispatch_id,
         };
         // The JSON the model sent, which `finish_structured` checked deserializes as `T`.
         let value = self
-            .settled(submission_id)
+            .settled(dispatch_id)
             .await?
             .structured
             .ok_or_else(|| failed("settled without a structured result".to_owned()))?;
@@ -102,49 +103,47 @@ impl AgentInstance {
 
     /// Waits for the receipt's message to settle and takes its reply.
     pub async fn read(&self, receipt: &Receipt) -> Result<Reply> {
-        let submission_id = receipt.submission_id;
-        let settled = self.settled(submission_id).await?;
+        let dispatch_id = receipt.dispatch_id;
+        let settled = self.settled(dispatch_id).await?;
         Ok(Reply {
             text: settled.text,
-            submission_id,
+            dispatch_id,
         })
     }
 
     /// Submits `text`, asking for `structured` when given.
     async fn submit(&self, text: String, structured: Option<Structured>) -> Result<Receipt> {
-        let submission_id = SubmissionId::next();
+        let dispatch_id = DispatchId::fresh();
         let command = Command::Dispatch {
-            submission_id,
+            dispatch_id,
             text,
             structured,
         };
         if self.inbox.send(command).await.is_err() {
-            return Err(aborted(submission_id));
+            return Err(aborted(dispatch_id));
         }
-        Ok(Receipt { submission_id })
+        Ok(Receipt { dispatch_id })
     }
 
-    /// Waits for `submission_id` to settle and takes what it settled with.
-    async fn settled(&self, submission_id: SubmissionId) -> Result<SettledValue> {
+    /// Waits for `dispatch_id` to settle and takes what it settled with.
+    async fn settled(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
         let (respond_to, response) = oneshot::channel();
         let command = Command::Read {
-            submission_id,
+            dispatch_id,
             respond_to,
         };
         if self.inbox.send(command).await.is_err() {
-            return Err(aborted(submission_id));
+            return Err(aborted(dispatch_id));
         }
         // An actor that stops before answering (it panicked) counts as aborted.
-        response
-            .await
-            .unwrap_or_else(|_| Err(aborted(submission_id)))
+        response.await.unwrap_or_else(|_| Err(aborted(dispatch_id)))
     }
 }
 
-fn aborted(submission_id: SubmissionId) -> Error {
+fn aborted(dispatch_id: DispatchId) -> Error {
     Error::Run {
         outcome: Outcome::Aborted,
-        submission_id,
+        dispatch_id,
     }
 }
 
@@ -152,13 +151,13 @@ fn aborted(submission_id: SubmissionId) -> Error {
 #[derive(Debug)]
 enum Command {
     Dispatch {
-        submission_id: SubmissionId,
+        dispatch_id: DispatchId,
         text: String,
         /// The structured result the message asks for, if any.
         structured: Option<Structured>,
     },
     Read {
-        submission_id: SubmissionId,
+        dispatch_id: DispatchId,
         respond_to: oneshot::Sender<Result<SettledValue>>,
     },
 }
@@ -179,11 +178,13 @@ pub(crate) struct SettledValue {
 /// message settled.
 struct InstanceActor {
     agent: InstanceAgent,
+    /// The instance's event stream, which this actor alone numbers.
+    stream: Stream,
     inbox: mpsc::Receiver<Command>,
     /// The instance token: cancelling it aborts the run in flight and every later dispatch.
     cancel: CancellationToken,
     /// STORE: stands in for the stored `Event::Settled`s until durable storage keeps them.
-    settled: HashMap<SubmissionId, Result<SettledValue, Outcome>>,
+    settled: HashMap<DispatchId, Result<SettledValue, Outcome>>,
     /// What this instance's built-in tools remember of its current sandbox; never stored.
     caches: Caches,
 }
@@ -194,16 +195,16 @@ impl InstanceActor {
         while let Some(command) = self.inbox.recv().await {
             match command {
                 Command::Dispatch {
-                    submission_id,
+                    dispatch_id,
                     text,
                     structured,
-                } => self.dispatch(submission_id, text, structured).await,
+                } => self.dispatch(dispatch_id, text, structured).await,
                 Command::Read {
-                    submission_id,
+                    dispatch_id,
                     respond_to,
                 } => {
-                    // STORE: answer from the stored `Event::Settled` for `submission_id`.
-                    let _ = respond_to.send(self.read(submission_id));
+                    // STORE: answer from the stored `Event::Settled` for `dispatch_id`.
+                    let _ = respond_to.send(self.read(dispatch_id));
                 }
             }
         }
@@ -212,7 +213,7 @@ impl InstanceActor {
     /// Runs one dispatch to settled; a kill aborts it.
     async fn dispatch(
         &mut self,
-        submission_id: SubmissionId,
+        dispatch_id: DispatchId,
         text: String,
         structured: Option<Structured>,
     ) {
@@ -239,44 +240,26 @@ impl InstanceActor {
             },
         };
         events.push(Event::Settled {
-            submission_id,
+            dispatch_id,
             result: result.clone(),
         });
-        // STORE: append `events` to durable storage, before answering reads.
-        self.settled.insert(submission_id, result);
+        let stored = self.stream.append(dispatch_id, events);
+        // STORE: append `stored` to durable storage, before answering reads.
+        drop(stored);
+        self.settled.insert(dispatch_id, result);
     }
 
-    /// What `submission_id` settled with; never pending, as the inbox runs
+    /// What `dispatch_id` settled with; never pending, as the inbox runs
     /// every dispatch before a read sent after it.
-    fn read(&self, submission_id: SubmissionId) -> Result<SettledValue> {
-        match self.settled.get(&submission_id) {
+    fn read(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
+        match self.settled.get(&dispatch_id) {
             Some(Ok(settled)) => Ok(settled.clone()),
             Some(Err(outcome)) => Err(Error::Run {
                 outcome: outcome.clone(),
-                submission_id,
+                dispatch_id,
             }),
-            None => Err(Error::SubmissionNotFound(submission_id)),
+            None => Err(Error::DispatchNotFound(dispatch_id)),
         }
-    }
-}
-
-/// Identifies one dispatched message, unique within this process.
-///
-/// Unique across every instance, so a receipt read on the wrong instance is
-/// never mistaken for one of its own messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SubmissionId(u64);
-
-impl SubmissionId {
-    fn next() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl fmt::Display for SubmissionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }
 
@@ -284,14 +267,14 @@ impl fmt::Display for SubmissionId {
 /// handle to the instance that issued it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
-    submission_id: SubmissionId,
+    dispatch_id: DispatchId,
 }
 
 impl Receipt {
     /// The dispatched message this receipt claims.
     #[must_use]
-    pub fn submission_id(&self) -> SubmissionId {
-        self.submission_id
+    pub fn dispatch_id(&self) -> DispatchId {
+        self.dispatch_id
     }
 }
 
@@ -299,7 +282,7 @@ impl Receipt {
 #[derive(Debug, Clone)]
 pub struct Reply {
     text: String,
-    submission_id: SubmissionId,
+    dispatch_id: DispatchId,
 }
 
 impl Reply {
@@ -311,7 +294,7 @@ impl Reply {
 
     /// The dispatched message this reply settles.
     #[must_use]
-    pub fn submission_id(&self) -> SubmissionId {
-        self.submission_id
+    pub fn dispatch_id(&self) -> DispatchId {
+        self.dispatch_id
     }
 }

@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     let runtime = Runtime::start((&planner, &implementer, &reviewer))?;
 
     // 1. Plan.
-    let planned = runtime.instance(&planner, InstanceId::new("plan"))?;
+    let planned = runtime.instance(&planner, InstanceId::fresh())?;
     let Some(issue) = planned
         .ask_structured::<Plan>("Pick the next issue.")
         .await?
