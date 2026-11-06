@@ -56,16 +56,62 @@ async fn drive(
     caches: &mut Caches,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
     let model = MockCompletionModel::from_turns(turns);
-    let settled = run_with(
+    let mock = model.clone();
+    let run = Run::with_connect(
         agent.for_instance(InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
         structured,
-        caches,
-        |_| Ok(model.clone().erase()),
-    )
-    .await;
+        std::mem::take(caches),
+        Box::new(move |_| Ok(mock.clone().erase())),
+    );
+    let (run, settled) = settle(run).await;
+    *caches = run.into_caches();
     (settled, model.requests())
+}
+
+/// A run that settled with a reply, as its steps produced it.
+#[derive(Debug)]
+struct Settled {
+    /// The final assistant text.
+    reply: String,
+    /// What the run accepted, prompt first, excluding the input history.
+    messages: Vec<Message>,
+    /// The structured result `finish_structured` recorded, when one was asked for.
+    structured: Option<Value>,
+}
+
+/// Steps `run` to settled, folding each step's messages as the instance does.
+async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
+    let mut messages = Vec::new();
+    loop {
+        let (next, step) = run.step().await;
+        run = next;
+        match step {
+            Ok(Step::Append(events)) => fold(&mut messages, events),
+            Ok(Step::Settled(events, value)) => {
+                fold(&mut messages, events);
+                let settled = Settled {
+                    reply: value.text,
+                    messages,
+                    structured: value.structured,
+                };
+                return (run, Ok(settled));
+            }
+            Err(reason) => return (run, Err(reason)),
+        }
+    }
+}
+
+/// Adds a step's messages and tool results to `history`.
+fn fold(history: &mut Vec<Message>, events: Vec<Event>) {
+    for event in events {
+        match event {
+            Event::Message(message) => history.push(message),
+            Event::ToolResult(part) => push_result(history, &part),
+            other => panic!("a run produced {other:?}"),
+        }
+    }
 }
 
 /// Every tool result the run accepted, in order, as (text or JSON, is_error).
