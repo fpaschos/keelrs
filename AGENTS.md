@@ -40,12 +40,14 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 Build on keelrs's own abstractions, so like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. When one does not fit, generalize it, drop it, or propose a replacement to the user before writing a parallel path.
 
-Build the structure the ticket agreed. Each of these, unless the ticket spells it out, is a design decision: propose it with options and build it once the user approves, also when a test seems to need it.
+Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options and build it once the user approves.
 
 - **State**: a new field, or state moved or regrouped between types.
 - **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
 - **Types and names**: a new type, trait or module, or a renamed one.
 - **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
+
+Tests follow the design, never shape it. A behaviour no agreed seam reaches waits for one, or goes untested for now; wrapping existing state in a new type so a test can reach it is the antipattern. TDD tests are scaffolding: once the loop is green, review them: unify, move to the agreed public seam, or delete the ones that only restate the code.
 
 ## Checks
 
