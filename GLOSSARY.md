@@ -47,6 +47,11 @@ Every event of one agent instance, in the order they were recorded; it is named 
 same instance id under two agents is two streams.
 _Avoid_: Journal, session, log
 
+**Lease**:
+The right to write one agent instance's event stream, held by one runtime at a time until it is released or runs out;
+a runtime that has lost it writes nothing more to that stream.
+_Avoid_: Lock, ownership, claim
+
 **Dispatch**:
 Submitting a message to an agent instance; it returns a receipt, not the reply.
 _Avoid_: Ask, send, prompt
@@ -128,6 +133,10 @@ _Avoid_: Await, poll
 **Settled**:
 The state of a dispatched message once it has its final outcome (a reply, a failure or an abort); until then it is pending, and once settled it never changes.
 _Avoid_: Done, finished, completed
+
+**Abort**:
+Stopping an agent instance's work: its running dispatch stops and its queued ones never run, each settling as aborted.
+_Avoid_: Cancel, kill, stop
 
 **Reply**:
 The settled outcome of one dispatched message.
