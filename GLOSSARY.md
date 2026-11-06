@@ -37,9 +37,24 @@ What an agent instance is about, given once when it is created and fixed for its
 What changes from one dispatch to the next travels in the message instead.
 _Avoid_: Initial data, props, input, state
 
+**Event**:
+A fact an agent instance recorded about itself, such as a message, a tool result or a settled dispatch; it never
+changes once recorded, and the instance's conversation is computed from its events.
+_Avoid_: Record, log entry, message
+
+**Event stream**:
+Every event of one agent instance, in the order they were recorded; it is named by the agent and the instance id, so the
+same instance id under two agents is two streams.
+_Avoid_: Journal, session, log
+
 **Dispatch**:
 Submitting a message to an agent instance; it returns a receipt, not the reply.
 _Avoid_: Ask, send, prompt
+
+**Dispatch id**:
+The name keelrs gives one dispatch when it is made, unique everywhere and kept across restarts; the receipt carries it,
+and every event the dispatch causes is marked with it.
+_Avoid_: Submission id, request id, message id
 
 **Receipt**:
 The claim ticket for one dispatched message, used to read its reply later.
