@@ -91,6 +91,11 @@ async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
             Ok(Step::Append(events)) => fold(&mut messages, events),
             Ok(Step::Settled(events, value)) => {
                 fold(&mut messages, events);
+                // What the steps produced folds back to what the run itself committed.
+                let folded: Vec<&RigMessage> = messages.iter().map(|m| m.0.as_ref()).collect();
+                let committed: Vec<&RigMessage> =
+                    run.run.messages().iter().map(AsRef::as_ref).collect();
+                assert_eq!(folded, committed, "the stored history differs from Rig's");
                 let settled = Settled {
                     reply: value.text,
                     messages,

@@ -208,3 +208,106 @@ async fn an_aborted_dispatchs_open_tool_calls_are_answered_before_the_next_one()
         ]
     );
 }
+
+/// A stream another writer left with `created` and two dispatches that never
+/// ran, its lease released; and those dispatches' receipts.
+async fn left_queued(store: &Store, agent: &str, id: &InstanceId) -> [Receipt; 2] {
+    let receipts = [DispatchId::fresh(), DispatchId::fresh()];
+    let events = [
+        (None, Event::Created { data: Value::Null }),
+        (
+            Some(receipts[0]),
+            Event::Dispatched {
+                text: "One".to_owned(),
+                structured: None,
+            },
+        ),
+        (
+            Some(receipts[1]),
+            Event::Dispatched {
+                text: "Two".to_owned(),
+                structured: None,
+            },
+        ),
+    ];
+    let stored: Vec<StoredEvent> = events
+        .iter()
+        .zip(1..)
+        .map(|((dispatch, event), seq)| {
+            let (kind, event) = event.to_parts();
+            StoredEvent {
+                id: EventId::fresh(),
+                agent: agent.to_owned(),
+                instance: id.clone(),
+                seq: Seq::new(seq),
+                dispatch: *dispatch,
+                at: 0,
+                kind,
+                event,
+            }
+        })
+        .collect();
+    let epoch = store.acquire(agent, id).await.unwrap();
+    store
+        .append(agent, id, epoch, Seq::default(), &stored)
+        .await
+        .unwrap();
+    store.release(agent, id, epoch).await.unwrap();
+    receipts.map(|dispatch_id| Receipt { dispatch_id })
+}
+
+/// A handle to a fresh actor over `store` for an agent whose runs fail at once.
+fn spawned(store: &Store, id: &InstanceId, shutdown: &CancellationToken) -> AgentInstance {
+    let agent = Agent::new("queued", |_: &mut AgentContext| String::new());
+    AgentInstance::spawn(
+        "queued".to_owned(),
+        agent.for_instance(id.clone(), ()),
+        id.clone(),
+        Value::Null,
+        store.clone(),
+        shutdown,
+    )
+}
+
+#[tokio::test]
+async fn a_read_that_recovers_the_stream_runs_its_queued_dispatches() {
+    let store = Store::in_memory();
+    let id = InstanceId::new("queued");
+    let [_, second] = left_queued(&store, "queued", &id).await;
+    let shutdown = CancellationToken::new();
+    let instance = spawned(&store, &id, &shutdown);
+    let read = tokio::time::timeout(Duration::from_secs(5), instance.read(&second)).await;
+    assert!(
+        matches!(
+            read,
+            Ok(Err(Error::Run {
+                outcome: Outcome::Failed { .. },
+                ..
+            }))
+        ),
+        "got {read:?}"
+    );
+}
+
+#[tokio::test]
+async fn abort_settles_dispatches_it_has_not_recovered_yet() {
+    let store = Store::in_memory();
+    let id = InstanceId::new("queued");
+    let receipts = left_queued(&store, "queued", &id).await;
+    let shutdown = CancellationToken::new();
+    let instance = spawned(&store, &id, &shutdown);
+    instance.abort().await.unwrap();
+    for receipt in &receipts {
+        let read = tokio::time::timeout(Duration::from_secs(5), instance.read(receipt)).await;
+        assert!(
+            matches!(
+                read,
+                Ok(Err(Error::Run {
+                    outcome: Outcome::Aborted,
+                    ..
+                }))
+            ),
+            "got {read:?}"
+        );
+    }
+}

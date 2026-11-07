@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::{self, BoxFuture};
 use schemars::JsonSchema;
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, MissedTickBehavior};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::InstanceAgent;
@@ -325,9 +325,8 @@ struct InstanceActor {
 impl InstanceActor {
     /// Runs until the runtime is dropped or every handle is gone.
     async fn run(mut self) {
-        let mut renew = tokio::time::interval(self.store.ttl() / 3);
-        renew.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
+            let renew_at = self.renew_at();
             select! {
                 biased;
                 () = self.cancel.cancelled() => break,
@@ -335,7 +334,7 @@ impl InstanceActor {
                     let _ = respond_to.send(self.abort().await);
                 }
                 (run, step) = stepping(&mut self.running) => self.stepped(run, step).await,
-                _ = renew.tick(), if self.lease.is_some() => self.renew().await,
+                () = tokio::time::sleep_until(renew_at), if self.lease.is_some() => self.renew().await,
                 command = self.inbox.recv() => match command {
                     Some(command) => self.command(command).await,
                     None => break,
@@ -407,7 +406,8 @@ impl InstanceActor {
         self.append(events).await
     }
 
-    /// Takes the lease and recovers the stream, unless already holding it.
+    /// Takes the lease and recovers the stream, unless already holding it,
+    /// then starts the first recovered dispatch.
     async fn hold(&mut self) -> Result<()> {
         if self.lease.is_some() {
             return Ok(());
@@ -415,13 +415,14 @@ impl InstanceActor {
         let asked = Instant::now();
         let epoch = self.store.acquire(&self.name, &self.id).await?;
         self.lease = Some((epoch, asked + trusted(&self.store)));
-        let recovered = self.recover().await;
-        if recovered.is_err()
-            && let Some((epoch, _)) = self.lease.take()
-        {
-            let _ = self.store.release(&self.name, &self.id, epoch).await;
+        if let Err(e) = self.recover().await {
+            if let Some((epoch, _)) = self.lease.take() {
+                let _ = self.store.release(&self.name, &self.id, epoch).await;
+            }
+            return Err(e);
         }
-        recovered
+        self.start_next().await;
+        Ok(())
     }
 
     /// Folds the stream from its first event, then settles a dispatch that
@@ -528,6 +529,8 @@ impl InstanceActor {
 
     /// Stops the running dispatch and settles it and every queued one as aborted.
     async fn abort(&mut self) -> Result<()> {
+        // What is queued is known only once the stream is recovered.
+        self.hold().await?;
         if self.folded.pending.is_empty() {
             return Ok(());
         }
@@ -560,7 +563,7 @@ impl InstanceActor {
             .iter()
             .map(|(dispatch, event)| {
                 seq = seq.next();
-                let (kind, event) = event.clone().into_parts();
+                let (kind, event) = event.to_parts();
                 StoredEvent {
                     id: EventId::fresh(),
                     agent: self.name.clone(),
@@ -607,6 +610,18 @@ impl InstanceActor {
         }
     }
 
+    /// When to renew the lease: a third of its TTL after it was last taken or
+    /// renewed (now, when not holding it; the branch is then disabled).
+    fn renew_at(&self) -> Instant {
+        let ttl = self.store.ttl();
+        match self.lease {
+            Some((_, deadline)) => {
+                deadline - trusted(&self.store) + (ttl / 3).max(Duration::from_millis(1))
+            }
+            None => Instant::now(),
+        }
+    }
+
     /// Whether the lease can still be trusted to start a step.
     fn trusts_lease(&self) -> bool {
         self.lease
@@ -647,7 +662,7 @@ fn stepping(
 }
 
 /// How long after asking for a lease the actor trusts it: its TTL less a tenth.
-fn trusted(store: &Store) -> std::time::Duration {
+fn trusted(store: &Store) -> Duration {
     store.ttl() - store.ttl() / 10
 }
 

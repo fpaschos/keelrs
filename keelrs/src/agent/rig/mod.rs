@@ -86,10 +86,18 @@ pub(crate) fn push_result(history: &mut Vec<Message>, part: &ToolResultPart) {
             _ => None,
         })
         .unwrap_or_default();
+    let rank = |id: &CallId| {
+        order
+            .iter()
+            .position(|call| call == id)
+            .unwrap_or(usize::MAX)
+    };
+    // Only a non-empty message of nothing but tool results takes more of them.
     let results_last = matches!(
         history.last().map(|m| m.0.as_ref()),
         Some(RigMessage::User { content })
-            if content.iter().all(|c| matches!(c, UserContent::ToolResult(_)))
+            if !content.is_empty()
+                && content.iter().all(|c| matches!(c, UserContent::ToolResult(_)))
     );
     if !results_last {
         history.push(Message(Arc::new(RigMessage::User {
@@ -97,16 +105,15 @@ pub(crate) fn push_result(history: &mut Vec<Message>, part: &ToolResultPart) {
         })));
     }
     let last = history.last_mut().expect("pushed above");
-    let mut message = RigMessage::clone(&last.0);
-    if let RigMessage::User { content } = &mut message {
-        content.push(UserContent::ToolResult(part.0.clone()));
-        let at = |c: &UserContent| match c {
-            UserContent::ToolResult(r) => order.iter().position(|id| *id == r.call),
-            _ => None,
-        };
-        content.sort_by_key(|c| at(c).unwrap_or(usize::MAX));
+    // Copies the message only while another history shares it.
+    if let RigMessage::User { content } = Arc::make_mut(&mut last.0) {
+        let mine = rank(&part.0.call);
+        let at = content
+            .iter()
+            .position(|c| matches!(c, UserContent::ToolResult(r) if rank(&r.call) > mine))
+            .unwrap_or(content.len());
+        content.insert(at, UserContent::ToolResult(part.0.clone()));
     }
-    last.0 = Arc::new(message);
 }
 
 /// A result saying `why` for each tool call at the end of `history` that has none:
@@ -343,18 +350,21 @@ impl Run {
 
     /// The result the run built for the call `id`.
     fn result_of(&self, id: &CallId) -> Result<ToolResultPart, String> {
-        self.run
-            .full_history()
-            .into_iter()
-            .rev()
-            .find_map(|message| match message {
-                RigMessage::User { content } => content.into_iter().find_map(|c| match c {
-                    UserContent::ToolResult(r) if r.call == *id => Some(ToolResultPart(r)),
-                    _ => None,
-                }),
+        let find = |message: &RigMessage| match message {
+            RigMessage::User { content } => content.iter().find_map(|c| match c {
+                UserContent::ToolResult(r) if r.call == *id => Some(ToolResultPart(r.clone())),
                 _ => None,
-            })
-            .ok_or_else(|| format!("no result for tool call `{id}`"))
+            }),
+            _ => None,
+        };
+        // A finished batch is the run's last message; an open one shows only
+        // at the end of its full history, which Rig builds by copying.
+        let found = if self.calls.is_empty() {
+            self.run.messages().last().and_then(|m| find(m))
+        } else {
+            self.run.full_history().last().and_then(find)
+        };
+        found.ok_or_else(|| format!("no result for tool call `{id}`"))
     }
 
     /// Renders the agent and calls the model once, leaving its answer with the run.

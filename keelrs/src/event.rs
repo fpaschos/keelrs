@@ -36,7 +36,7 @@ pub(crate) enum Event {
 
 impl Event {
     /// The event's `type` and its fields, as a [`StoredEvent`] holds them.
-    pub(crate) fn into_parts(self) -> (String, Value) {
+    pub(crate) fn to_parts(&self) -> (String, Value) {
         let Ok(Value::Object(mut tagged)) = serde_json::to_value(self) else {
             unreachable!("an adjacently tagged enum serializes as an object");
         };
