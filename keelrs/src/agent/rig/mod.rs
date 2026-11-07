@@ -150,7 +150,7 @@ pub(crate) struct Run {
     connected: Option<(DynModel<Completion>, Option<Thinking>)>,
     /// The last render's tools, by name, and its sandbox, for the `CallTools`
     /// step after its model call.
-    pinned: Option<(HashMap<String, Tool>, Sandbox)>,
+    pinned: Option<(Arc<HashMap<String, Tool>>, Sandbox)>,
     /// How many of the run's messages earlier steps produced.
     produced: usize,
     /// The step taken after a model call, to run next.
@@ -279,8 +279,9 @@ impl Run {
                         .as_ref()
                         .ok_or("the run called tools before any render")?;
                     // One reply's calls run concurrently; Rig commits them in call order.
+                    // Each shares the render's tools.
                     for call in calls {
-                        let (tools, sandbox) = (tools.clone(), sandbox.clone());
+                        let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
                         self.calls.push(Box::pin(
                             async move { answer(call, &tools, &sandbox).await },
                         ));
@@ -380,10 +381,12 @@ impl Run {
             })
             .collect::<Result<Vec<_>, String>>()?;
         self.pinned = Some((
-            tools
-                .iter()
-                .map(|tool| (tool.name.to_string(), tool.clone()))
-                .collect(),
+            Arc::new(
+                tools
+                    .iter()
+                    .map(|tool| (tool.name.to_string(), tool.clone()))
+                    .collect(),
+            ),
             sb,
         ));
 
@@ -556,4 +559,4 @@ fn reasoning(thinking: Thinking) -> Reasoning {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

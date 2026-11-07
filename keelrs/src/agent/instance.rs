@@ -8,11 +8,9 @@
 //! adds up to ([`Folded`]).
 
 use std::collections::{HashMap, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::future::{self, BoxFuture};
+use futures::future::{BoxFuture, OptionFuture};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -253,7 +251,7 @@ struct Folded {
 }
 
 impl Folded {
-    fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: &Event) {
+    fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: Event) {
         self.last = seq;
         let start = |pending: &mut VecDeque<Admitted>| {
             if let Some(first) = pending.front_mut()
@@ -263,29 +261,29 @@ impl Folded {
             }
         };
         match event {
-            Event::Created { data } => self.data = Some(data.clone()),
+            Event::Created { data } => self.data = Some(data),
             Event::Dispatched { text, structured } => {
                 if let Some(dispatch) = dispatch {
                     self.pending.push_back(Admitted {
                         dispatch,
-                        text: text.clone(),
-                        structured: structured.clone(),
+                        text,
+                        structured,
                         started: false,
                     });
                 }
             }
             Event::Message(message) => {
                 start(&mut self.pending);
-                self.history.push(message.clone());
+                self.history.push(message);
             }
             Event::ToolResult(part) => {
                 start(&mut self.pending);
-                rig::push_result(&mut self.history, part);
+                rig::push_result(&mut self.history, &part);
             }
             Event::Settled { result } => {
                 if let Some(dispatch) = dispatch {
                     self.pending.retain(|a| a.dispatch != dispatch);
-                    self.settled.insert(dispatch, result.clone());
+                    self.settled.insert(dispatch, result);
                 }
             }
         }
@@ -333,7 +331,9 @@ impl InstanceActor {
                 Some(Control::Abort { respond_to }) = self.control.recv() => {
                     let _ = respond_to.send(self.abort().await);
                 }
-                (run, step) = stepping(&mut self.running) => self.stepped(run, step).await,
+                Some((run, step)) = OptionFuture::from(self.running.as_mut().map(|r| &mut r.step)) => {
+                    self.stepped(run, step).await;
+                }
                 () = tokio::time::sleep_until(renew_at), if self.lease.is_some() => self.renew().await,
                 command = self.inbox.recv() => match command {
                     Some(command) => self.command(command).await,
@@ -341,6 +341,11 @@ impl InstanceActor {
                 },
             }
         }
+        self.release().await;
+    }
+
+    /// Gives up the lease, if held, best-effort.
+    async fn release(&mut self) {
         if let Some((epoch, _)) = self.lease.take() {
             let _ = self.store.release(&self.name, &self.id, epoch).await;
         }
@@ -356,7 +361,7 @@ impl InstanceActor {
             } => {
                 let admitted = self.admit(dispatch_id, text, structured).await;
                 let _ = respond_to.send(admitted);
-                self.start_next().await;
+                self.start_next();
             }
             Command::Read {
                 dispatch_id,
@@ -416,12 +421,10 @@ impl InstanceActor {
         let epoch = self.store.acquire(&self.name, &self.id).await?;
         self.lease = Some((epoch, asked + trusted(&self.store)));
         if let Err(e) = self.recover().await {
-            if let Some((epoch, _)) = self.lease.take() {
-                let _ = self.store.release(&self.name, &self.id, epoch).await;
-            }
+            self.release().await;
             return Err(e);
         }
-        self.start_next().await;
+        self.start_next();
         Ok(())
     }
 
@@ -433,9 +436,10 @@ impl InstanceActor {
             .read(&self.name, &self.id, Seq::default())
             .await?;
         let mut folded = Folded::default();
-        for stored in &stored {
+        for stored in stored {
+            let (seq, dispatch) = (stored.seq, stored.dispatch);
             let event = Event::of(stored).map_err(|reason| StoreError::Failed { reason })?;
-            folded.apply(stored.seq, stored.dispatch, &event);
+            folded.apply(seq, dispatch, event);
         }
         if folded.data.as_ref().is_some_and(|data| *data != self.data) {
             return Err(Error::InstanceDataConflict {
@@ -456,7 +460,7 @@ impl InstanceActor {
     }
 
     /// Starts the first stored dispatch, unless one is running.
-    async fn start_next(&mut self) {
+    fn start_next(&mut self) {
         if self.running.is_some() || self.lease.is_none() {
             return;
         }
@@ -470,8 +474,13 @@ impl InstanceActor {
             next.structured.map(Structured::from_spec),
             std::mem::take(&mut self.caches),
         );
+        self.run_step(next.dispatch, run);
+    }
+
+    /// Takes `run`'s next step for `dispatch`, kept until it finishes.
+    fn run_step(&mut self, dispatch: DispatchId, run: Run) {
         self.running = Some(Running {
-            dispatch: next.dispatch,
+            dispatch,
             step: Box::pin(run.step()),
         });
     }
@@ -486,10 +495,7 @@ impl InstanceActor {
                 let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
                 match self.append(events).await {
                     Ok(()) if self.trusts_lease() => {
-                        self.running = Some(Running {
-                            dispatch,
-                            step: Box::pin(run.step()),
-                        });
+                        self.run_step(dispatch, run);
                         return;
                     }
                     Ok(()) => Err(self.reset(self.fenced())),
@@ -507,7 +513,7 @@ impl InstanceActor {
             }
         };
         if stored.is_ok() {
-            self.start_next().await;
+            self.start_next();
         }
     }
 
@@ -539,15 +545,15 @@ impl InstanceActor {
             self.caches = Caches::default();
         }
         let mut events = Vec::new();
-        for (at, admitted) in self.folded.pending.iter().enumerate() {
-            if at == 0 {
-                events.extend(closing(&self.folded.history, admitted.dispatch));
-            }
+        if let Some(first) = self.folded.pending.front() {
+            events.extend(closing(&self.folded.history, first.dispatch));
+        }
+        for admitted in &self.folded.pending {
             let result = Err(Outcome::Aborted);
             events.push((Some(admitted.dispatch), Event::Settled { result }));
         }
         self.append(events).await?;
-        self.start_next().await;
+        self.start_next();
         Ok(())
     }
 
@@ -558,7 +564,8 @@ impl InstanceActor {
             return Err(self.reset(self.fenced()));
         };
         let at = now_ms();
-        let mut seq = self.folded.last;
+        let expected = self.folded.last;
+        let mut seq = expected;
         let stored: Vec<StoredEvent> = events
             .iter()
             .map(|(dispatch, event)| {
@@ -576,7 +583,6 @@ impl InstanceActor {
                 }
             })
             .collect();
-        let expected = self.folded.last;
         if let Err(e) = self
             .store
             .append(&self.name, &self.id, epoch, expected, &stored)
@@ -584,10 +590,12 @@ impl InstanceActor {
         {
             return Err(self.reset(store_error(e)));
         }
-        for (stored, (_, event)) in stored.iter().zip(&events) {
+        for (stored, (_, event)) in stored.iter().zip(events) {
+            let settles = matches!(event, Event::Settled { .. });
             self.folded.apply(stored.seq, stored.dispatch, event);
-            if let Event::Settled { result } = event
+            if settles
                 && let Some(dispatch) = stored.dispatch
+                && let Some(result) = self.folded.settled.get(&dispatch)
             {
                 for read in self.waiting.remove(&dispatch).unwrap_or_default() {
                     let _ = read.send(answer(dispatch, result));
@@ -648,16 +656,6 @@ impl InstanceActor {
             }
         }
         error.into()
-    }
-}
-
-/// The running step, or never when nothing runs.
-fn stepping(
-    running: &mut Option<Running>,
-) -> Pin<Box<dyn Future<Output = (Run, Result<Step, String>)> + Send + '_>> {
-    match running {
-        Some(running) => Box::pin(&mut running.step),
-        None => Box::pin(future::pending()),
     }
 }
 

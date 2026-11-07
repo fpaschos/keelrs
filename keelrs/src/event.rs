@@ -46,10 +46,12 @@ impl Event {
         (kind, tagged.remove("event").unwrap_or(Value::Null))
     }
 
-    /// The typed event a store gave back.
-    pub(crate) fn of(stored: &StoredEvent) -> Result<Self, String> {
-        let tagged = serde_json::json!({ "type": stored.kind, "event": stored.event });
-        serde_json::from_value(tagged)
-            .map_err(|e| format!("event {} (`{}`): {e}", stored.seq, stored.kind))
+    /// The typed event a store gave back; moves its JSON rather than copying it.
+    pub(crate) fn of(stored: StoredEvent) -> Result<Self, String> {
+        let at = format!("event {} (`{}`)", stored.seq, stored.kind);
+        let mut tagged = serde_json::Map::new();
+        tagged.insert("type".to_owned(), Value::String(stored.kind));
+        tagged.insert("event".to_owned(), stored.event);
+        serde_json::from_value(Value::Object(tagged)).map_err(|e| format!("{at}: {e}"))
     }
 }

@@ -164,7 +164,7 @@ fn agent_in(sb: &Sandbox) -> Agent {
 }
 
 /// An agent on the mock model, in an unused sandbox with no built-ins.
-fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+pub(crate) fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
     let sb = unused();
     sandboxed_agent(move |cx| {
         cx.use_sandbox(&sb).only([]);
@@ -181,7 +181,7 @@ fn sandboxed_agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) 
     })
 }
 
-fn clock() -> Tool {
+pub(crate) fn clock() -> Tool {
     Tool::host(
         "current_time",
         "The current time.",

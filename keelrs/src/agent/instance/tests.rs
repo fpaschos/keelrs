@@ -4,28 +4,18 @@
 //! In-crate: no public seam gives a `Runtime` a scripted model, so these drive
 //! [`Run`] and fold its events with [`Folded::apply`] as the actor does.
 
-use std::convert::Infallible;
-
 use rig_core::completion::CompletionRequest;
 use rig_core::message::{AssistantContent, Message as RigMessage, ToolResultContent, UserContent};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
 use super::*;
-use crate::sandbox::unused;
-use crate::{Agent, AgentContext, Tool, ToolCall};
+use crate::agent::rig::tests::{agent as scripted, clock};
+use crate::{Agent, AgentContext};
 
 /// An agent on the mock model with one tool, `current_time`.
 fn agent() -> InstanceAgent {
-    let sb = unused();
-    Agent::new("scripted", move |cx: &mut AgentContext| {
-        cx.use_model("mock/model");
-        cx.use_sandbox(&sb).only([]);
-        cx.use_tool(Tool::host(
-            "current_time",
-            "The current time.",
-            async |_: ToolCall<()>| Ok::<_, Infallible>("noon"),
-        ));
-        String::new()
+    scripted(|cx| {
+        cx.use_tool(clock());
     })
     .for_instance(InstanceId::new("test"), ())
 }
@@ -53,7 +43,7 @@ fn run(
 impl Folded {
     fn fold(&mut self, dispatch: DispatchId, events: impl IntoIterator<Item = Event>) {
         for event in events {
-            self.apply(self.last.next(), Some(dispatch), &event);
+            self.apply(self.last.next(), Some(dispatch), event);
         }
     }
 
