@@ -6,8 +6,8 @@ use std::sync::{Arc, OnceLock};
 use schemars::generate::SchemaSettings;
 use schemars::transform::RecursiveTransform;
 use schemars::{JsonSchema, Schema};
-use serde::de::{DeserializeOwned, Error as _};
-use serde::{Deserialize, Deserializer};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::rig::args_schema;
@@ -30,26 +30,72 @@ pub(crate) const REASK: &str =
 const FINISH_DESCRIPTION: &str = "Call this once, when the task is complete, with your final \
     answer as the arguments. They are validated against the schema; the first successful call wins.";
 
-/// A `T` that is not a JSON object travels as `{"result": T}`.
-#[derive(Deserialize, JsonSchema)]
+/// A `T` that is not a JSON object travels as `{"result": T}`; only its schema is used.
+#[derive(JsonSchema)]
+#[expect(dead_code, reason = "only the schema is used")]
 struct Wrapped<T> {
-    result: T,
+    result: Checked<T>,
 }
 
-// Validate as T but retain the original JSON, without requiring Serialize.
+// T's schema on a type that is never an `Option`, so `result` stays required.
 // Not rustdoc: schema derivation would expose this comment to the model.
 #[derive(JsonSchema)]
 #[schemars(transparent)]
+#[expect(dead_code, reason = "only the schema is used")]
 struct Checked<T>(
     #[schemars(with = "T")] Value,
     #[schemars(skip)] PhantomData<fn() -> T>,
 );
 
-impl<'de, T: DeserializeOwned> Deserialize<'de> for Checked<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        T::deserialize(&value).map_err(D::Error::custom)?;
-        Ok(Self(value, PhantomData))
+/// How `finish_structured`'s arguments carry the result.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Shape {
+    /// They are the result, a JSON object.
+    Object,
+    /// As `{"result": T}`, `T` not being an object.
+    Wrapped,
+    /// An empty object stands for `()`, recorded as `null`.
+    Unit,
+}
+
+/// What a structured result asks of the model: kept with the dispatch, so a
+/// dispatch recovered from its events asks for the same result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StructuredSpec {
+    /// The JSON schema of `finish_structured`'s arguments.
+    schema: Value,
+    description: String,
+    shape: Shape,
+}
+
+impl StructuredSpec {
+    /// The structured result `T`.
+    pub(crate) fn of<T>() -> Self
+    where
+        T: DeserializeOwned + JsonSchema + 'static,
+    {
+        let mut schema = result_schema::<T>();
+        let description = match schemars::schema_for!(T).get("description") {
+            Some(Value::String(doc)) => format!("{FINISH_DESCRIPTION}\n\n{doc}"),
+            _ => FINISH_DESCRIPTION.to_owned(),
+        };
+        let shape = if schema["type"] == "null" {
+            // Keep the empty-object calling convention for `()`.
+            schema = args_schema::<T>();
+            Shape::Unit
+        } else if schema["type"] == "object" {
+            Shape::Object
+        } else {
+            schema = result_schema::<Wrapped<T>>();
+            Shape::Wrapped
+        };
+        schema.as_object_mut().unwrap().remove("description");
+        Self {
+            schema,
+            description,
+            shape,
+        }
     }
 }
 
@@ -62,29 +108,42 @@ pub(crate) struct Structured {
 
 impl Structured {
     /// The structured result `T`.
+    #[cfg(test)]
     pub(crate) fn of<T>() -> Self
     where
         T: DeserializeOwned + JsonSchema + 'static,
     {
-        let mut schema = result_schema::<T>();
-        let description = match schemars::schema_for!(T).get("description") {
-            Some(Value::String(doc)) => format!("{FINISH_DESCRIPTION}\n\n{doc}"),
-            _ => FINISH_DESCRIPTION.to_owned(),
-        };
-        let recorded = Arc::default();
-        // Keep the empty-object calling convention for `()`.
-        if schema["type"] == "null" {
-            schema = args_schema::<T>();
-        }
-        let mut tool = if schema["type"] == "object" {
-            finish::<Checked<T>>(description, &recorded, |checked| checked.0)
-        } else {
-            schema = result_schema::<Wrapped<Checked<T>>>();
-            finish::<Wrapped<Checked<T>>>(description, &recorded, |wrapped| wrapped.result.0)
-        };
-        schema.as_object_mut().unwrap().remove("description");
+        Self::from_spec(StructuredSpec::of::<T>())
+    }
+
+    /// The result `spec` asks for. The model's arguments are checked against
+    /// its schema; the caller deserializes the recorded value.
+    pub(crate) fn from_spec(spec: StructuredSpec) -> Self {
+        let recorded: Arc<OnceLock<Value>> = Arc::default();
+        let kept = recorded.clone();
+        let shape = spec.shape;
+        let mut tool = Tool::host(
+            FINISH_STRUCTURED,
+            spec.description,
+            move |call: ToolCall<Value>| {
+                let kept = kept.clone();
+                async move {
+                    let value = match (shape, call.data) {
+                        (Shape::Wrapped, Value::Object(mut fields)) => {
+                            fields.remove("result").unwrap_or(Value::Null)
+                        }
+                        (Shape::Unit, _) => Value::Null,
+                        (_, value) => value,
+                    };
+                    match kept.set(value) {
+                        Ok(()) => Ok::<_, String>("Recorded."),
+                        Err(_) => Ok("already finished"),
+                    }
+                }
+            },
+        );
         // Ordinary tool arguments omit nulls; a structured result must retain them.
-        tool.schema = Arc::new(schema);
+        tool.schema = Arc::new(spec.schema);
         Self { tool, recorded }
     }
 
@@ -121,27 +180,4 @@ fn result_schema<T: JsonSchema>() -> Value {
         .into_generator()
         .into_root_schema_for::<T>()
         .to_value()
-}
-
-/// `finish_structured` over arguments `Args`, recording `unwrap(args)` in
-/// `recorded`; the first call wins.
-fn finish<Args>(
-    description: String,
-    recorded: &Arc<OnceLock<Value>>,
-    unwrap: fn(Args) -> Value,
-) -> Tool
-where
-    Args: DeserializeOwned + JsonSchema + Send + 'static,
-{
-    let recorded = recorded.clone();
-    Tool::host(
-        FINISH_STRUCTURED,
-        description,
-        move |call: ToolCall<Args>| async move {
-            match recorded.set(unwrap(call.data)) {
-                Ok(()) => Ok::<_, String>("Recorded."),
-                Err(_) => Ok("already finished"),
-            }
-        },
-    )
 }

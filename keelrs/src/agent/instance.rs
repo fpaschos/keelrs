@@ -1,30 +1,38 @@
 //! Agent instances: a cloneable [`AgentInstance`] handle and the actor behind it
 //! (Alice Ryhl's "Actors with Tokio").
 //!
-//! The actor takes commands from its inbox one at a time, running each dispatch
-//! to settled before the next. The canonical events ([`Event`]) go to durable
-//! storage, marked `STORE:` below; until then the actor keeps each settled
-//! result in memory to answer reads.
+//! The actor is the only writer of its instance's event stream, while it
+//! holds the stream's lease. It stores each dispatch before returning its
+//! receipt, runs dispatches one at a time, step by step, storing what each
+//! step produced before the next, and answers reads from what the stream
+//! adds up to ([`Folded`]).
 
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::future::{BoxFuture, OptionFuture};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::InstanceAgent;
-use crate::agent::rig::{self, Settled};
+use crate::agent::rig::{self, Message, Run, Step};
 use crate::builtin::Caches;
-use crate::builtin::structured::Structured;
-use crate::event::{Event, EventId, Seq, StoredEvent};
+use crate::builtin::structured::{Structured, StructuredSpec};
+use crate::event::Event;
+use crate::store::{Epoch, EventId, Seq, Store, StoreError, StoredEvent};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
 const INBOX_CAPACITY: usize = 1024;
+
+/// What an aborted dispatch's unanswered tool calls are answered with.
+const ABORTED: &str = "aborted";
 
 /// One conversation with an agent, addressed by an id.
 ///
@@ -34,30 +42,40 @@ pub struct AgentInstance {
     id: InstanceId,
     /// The actor's inbox.
     inbox: mpsc::Sender<Command>,
+    /// The actor's control channel, served before the inbox.
+    control: mpsc::Sender<Control>,
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of `agent`, named `name`; `shutdown`
-    /// cancelling aborts it.
+    /// Spawns the actor for instance `id` of `agent`, named `name`, created
+    /// with `data` (as JSON) and kept in `store`; `shutdown` cancelling stops it.
     pub(crate) fn spawn(
         name: String,
         agent: InstanceAgent,
         id: InstanceId,
+        data: Value,
+        store: Store,
         shutdown: &CancellationToken,
     ) -> Self {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
+        let (control, controls) = mpsc::channel(1);
         let actor = InstanceActor {
             agent,
             name,
             id: id.clone(),
-            last: Seq::default(),
+            data,
             inbox: receiver,
+            control: controls,
             cancel: shutdown.child_token(),
-            settled: HashMap::new(),
+            store,
+            lease: None,
+            running: None,
+            waiting: HashMap::new(),
             caches: Caches::default(),
+            folded: Folded::default(),
         };
         tokio::spawn(actor.run());
-        Self { id, inbox }
+        Self { id, inbox, control }
     }
 
     /// The id that addresses this instance.
@@ -68,8 +86,9 @@ impl AgentInstance {
 
     /// Submits `message`; returns a receipt, not the reply.
     ///
-    /// The message runs after those dispatched before it; a model or connect
-    /// error shows up on [`read`](Self::read), not here.
+    /// The message is stored before the receipt returns, and runs after those
+    /// dispatched before it. A store error, or another runtime holding the
+    /// instance, shows up here; a model or connect error on [`read`](Self::read).
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
         self.submit(message.into(), None).await
     }
@@ -89,13 +108,13 @@ impl AgentInstance {
         T: DeserializeOwned + JsonSchema + 'static,
     {
         let Receipt { dispatch_id } = self
-            .submit(message.into(), Some(Structured::of::<T>()))
+            .submit(message.into(), Some(StructuredSpec::of::<T>()))
             .await?;
         let failed = |reason: String| Error::Run {
             outcome: Outcome::Failed { reason },
             dispatch_id,
         };
-        // The JSON the model sent, which `finish_structured` checked deserializes as `T`.
+        // The JSON the model sent, which the schema of `finish_structured` checked.
         let value = self
             .settled(dispatch_id)
             .await?
@@ -114,17 +133,40 @@ impl AgentInstance {
         })
     }
 
+    /// Stops the running dispatch and drops every queued one; each settles as
+    /// [`Outcome::Aborted`]. With nothing running or queued, does nothing.
+    ///
+    /// Served before dispatches and reads already sent.
+    pub async fn abort(&self) -> Result<()> {
+        let (respond_to, response) = oneshot::channel();
+        if self
+            .control
+            .send(Control::Abort { respond_to })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+        // An actor that stops before answering has nothing left to abort.
+        response.await.unwrap_or(Ok(()))
+    }
+
     /// Submits `text`, asking for `structured` when given.
-    async fn submit(&self, text: String, structured: Option<Structured>) -> Result<Receipt> {
+    async fn submit(&self, text: String, structured: Option<StructuredSpec>) -> Result<Receipt> {
         let dispatch_id = DispatchId::fresh();
+        let (respond_to, response) = oneshot::channel();
         let command = Command::Dispatch {
             dispatch_id,
             text,
             structured,
+            respond_to,
         };
         if self.inbox.send(command).await.is_err() {
             return Err(aborted(dispatch_id));
         }
+        response
+            .await
+            .unwrap_or_else(|_| Err(aborted(dispatch_id)))?;
         Ok(Receipt { dispatch_id })
     }
 
@@ -157,7 +199,9 @@ enum Command {
         dispatch_id: DispatchId,
         text: String,
         /// The structured result the message asks for, if any.
-        structured: Option<Structured>,
+        structured: Option<StructuredSpec>,
+        /// Answered once the dispatch is stored.
+        respond_to: oneshot::Sender<Result<()>>,
     },
     Read {
         dispatch_id: DispatchId,
@@ -165,127 +209,492 @@ enum Command {
     },
 }
 
-/// What a dispatched message settled with when it produced a reply.
-#[derive(Debug, Clone)]
-pub(crate) struct SettledValue {
-    /// The final assistant text.
-    text: String,
-    /// The structured result, when the message asked for one.
-    structured: Option<Value>,
+/// What an [`AgentInstance`] sends its actor ahead of the inbox.
+#[derive(Debug)]
+enum Control {
+    Abort {
+        respond_to: oneshot::Sender<Result<()>>,
+    },
 }
 
-/// Runs one agent instance's dispatches, one at a time.
-///
-/// The inbox is the queue: commands run in the order they were sent, and a
-/// dispatch runs to settled before the next command, so a read always finds its
-/// message settled.
+/// What a dispatched message settled with when it produced a reply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SettledValue {
+    /// The final assistant text.
+    pub(crate) text: String,
+    /// The structured result, when the message asked for one.
+    pub(crate) structured: Option<Value>,
+}
+
+/// A dispatch stored and not yet settled.
+#[derive(Debug, Clone)]
+struct Admitted {
+    dispatch: DispatchId,
+    text: String,
+    structured: Option<StructuredSpec>,
+    /// Whether its run has stored anything yet.
+    started: bool,
+}
+
+/// What the instance's event stream adds up to; changed only by `apply`.
+#[derive(Debug, Default)]
+struct Folded {
+    /// The `seq` of the last event.
+    last: Seq,
+    /// The data the instance was created with.
+    data: Option<Value>,
+    /// Every message of every dispatch, as the next run's history.
+    history: Vec<Message>,
+    settled: HashMap<DispatchId, Result<SettledValue, Outcome>>,
+    /// Stored dispatches not yet settled, in order; the first may be running.
+    pending: VecDeque<Admitted>,
+}
+
+impl Folded {
+    fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: Event) {
+        self.last = seq;
+        let start = |pending: &mut VecDeque<Admitted>| {
+            if let Some(first) = pending.front_mut()
+                && Some(first.dispatch) == dispatch
+            {
+                first.started = true;
+            }
+        };
+        match event {
+            Event::Created { data } => self.data = Some(data),
+            Event::Dispatched { text, structured } => {
+                if let Some(dispatch) = dispatch {
+                    self.pending.push_back(Admitted {
+                        dispatch,
+                        text,
+                        structured,
+                        started: false,
+                    });
+                }
+            }
+            Event::Message(message) => {
+                start(&mut self.pending);
+                self.history.push(message);
+            }
+            Event::ToolResult(part) => {
+                start(&mut self.pending);
+                rig::push_result(&mut self.history, &part);
+            }
+            Event::Settled { result } => {
+                if let Some(dispatch) = dispatch {
+                    self.pending.retain(|a| a.dispatch != dispatch);
+                    self.settled.insert(dispatch, result);
+                }
+            }
+        }
+    }
+}
+
+/// The dispatch being run, and its step in flight.
+struct Running {
+    dispatch: DispatchId,
+    step: BoxFuture<'static, (Run, Result<Step, String>)>,
+}
+
+/// Runs one agent instance's dispatches, one at a time, writing its events.
 struct InstanceActor {
     agent: InstanceAgent,
     /// The agent's name, which with `id` names the instance's event stream.
     name: String,
     id: InstanceId,
-    /// The `seq` of the instance's last event; this actor alone numbers them.
-    last: Seq,
+    /// The data the instance is created with, as JSON.
+    data: Value,
     inbox: mpsc::Receiver<Command>,
-    /// The instance token: cancelling it aborts the run in flight and every later dispatch.
+    control: mpsc::Receiver<Control>,
+    /// Cancelled when the runtime is dropped.
     cancel: CancellationToken,
-    /// STORE: stands in for the stored `Event::Settled`s until durable storage keeps them.
-    settled: HashMap<DispatchId, Result<SettledValue, Outcome>>,
+    store: Store,
+    /// The lease's epoch, and when this actor stops trusting it (monotonic);
+    /// `None` while not holding it.
+    lease: Option<(Epoch, Instant)>,
+    running: Option<Running>,
+    /// Reads parked until their dispatch settles.
+    waiting: HashMap<DispatchId, Vec<oneshot::Sender<Result<SettledValue>>>>,
     /// What this instance's built-in tools remember of its current sandbox; never stored.
     caches: Caches,
+    folded: Folded,
 }
 
 impl InstanceActor {
-    /// Runs until every handle is gone.
+    /// Runs until the runtime is dropped or every handle is gone.
     async fn run(mut self) {
-        while let Some(command) = self.inbox.recv().await {
-            match command {
-                Command::Dispatch {
-                    dispatch_id,
-                    text,
-                    structured,
-                } => self.dispatch(dispatch_id, text, structured).await,
-                Command::Read {
-                    dispatch_id,
-                    respond_to,
-                } => {
-                    // STORE: answer from the stored `Event::Settled` for `dispatch_id`.
-                    let _ = respond_to.send(self.read(dispatch_id));
+        loop {
+            let renew_at = self.renew_at();
+            select! {
+                biased;
+                () = self.cancel.cancelled() => break,
+                Some(Control::Abort { respond_to }) = self.control.recv() => {
+                    let _ = respond_to.send(self.abort().await);
+                }
+                Some((run, step)) = OptionFuture::from(self.running.as_mut().map(|r| &mut r.step)) => {
+                    self.stepped(run, step).await;
+                }
+                () = tokio::time::sleep_until(renew_at), if self.lease.is_some() => self.renew().await,
+                command = self.inbox.recv() => match command {
+                    Some(command) => self.command(command).await,
+                    None => break,
+                },
+            }
+        }
+        self.release().await;
+    }
+
+    /// Gives up the lease, if held, best-effort.
+    async fn release(&mut self) {
+        if let Some((epoch, _)) = self.lease.take() {
+            let _ = self.store.release(&self.name, &self.id, epoch).await;
+        }
+    }
+
+    async fn command(&mut self, command: Command) {
+        match command {
+            Command::Dispatch {
+                dispatch_id,
+                text,
+                structured,
+                respond_to,
+            } => {
+                let admitted = self.admit(dispatch_id, text, structured).await;
+                let _ = respond_to.send(admitted);
+                self.start_next();
+            }
+            Command::Read {
+                dispatch_id,
+                respond_to,
+            } => {
+                if let Err(e) = self.hold().await {
+                    let _ = respond_to.send(Err(e));
+                    return;
+                }
+                match self.folded.settled.get(&dispatch_id) {
+                    Some(result) => {
+                        let _ = respond_to.send(answer(dispatch_id, result));
+                    }
+                    None if self
+                        .folded
+                        .pending
+                        .iter()
+                        .any(|a| a.dispatch == dispatch_id) =>
+                    {
+                        self.waiting
+                            .entry(dispatch_id)
+                            .or_default()
+                            .push(respond_to);
+                    }
+                    None => {
+                        let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
+                    }
                 }
             }
         }
     }
 
-    /// Runs one dispatch to settled; a kill aborts it.
-    async fn dispatch(
+    /// Stores a dispatch, after the instance's `created` when the stream is empty.
+    async fn admit(
         &mut self,
         dispatch_id: DispatchId,
         text: String,
-        structured: Option<Structured>,
-    ) {
-        // STORE: load the history from the stored `Event::Message`s.
-        let history = Vec::new();
+        structured: Option<StructuredSpec>,
+    ) -> Result<()> {
+        self.hold().await?;
         let mut events = Vec::new();
-        let run = rig::run(
-            self.agent.clone(),
-            text,
-            history,
-            structured,
-            &mut self.caches,
-        );
-        let result = select! {
-            biased;
-            // Dropping the run's future stops its model call.
-            () = self.cancel.cancelled() => Err(Outcome::Aborted),
-            result = run => match result {
-                Ok(Settled { reply, messages, structured }) => {
-                    events.extend(messages.into_iter().map(Event::Message));
-                    Ok(SettledValue { text: reply, structured })
-                }
-                Err(reason) => Err(Outcome::Failed { reason }),
-            },
-        };
-        events.push(Event::Settled {
-            dispatch_id,
-            result: result.clone(),
-        });
-        let at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        if self.folded.last == Seq::default() {
+            let data = self.data.clone();
+            events.push((None, Event::Created { data }));
+        }
+        events.push((Some(dispatch_id), Event::Dispatched { text, structured }));
+        self.append(events).await
+    }
+
+    /// Takes the lease and recovers the stream, unless already holding it,
+    /// then starts the first recovered dispatch.
+    async fn hold(&mut self) -> Result<()> {
+        if self.lease.is_some() {
+            return Ok(());
+        }
+        let asked = Instant::now();
+        let epoch = self.store.acquire(&self.name, &self.id).await?;
+        self.lease = Some((epoch, asked + trusted(&self.store)));
+        if let Err(e) = self.recover().await {
+            self.release().await;
+            return Err(e);
+        }
+        self.start_next();
+        Ok(())
+    }
+
+    /// Folds the stream from its first event, then settles a dispatch that
+    /// was running when the last writer stopped.
+    async fn recover(&mut self) -> Result<()> {
+        let stored = self
+            .store
+            .read(&self.name, &self.id, Seq::default())
+            .await?;
+        let mut folded = Folded::default();
+        for stored in stored {
+            let (seq, dispatch) = (stored.seq, stored.dispatch);
+            let event = Event::of(stored).map_err(|reason| StoreError::Failed { reason })?;
+            folded.apply(seq, dispatch, event);
+        }
+        if folded.data.as_ref().is_some_and(|data| *data != self.data) {
+            return Err(Error::InstanceDataConflict {
+                agent: self.name.clone(),
+                id: self.id.clone(),
             });
+        }
+        self.folded = folded;
+        // The recovery seam: Restart replaces this with continuing the dispatch.
+        if let Some(first) = self.folded.pending.front()
+            && first.started
+        {
+            let dispatch = first.dispatch;
+            self.settle(dispatch, Vec::new(), Err(Outcome::Aborted))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Starts the first stored dispatch, unless one is running.
+    fn start_next(&mut self) {
+        if self.running.is_some() || self.lease.is_none() {
+            return;
+        }
+        let Some(next) = self.folded.pending.front().cloned() else {
+            return;
+        };
+        let run = Run::new(
+            self.agent.clone(),
+            next.text,
+            self.folded.history.clone(),
+            next.structured.map(Structured::from_spec),
+            std::mem::take(&mut self.caches),
+        );
+        self.run_step(next.dispatch, run);
+    }
+
+    /// Takes `run`'s next step for `dispatch`, kept until it finishes.
+    fn run_step(&mut self, dispatch: DispatchId, run: Run) {
+        self.running = Some(Running {
+            dispatch,
+            step: Box::pin(run.step()),
+        });
+    }
+
+    /// Stores what a step produced, then takes the next one.
+    async fn stepped(&mut self, run: Run, step: Result<Step, String>) {
+        let Some(Running { dispatch, .. }) = self.running.take() else {
+            return;
+        };
+        let stored = match step {
+            Ok(Step::Append(events)) => {
+                let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
+                match self.append(events).await {
+                    Ok(()) if self.trusts_lease() => {
+                        self.run_step(dispatch, run);
+                        return;
+                    }
+                    Ok(()) => Err(self.reset(self.fenced())),
+                    Err(e) => Err(e),
+                }
+            }
+            Ok(Step::Settled(events, value)) => {
+                self.caches = run.into_caches();
+                self.settle(dispatch, events, Ok(value)).await
+            }
+            Err(reason) => {
+                self.caches = run.into_caches();
+                self.settle(dispatch, Vec::new(), Err(Outcome::Failed { reason }))
+                    .await
+            }
+        };
+        if stored.is_ok() {
+            self.start_next();
+        }
+    }
+
+    /// Stores `events` and how `dispatch` settled in one append, answering
+    /// unanswered tool calls first when it did not finish.
+    async fn settle(
+        &mut self,
+        dispatch: DispatchId,
+        events: Vec<Event>,
+        result: Result<SettledValue, Outcome>,
+    ) -> Result<()> {
+        let mut events: Vec<_> = events.into_iter().map(|e| (Some(dispatch), e)).collect();
+        if result.is_err() {
+            events.extend(closing(&self.folded.history, dispatch));
+        }
+        events.push((Some(dispatch), Event::Settled { result }));
+        self.append(events).await
+    }
+
+    /// Stops the running dispatch and settles it and every queued one as aborted.
+    async fn abort(&mut self) -> Result<()> {
+        // What is queued is known only once the stream is recovered.
+        self.hold().await?;
+        if self.folded.pending.is_empty() {
+            return Ok(());
+        }
+        if self.running.take().is_some() {
+            // The run held them; what they remembered of the sandbox is lost.
+            self.caches = Caches::default();
+        }
+        let mut events = Vec::new();
+        if let Some(first) = self.folded.pending.front() {
+            events.extend(closing(&self.folded.history, first.dispatch));
+        }
+        for admitted in &self.folded.pending {
+            let result = Err(Outcome::Aborted);
+            events.push((Some(admitted.dispatch), Event::Settled { result }));
+        }
+        self.append(events).await?;
+        self.start_next();
+        Ok(())
+    }
+
+    /// Stores `events` after the stream's last, then folds them and answers
+    /// the reads they settle. Any store failure resets the actor.
+    async fn append(&mut self, events: Vec<(Option<DispatchId>, Event)>) -> Result<()> {
+        let Some((epoch, _)) = self.lease else {
+            return Err(self.reset(self.fenced()));
+        };
+        let at = now_ms();
+        let expected = self.folded.last;
+        let mut seq = expected;
         let stored: Vec<StoredEvent> = events
-            .into_iter()
-            .map(|event| {
-                self.last = self.last.next();
+            .iter()
+            .map(|(dispatch, event)| {
+                seq = seq.next();
+                let (kind, event) = event.to_parts();
                 StoredEvent {
                     id: EventId::fresh(),
                     agent: self.name.clone(),
                     instance: self.id.clone(),
-                    seq: self.last,
-                    dispatch: Some(dispatch_id),
+                    seq,
+                    dispatch: *dispatch,
                     at,
+                    kind,
                     event,
                 }
             })
             .collect();
-        // STORE: append `stored` to durable storage, before answering reads.
-        drop(stored);
-        self.settled.insert(dispatch_id, result);
+        if let Err(e) = self
+            .store
+            .append(&self.name, &self.id, epoch, expected, &stored)
+            .await
+        {
+            return Err(self.reset(store_error(e)));
+        }
+        for (stored, (_, event)) in stored.iter().zip(events) {
+            let settles = matches!(event, Event::Settled { .. });
+            self.folded.apply(stored.seq, stored.dispatch, event);
+            if settles
+                && let Some(dispatch) = stored.dispatch
+                && let Some(result) = self.folded.settled.get(&dispatch)
+            {
+                for read in self.waiting.remove(&dispatch).unwrap_or_default() {
+                    let _ = read.send(answer(dispatch, result));
+                }
+            }
+        }
+        Ok(())
     }
 
-    /// What `dispatch_id` settled with; never pending, as the inbox runs
-    /// every dispatch before a read sent after it.
-    fn read(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
-        match self.settled.get(&dispatch_id) {
-            Some(Ok(settled)) => Ok(settled.clone()),
-            Some(Err(outcome)) => Err(Error::Run {
-                outcome: outcome.clone(),
-                dispatch_id,
-            }),
-            None => Err(Error::DispatchNotFound(dispatch_id)),
+    async fn renew(&mut self) {
+        let Some((epoch, _)) = self.lease else {
+            return;
+        };
+        let asked = Instant::now();
+        match self.store.renew(&self.name, &self.id, epoch).await {
+            Ok(()) => self.lease = Some((epoch, asked + trusted(&self.store))),
+            Err(e) => {
+                self.reset(store_error(e));
+            }
         }
     }
+
+    /// When to renew the lease: a third of its TTL after it was last taken or
+    /// renewed (now, when not holding it; the branch is then disabled).
+    fn renew_at(&self) -> Instant {
+        let ttl = self.store.ttl();
+        match self.lease {
+            Some((_, deadline)) => {
+                deadline - trusted(&self.store) + (ttl / 3).max(Duration::from_millis(1))
+            }
+            None => Instant::now(),
+        }
+    }
+
+    /// Whether the lease can still be trusted to start a step.
+    fn trusts_lease(&self) -> bool {
+        self.lease
+            .is_some_and(|(_, deadline)| Instant::now() < deadline)
+    }
+
+    fn fenced(&self) -> StoreError {
+        StoreError::Fenced {
+            agent: self.name.clone(),
+            id: self.id.clone(),
+        }
+    }
+
+    /// Drops the run, the fold and the lease after a store failure, failing
+    /// every parked read with it; the next command recovers afresh.
+    fn reset(&mut self, error: StoreError) -> Error {
+        self.running = None;
+        self.lease = None;
+        self.folded = Folded::default();
+        self.caches = Caches::default();
+        for (_, reads) in self.waiting.drain() {
+            for read in reads {
+                let _ = read.send(Err(error.clone().into()));
+            }
+        }
+        error.into()
+    }
+}
+
+/// How long after asking for a lease the actor trusts it: its TTL less a tenth.
+fn trusted(store: &Store) -> Duration {
+    store.ttl() - store.ttl() / 10
+}
+
+/// An "aborted" result for each tool call `history` leaves unanswered.
+fn closing(history: &[Message], dispatch: DispatchId) -> Vec<(Option<DispatchId>, Event)> {
+    rig::close_pending(history, ABORTED)
+        .into_iter()
+        .map(|part| (Some(dispatch), Event::ToolResult(part)))
+        .collect()
+}
+
+fn store_error(error: Error) -> StoreError {
+    match error {
+        Error::Store(error) => error,
+        other => StoreError::Failed {
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// What a read of `dispatch_id` gets once it settled with `result`.
+fn answer(dispatch_id: DispatchId, result: &Result<SettledValue, Outcome>) -> Result<SettledValue> {
+    result.clone().map_err(|outcome| Error::Run {
+        outcome,
+        dispatch_id,
+    })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// The claim ticket for one dispatched message: plain data, readable from any
@@ -323,3 +732,6 @@ impl Reply {
         self.dispatch_id
     }
 }
+
+#[cfg(test)]
+mod tests;
