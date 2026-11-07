@@ -49,22 +49,11 @@ fn run(
     (run, model)
 }
 
-/// A stream fold with seq numbering, as the actor appends.
-struct Stream {
-    folded: Folded,
-}
-
-impl Stream {
-    fn new() -> Self {
-        Self {
-            folded: Folded::default(),
-        }
-    }
-
-    fn apply(&mut self, dispatch: DispatchId, events: impl IntoIterator<Item = Event>) {
+/// Test helpers that fold as the actor appends, numbering each event.
+impl Folded {
+    fn fold(&mut self, dispatch: DispatchId, events: impl IntoIterator<Item = Event>) {
         for event in events {
-            let seq = self.folded.last.next();
-            self.folded.apply(seq, Some(dispatch), &event);
+            self.apply(self.last.next(), Some(dispatch), &event);
         }
     }
 
@@ -72,7 +61,7 @@ impl Stream {
         let dispatch = DispatchId::fresh();
         let text = text.to_owned();
         let structured = None;
-        self.apply(dispatch, [Event::Dispatched { text, structured }]);
+        self.fold(dispatch, [Event::Dispatched { text, structured }]);
         dispatch
     }
 
@@ -82,11 +71,11 @@ impl Stream {
             let (next, step) = run.step().await;
             run = next;
             match step.unwrap() {
-                Step::Append(events) => self.apply(dispatch, events),
+                Step::Append(events) => self.fold(dispatch, events),
                 Step::Settled(events, value) => {
-                    self.apply(dispatch, events);
+                    self.fold(dispatch, events);
                     let result = Ok(value);
-                    self.apply(dispatch, [Event::Settled { result }]);
+                    self.fold(dispatch, [Event::Settled { result }]);
                     return;
                 }
             }
@@ -136,10 +125,10 @@ fn sent(request: &CompletionRequest) -> Vec<String> {
 
 #[tokio::test]
 async fn a_second_dispatch_runs_after_the_first_ones_messages() {
-    let mut stream = Stream::new();
+    let mut stream = Folded::default();
     let first = stream.dispatch("What time is it?");
     let (run1, _) = run(
-        &stream.folded,
+        &stream,
         "What time is it?",
         [
             MockTurn::tool_call("c1", "current_time", serde_json::json!({})),
@@ -147,11 +136,11 @@ async fn a_second_dispatch_runs_after_the_first_ones_messages() {
         ],
     );
     stream.settle(first, run1).await;
-    assert!(stream.folded.pending.is_empty());
-    assert!(matches!(stream.folded.settled.get(&first), Some(Ok(_))));
+    assert!(stream.pending.is_empty());
+    assert!(matches!(stream.settled.get(&first), Some(Ok(_))));
 
     let second = stream.dispatch("And now?");
-    let (run2, model) = run(&stream.folded, "And now?", [MockTurn::text("Still noon.")]);
+    let (run2, model) = run(&stream, "And now?", [MockTurn::text("Still noon.")]);
     stream.settle(second, run2).await;
     assert_eq!(
         sent(&model.requests()[0]),
@@ -167,10 +156,10 @@ async fn a_second_dispatch_runs_after_the_first_ones_messages() {
 
 #[tokio::test]
 async fn an_aborted_dispatchs_open_tool_calls_are_answered_before_the_next_one() {
-    let mut stream = Stream::new();
+    let mut stream = Folded::default();
     let aborted = stream.dispatch("What time is it?");
     let (run1, _) = run(
-        &stream.folded,
+        &stream,
         "What time is it?",
         [MockTurn::tool_call(
             "c1",
@@ -183,20 +172,17 @@ async fn an_aborted_dispatchs_open_tool_calls_are_answered_before_the_next_one()
     let Ok(Step::Append(events)) = step else {
         panic!("expected the model's answer, got {step:?}");
     };
-    stream.apply(aborted, events);
-    assert!(stream.folded.pending[0].started);
+    stream.fold(aborted, events);
+    assert!(stream.pending[0].started);
 
-    let closing = closing(&stream.folded.history, aborted);
-    stream.apply(aborted, closing.into_iter().map(|(_, event)| event));
+    let closing = closing(&stream.history, aborted);
+    stream.fold(aborted, closing.into_iter().map(|(_, event)| event));
     let result = Err(Outcome::Aborted);
-    stream.apply(aborted, [Event::Settled { result }]);
-    assert_eq!(
-        stream.folded.settled.get(&aborted),
-        Some(&Err(Outcome::Aborted))
-    );
+    stream.fold(aborted, [Event::Settled { result }]);
+    assert_eq!(stream.settled.get(&aborted), Some(&Err(Outcome::Aborted)));
 
     let next = stream.dispatch("Try again.");
-    let (run2, model) = run(&stream.folded, "Try again.", [MockTurn::text("Noon.")]);
+    let (run2, model) = run(&stream, "Try again.", [MockTurn::text("Noon.")]);
     stream.settle(next, run2).await;
     assert_eq!(
         sent(&model.requests()[0]),

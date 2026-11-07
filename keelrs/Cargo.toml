@@ -24,7 +24,7 @@ rig-agent.workspace = true
 rig-core = { workspace = true, features = ["reqwest"] }
 rig-tools.workspace = true
 schemars.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 serde_json.workspace = true
 thiserror.workspace = true

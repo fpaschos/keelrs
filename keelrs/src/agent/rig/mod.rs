@@ -4,7 +4,6 @@
 //! step that follows its model call (How a tool call runs).
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
@@ -45,20 +44,9 @@ use crate::tool::{Called, FailKind, Failed};
 use crate::{Model, Tool};
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct Message(Arc<RigMessage>);
-
-impl Serialize for Message {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Message {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        RigMessage::deserialize(deserializer).map(|m| Self(Arc::new(m)))
-    }
-}
 
 /// One tool call's result, as the next user message carries it; opaque so
 /// Rig's type stays in this module.
@@ -171,14 +159,6 @@ pub(crate) struct Run {
     calls: FuturesUnordered<Running>,
 }
 
-impl fmt::Debug for Run {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Run")
-            .field("turn", &self.run.turn())
-            .finish_non_exhaustive()
-    }
-}
-
 impl Run {
     /// A run of the instance's `agent` on `text` after `history`, its built-in
     /// tools remembering in `caches`. With `structured`, the run must end with
@@ -251,7 +231,6 @@ impl Run {
     }
 
     async fn advance(&mut self) -> Result<Step, String> {
-        let max_turns = self.agent.max_turns;
         loop {
             // C: the batch's next result to finish.
             if let Some(answered) = self.calls.next().await {
@@ -277,13 +256,7 @@ impl Run {
             }
             let step = match self.next.take() {
                 Some(step) => step,
-                None => match self.run.next_step() {
-                    Ok(step) => step,
-                    Err(PromptError::MaxTurns { .. }) => {
-                        return Err(format!("turn limit ({max_turns}) reached"));
-                    }
-                    Err(e) => return Err(e.to_string()),
-                },
+                None => self.next_step()?,
             };
             match step {
                 AgentRunStep::CallModel {
@@ -291,13 +264,7 @@ impl Run {
                 } => {
                     self.call_model(&prompt, &history).await?;
                     // B: the model's answer, once the run has taken it.
-                    self.next = Some(match self.run.next_step() {
-                        Ok(step) => step,
-                        Err(PromptError::MaxTurns { .. }) => {
-                            return Err(format!("turn limit ({max_turns}) reached"));
-                        }
-                        Err(e) => return Err(e.to_string()),
-                    });
+                    self.next = Some(self.next_step()?);
                     if let Some(AgentRunStep::Done(_)) = &self.next {
                         continue;
                     }
@@ -318,11 +285,6 @@ impl Run {
                             async move { answer(call, &tools, &sandbox).await },
                         ));
                     }
-                    // B, when the model call's step did not produce it.
-                    let events = self.produced();
-                    if !events.is_empty() {
-                        return Ok(Step::Append(events));
-                    }
                 }
                 AgentRunStep::Done(response) => {
                     // D: the final answer and settled together.
@@ -336,6 +298,15 @@ impl Run {
                 }
             }
         }
+    }
+
+    fn next_step(&mut self) -> Result<AgentRunStep, String> {
+        self.run.next_step().map_err(|e| match e {
+            PromptError::MaxTurns { .. } => {
+                format!("turn limit ({}) reached", self.agent.max_turns)
+            }
+            e => e.to_string(),
+        })
     }
 
     /// The run's messages no step has produced yet, as events.

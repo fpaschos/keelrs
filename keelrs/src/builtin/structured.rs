@@ -48,7 +48,7 @@ struct Checked<T>(
 );
 
 /// How `finish_structured`'s arguments carry the result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Shape {
     /// They are the result, a JSON object.
@@ -61,7 +61,7 @@ enum Shape {
 
 /// What a structured result asks of the model: kept with the dispatch, so a
 /// dispatch recovered from its events asks for the same result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StructuredSpec {
     /// The JSON schema of `finish_structured`'s arguments.
     schema: Value,

@@ -69,7 +69,7 @@ impl Seq {
 
     /// The position after this one.
     #[must_use]
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
     }
 }

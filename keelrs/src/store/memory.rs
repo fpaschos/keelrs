@@ -22,16 +22,6 @@ struct Stream {
     events: Vec<StoredEvent>,
 }
 
-impl Stream {
-    fn head(&self) -> Seq {
-        self.events.last().map_or_else(Seq::default, |e| e.seq)
-    }
-
-    fn is_current(&self, epoch: Epoch) -> bool {
-        self.epoch == epoch.get() && self.expires.is_some()
-    }
-}
-
 fn key(agent: &str, instance: &InstanceId) -> (String, InstanceId) {
     (agent.to_owned(), instance.clone())
 }
@@ -71,7 +61,8 @@ impl StoreBackend for Memory {
     ) -> Result<()> {
         let mut streams = self.0.lock();
         match streams.get_mut(&key(agent, instance)) {
-            Some(stream) if stream.is_current(epoch) => {
+            // Current: this epoch, not yet released.
+            Some(stream) if stream.epoch == epoch.get() && stream.expires.is_some() => {
                 stream.expires = Some(Instant::now() + ttl);
                 Ok(())
             }
@@ -119,7 +110,10 @@ impl StoreBackend for Memory {
         let mut streams = self.0.lock();
         match streams.get_mut(&key(agent, instance)) {
             // Only the epoch fences, as in SQL: an expired lease not yet taken over still writes.
-            Some(stream) if stream.epoch == epoch.get() && stream.head() == expected => {
+            Some(stream)
+                if stream.epoch == epoch.get()
+                    && stream.events.last().map_or(Seq::default(), |e| e.seq) == expected =>
+            {
                 stream.events.extend_from_slice(events);
                 Ok(())
             }
