@@ -5,7 +5,7 @@
 //! host. The application opens it, shares it by cloning, and declares it
 //! for every turn with
 //! [`AgentContext::use_sandbox`](crate::AgentContext::use_sandbox), which
-//! every agent calls exactly once per render; keelrs
+//! every agent calls exactly once per turn; keelrs
 //! never creates or removes one on its own, and holds one only for the
 //! dispatch that declared it.
 //!

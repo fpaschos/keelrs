@@ -71,21 +71,6 @@ impl<D> Agent<D> {
     }
 }
 
-impl<D: Send + Sync + 'static> Agent<D> {
-    /// This agent for instance `id`, its data frozen for the instance's life.
-    pub(crate) fn for_instance(&self, id: InstanceId, data: D) -> InstanceAgent {
-        let (f, data) = (self.f.clone(), Arc::new(data));
-        InstanceAgent {
-            max_turns: self.max_turns,
-            f: Arc::new(move || {
-                let mut cx = AgentContext::new(data.clone(), id.clone());
-                let returned = f(&mut cx);
-                (cx.into_declared(), returned)
-            }),
-        }
-    }
-}
-
 impl<D> Clone for Agent<D> {
     fn clone(&self) -> Self {
         Self {
@@ -104,16 +89,31 @@ impl<D> fmt::Debug for Agent<D> {
     }
 }
 
-/// An agent as one instance runs it, with that instance's id and data: what the run loop renders.
+/// How one agent instance sets up each turn: the agent function with the
+/// instance's id and data, and the turn limit.
 #[derive(Clone)]
-pub(crate) struct InstanceAgent {
+pub(crate) struct TurnSetup {
     pub(crate) max_turns: usize,
-    f: Arc<dyn Fn() -> (Declared, String) + Send + Sync>,
+    f: Arc<dyn Fn() -> Declared + Send + Sync>,
 }
 
-impl InstanceAgent {
-    /// Runs the agent function for one turn: its declarations and returned instructions.
-    pub(crate) fn render(&self) -> (Declared, String) {
+impl TurnSetup {
+    /// The turn setup of `agent` for instance `id`, its data frozen for the
+    /// instance's life.
+    pub(crate) fn new<D: Send + Sync + 'static>(agent: &Agent<D>, id: InstanceId, data: D) -> Self {
+        let (f, data) = (agent.f.clone(), Arc::new(data));
+        Self {
+            max_turns: agent.max_turns,
+            f: Arc::new(move || {
+                let mut cx = AgentContext::new(data.clone(), id.clone());
+                let returned = f(&mut cx);
+                cx.into_declared(returned)
+            }),
+        }
+    }
+
+    /// Runs the agent function for one turn and returns what it declared.
+    pub(crate) fn run(&self) -> Declared {
         (self.f)()
     }
 }

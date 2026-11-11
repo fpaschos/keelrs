@@ -107,15 +107,6 @@ pub(crate) struct Structured {
 }
 
 impl Structured {
-    /// The structured result `T`.
-    #[cfg(test)]
-    pub(crate) fn of<T>() -> Self
-    where
-        T: DeserializeOwned + JsonSchema + 'static,
-    {
-        Self::from_spec(StructuredSpec::of::<T>())
-    }
-
     /// The result `spec` asks for. The model's arguments are checked against
     /// its schema; the caller deserializes the recorded value.
     pub(crate) fn from_spec(spec: StructuredSpec) -> Self {

@@ -1,5 +1,5 @@
 //! The built-in skill tools, `activate_skill` and `read_skill_resource`: ordinary
-//! [`Tool`]s built each render over that render's skills, so they run on the
+//! [`Tool`]s built each turn over that turn's skills, so they run on the
 //! same tool loop as `use_tool` tools and are pinned with them.
 
 use std::borrow::Cow;

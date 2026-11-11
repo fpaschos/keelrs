@@ -118,7 +118,7 @@ async fn each_instance_remembers_only_what_its_own_builtins_read() {
 }
 
 #[tokio::test]
-async fn a_render_in_another_sandbox_forgets_what_the_builtins_read() {
+async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
     let (folder, first) = sandboxed().await;
     let second = crate::sandbox::local()
         .root(&folder.0)
@@ -165,7 +165,7 @@ async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
 }
 
 #[tokio::test]
-async fn a_failed_render_in_another_sandbox_keeps_what_the_builtins_read() {
+async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
     let (folder, first) = sandboxed().await;
     folder.write("a.txt", "one\n");
     let mut caches = Caches::default();

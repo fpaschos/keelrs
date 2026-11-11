@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::TurnSetup;
 use crate::store::Store;
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
@@ -121,7 +122,7 @@ impl Runtime {
             Entry::Vacant(entry) => {
                 let instance = AgentInstance::spawn(
                     name,
-                    registered.for_instance(id.clone(), data),
+                    TurnSetup::new(registered, id.clone(), data),
                     id,
                     json.clone(),
                     self.inner.store.clone(),

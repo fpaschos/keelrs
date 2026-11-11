@@ -12,12 +12,12 @@ use super::*;
 use crate::agent::rig::tests::{agent as scripted, clock};
 use crate::{Agent, AgentContext};
 
-/// An agent on the mock model with one tool, `current_time`.
-fn agent() -> InstanceAgent {
-    scripted(|cx| {
+/// The turn setup of an agent on the mock model with one tool, `current_time`.
+fn setup() -> TurnSetup {
+    let agent = scripted(|cx| {
         cx.use_tool(clock());
-    })
-    .for_instance(InstanceId::new("test"), ())
+    });
+    TurnSetup::new(&agent, InstanceId::new("test"), ())
 }
 
 /// A run of `text` after the folded history, against a model replying with `turns`.
@@ -29,7 +29,7 @@ fn run(
     let model = MockCompletionModel::from_turns(turns);
     let mock = model.clone();
     let run = Run::with_connect(
-        agent(),
+        setup(),
         text.to_owned(),
         folded.history.clone(),
         None,
@@ -233,15 +233,15 @@ async fn left_queued(store: &Store, agent: &str, id: &InstanceId) -> [Receipt; 2
 }
 
 /// A handle to a fresh actor over `store` for an agent whose runs fail at once.
-fn spawned(store: &Store, id: &InstanceId, shutdown: &CancellationToken) -> AgentInstance {
+fn spawned(store: &Store, id: &InstanceId) -> AgentInstance {
     let agent = Agent::new("queued", |_: &mut AgentContext| String::new());
     AgentInstance::spawn(
         "queued".to_owned(),
-        agent.for_instance(id.clone(), ()),
+        TurnSetup::new(&agent, id.clone(), ()),
         id.clone(),
         Value::Null,
         store.clone(),
-        shutdown,
+        &CancellationToken::new(),
     )
 }
 
@@ -250,8 +250,7 @@ async fn a_read_that_recovers_the_stream_runs_its_queued_dispatches() {
     let store = Store::in_memory();
     let id = InstanceId::new("queued");
     let [_, second] = left_queued(&store, "queued", &id).await;
-    let shutdown = CancellationToken::new();
-    let instance = spawned(&store, &id, &shutdown);
+    let instance = spawned(&store, &id);
     let read = tokio::time::timeout(Duration::from_secs(5), instance.read(&second)).await;
     assert!(
         matches!(
@@ -270,8 +269,7 @@ async fn abort_settles_dispatches_it_has_not_recovered_yet() {
     let store = Store::in_memory();
     let id = InstanceId::new("queued");
     let receipts = left_queued(&store, "queued", &id).await;
-    let shutdown = CancellationToken::new();
-    let instance = spawned(&store, &id, &shutdown);
+    let instance = spawned(&store, &id);
     instance.abort().await.unwrap();
     for receipt in &receipts {
         let read = tokio::time::timeout(Duration::from_secs(5), instance.read(receipt)).await;

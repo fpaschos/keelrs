@@ -172,7 +172,7 @@ fn an_instance_id_serializes_as_its_bare_string() {
     assert_eq!(serde_json::from_str::<InstanceId>(&json).unwrap(), id);
 }
 
-// Instance data and ids. Each agent records what its render saw, then fails
+// Instance data and ids. Each agent records what its turn setup saw, then fails
 // for want of a model: no network.
 
 #[derive(Serialize, Deserialize)]
@@ -182,7 +182,7 @@ struct Issue {
 
 type Seen = Arc<Mutex<Vec<(String, u64)>>>;
 
-/// An agent that records its instance's id and issue number on every render.
+/// An agent that records its instance's id and issue number on every turn setup.
 fn recorder(seen: &Seen) -> Agent<Issue> {
     let seen = seen.clone();
     Agent::new("recorder", move |cx: &mut AgentContext<Issue>| {
@@ -193,7 +193,7 @@ fn recorder(seen: &Seen) -> Agent<Issue> {
 }
 
 #[tokio::test]
-async fn a_render_reads_its_instances_data_and_id() {
+async fn a_turn_setup_reads_its_instances_data_and_id() {
     let seen = Seen::default();
     let agent = recorder(&seen);
     let runtime = Runtime::start([&agent]).unwrap();

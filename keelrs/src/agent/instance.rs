@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::InstanceAgent;
+use crate::agent::TurnSetup;
 use crate::agent::rig::{self, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
@@ -42,16 +42,17 @@ pub struct AgentInstance {
     id: InstanceId,
     /// The actor's inbox.
     inbox: mpsc::Sender<Command>,
-    /// The actor's control channel, served before the inbox.
-    control: mpsc::Sender<Control>,
+    /// The actor's control channel, served before the inbox: aborts.
+    control: mpsc::Sender<oneshot::Sender<Result<()>>>,
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of `agent`, named `name`, created
-    /// with `data` (as JSON) and kept in `store`; `shutdown` cancelling stops it.
+    /// Spawns the actor for instance `id` of the agent named `name`, its turns
+    /// set up by `setup`, created with `data` (as JSON) and kept in `store`;
+    /// `shutdown` cancelling stops it.
     pub(crate) fn spawn(
         name: String,
-        agent: InstanceAgent,
+        setup: TurnSetup,
         id: InstanceId,
         data: Value,
         store: Store,
@@ -60,7 +61,7 @@ impl AgentInstance {
         let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
         let (control, controls) = mpsc::channel(1);
         let actor = InstanceActor {
-            agent,
+            setup,
             name,
             id: id.clone(),
             data,
@@ -139,15 +140,8 @@ impl AgentInstance {
     /// Served before dispatches and reads already sent.
     pub async fn abort(&self) -> Result<()> {
         let (respond_to, response) = oneshot::channel();
-        if self
-            .control
-            .send(Control::Abort { respond_to })
-            .await
-            .is_err()
-        {
-            return Ok(());
-        }
-        // An actor that stops before answering has nothing left to abort.
+        let _ = self.control.send(respond_to).await;
+        // An actor that is gone, or stops before answering, has nothing left to abort.
         response.await.unwrap_or(Ok(()))
     }
 
@@ -161,9 +155,8 @@ impl AgentInstance {
             structured,
             respond_to,
         };
-        if self.inbox.send(command).await.is_err() {
-            return Err(aborted(dispatch_id));
-        }
+        // A gone actor drops `respond_to` with the command: aborted, as below.
+        let _ = self.inbox.send(command).await;
         response
             .await
             .unwrap_or_else(|_| Err(aborted(dispatch_id)))?;
@@ -177,10 +170,8 @@ impl AgentInstance {
             dispatch_id,
             respond_to,
         };
-        if self.inbox.send(command).await.is_err() {
-            return Err(aborted(dispatch_id));
-        }
-        // An actor that stops before answering (it panicked) counts as aborted.
+        let _ = self.inbox.send(command).await;
+        // An actor that is gone, or stops before answering (it panicked), counts as aborted.
         response.await.unwrap_or_else(|_| Err(aborted(dispatch_id)))
     }
 }
@@ -206,14 +197,6 @@ enum Command {
     Read {
         dispatch_id: DispatchId,
         respond_to: oneshot::Sender<Result<SettledValue>>,
-    },
-}
-
-/// What an [`AgentInstance`] sends its actor ahead of the inbox.
-#[derive(Debug)]
-enum Control {
-    Abort {
-        respond_to: oneshot::Sender<Result<()>>,
     },
 }
 
@@ -298,14 +281,14 @@ struct Running {
 
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 struct InstanceActor {
-    agent: InstanceAgent,
+    setup: TurnSetup,
     /// The agent's name, which with `id` names the instance's event stream.
     name: String,
     id: InstanceId,
     /// The data the instance is created with, as JSON.
     data: Value,
     inbox: mpsc::Receiver<Command>,
-    control: mpsc::Receiver<Control>,
+    control: mpsc::Receiver<oneshot::Sender<Result<()>>>,
     /// Cancelled when the runtime is dropped.
     cancel: CancellationToken,
     store: Store,
@@ -328,7 +311,7 @@ impl InstanceActor {
             select! {
                 biased;
                 () = self.cancel.cancelled() => break,
-                Some(Control::Abort { respond_to }) = self.control.recv() => {
+                Some(respond_to) = self.control.recv() => {
                     let _ = respond_to.send(self.abort().await);
                 }
                 Some((run, step)) = OptionFuture::from(self.running.as_mut().map(|r| &mut r.step)) => {
@@ -461,14 +444,14 @@ impl InstanceActor {
 
     /// Starts the first stored dispatch, unless one is running.
     fn start_next(&mut self) {
-        if self.running.is_some() || self.lease.is_none() {
+        if self.running.is_some() {
             return;
         }
         let Some(next) = self.folded.pending.front().cloned() else {
             return;
         };
         let run = Run::new(
-            self.agent.clone(),
+            self.setup.clone(),
             next.text,
             self.folded.history.clone(),
             next.structured.map(Structured::from_spec),
@@ -544,10 +527,7 @@ impl InstanceActor {
             // The run held them; what they remembered of the sandbox is lost.
             self.caches = Caches::default();
         }
-        let mut events = Vec::new();
-        if let Some(first) = self.folded.pending.front() {
-            events.extend(closing(&self.folded.history, first.dispatch));
-        }
+        let mut events = closing(&self.folded.history, self.folded.pending[0].dispatch);
         for admitted in &self.folded.pending {
             let result = Err(Outcome::Aborted);
             events.push((Some(admitted.dispatch), Event::Settled { result }));

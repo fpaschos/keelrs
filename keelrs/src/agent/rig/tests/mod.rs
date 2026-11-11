@@ -3,7 +3,7 @@
 //! helpers here, the tests by topic in the child modules.
 //!
 //! Unit tests, not `keelrs/tests/`: they inject the model through the private
-//! `run_with` and read Rig's messages from `Settled`, neither of which the
+//! `Run::with_connect` and read Rig's messages from `Settled`, neither of which the
 //! public API exposes (Rig types stay in this module, ADR 0004).
 
 use std::convert::Infallible;
@@ -58,7 +58,7 @@ async fn drive(
     let model = MockCompletionModel::from_turns(turns);
     let mock = model.clone();
     let run = Run::with_connect(
-        agent.for_instance(InstanceId::new("test"), ()),
+        TurnSetup::new(agent, InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
         structured,

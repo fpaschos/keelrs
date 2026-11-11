@@ -20,15 +20,17 @@ pub struct AgentContext<D = ()> {
     declared: Declared,
 }
 
-/// What one render declared, read by the run loop.
+/// What one turn setup declared, read by the run loop.
 #[derive(Debug, Default)]
 pub(crate) struct Declared {
-    /// Every `use_model` call this render, so a missing or second call can fail the run.
+    /// Every `use_model` call this turn setup, so a missing or second call can fail the run.
     models: Vec<Model>,
+    /// The text the agent function returned: the first of the instructions.
+    returned: String,
     instructions: Vec<String>,
     tools: Vec<Tool>,
     skills: Vec<Skill>,
-    /// Every `use_sandbox` sandbox this render declared, in call order.
+    /// Every `use_sandbox` sandbox this turn setup declared, in call order.
     sandboxes: Vec<Sandbox>,
     /// The built-in tools `only` kept, when it was called.
     only: Option<Vec<String>>,
@@ -65,8 +67,9 @@ impl<D> AgentContext<D> {
         }
     }
 
-    /// What this render declared.
-    pub(crate) fn into_declared(self) -> Declared {
+    /// What this turn setup declared, with the text the agent function `returned`.
+    pub(crate) fn into_declared(mut self, returned: String) -> Declared {
+        self.declared.returned = returned;
         self.declared
     }
 
@@ -84,7 +87,7 @@ impl<D> AgentContext<D> {
 
     /// Declares the model: a `provider/model` id, or a [`Model`] with options.
     ///
-    /// Call it exactly once per render. No call, a second call or an empty id
+    /// Call it exactly once per turn. No call, a second call or an empty id
     /// settles the dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
     pub fn use_model(&mut self, model: impl Into<Model>) {
         self.declared.models.push(model.into());
@@ -121,7 +124,7 @@ impl<D> AgentContext<D> {
     /// before skill tools and declared tools; narrow them with
     /// [`BuiltinTools::only`]. keelrs holds it only for this dispatch.
     ///
-    /// Call it exactly once per render. No call or a second call settles the
+    /// Call it exactly once per turn. No call or a second call settles the
     /// dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
     pub fn use_sandbox(&mut self, sandbox: &Sandbox) -> BuiltinTools<'_> {
         self.declared.sandboxes.push(sandbox.clone());
@@ -152,7 +155,7 @@ impl<D> AgentContext<D> {
 }
 
 impl Declared {
-    /// The one model this render declared, or why the run fails.
+    /// The one model this turn setup declared, or why the run fails.
     pub(crate) fn model(&self) -> Result<&Model, String> {
         match self.models.as_slice() {
             [] => Err("the agent function never called `use_model`".to_owned()),
@@ -161,13 +164,13 @@ impl Declared {
             }
             [model] => Ok(model),
             models => Err(format!(
-                "`use_model` was called {} times in one render; call it once",
+                "`use_model` was called {} times in one turn setup; call it once",
                 models.len()
             )),
         }
     }
 
-    /// The tools this render declared, or why the run fails.
+    /// The tools this turn setup declared, or why the run fails.
     pub(crate) fn tools(&self) -> Result<&[Tool], String> {
         for (i, tool) in self.tools.iter().enumerate() {
             if SKILL_TOOL_NAMES.contains(&&*tool.name)
@@ -195,19 +198,19 @@ impl Declared {
         Ok(&self.tools)
     }
 
-    /// The one sandbox this render declared, or why the run fails.
+    /// The one sandbox this turn setup declared, or why the run fails.
     pub(crate) fn sandbox(&self) -> Result<&Sandbox, String> {
         match self.sandboxes.as_slice() {
             [] => Err("the agent function never called `use_sandbox`".to_owned()),
             [sandbox] => Ok(sandbox),
             sandboxes => Err(format!(
-                "`use_sandbox` was called {} times in one render; call it once",
+                "`use_sandbox` was called {} times in one turn setup; call it once",
                 sandboxes.len()
             )),
         }
     }
 
-    /// The names of the built-in tools this render gets, in [`BUILTIN_NAMES`] order:
+    /// The names of the built-in tools this turn setup gets, in [`BUILTIN_NAMES`] order:
     /// all of them unless `only` narrowed them.
     pub(crate) fn builtin_names(&self) -> Result<Vec<&'static str>, String> {
         let Some(kept) = &self.only else {
@@ -228,7 +231,7 @@ impl Declared {
             .collect())
     }
 
-    /// The skills this render mounted, or why the run fails.
+    /// The skills this turn setup mounted, or why the run fails.
     pub(crate) fn skills(&self) -> Result<&[Skill], String> {
         for (i, skill) in self.skills.iter().enumerate() {
             skill.validate().map_err(|e| e.to_string())?;
@@ -247,11 +250,11 @@ impl Declared {
 
     /// This turn's instructions: the returned text, then each `use_instruction`
     /// text, joined by a blank line; `None` when all is empty.
-    pub(crate) fn instructions(&self, returned: &str) -> Result<Option<String>, String> {
+    pub(crate) fn instructions(&self) -> Result<Option<String>, String> {
         if self.instructions.iter().any(|text| text.trim().is_empty()) {
             return Err("`use_instruction` was given empty text".to_owned());
         }
-        let texts: Vec<&str> = std::iter::once(returned)
+        let texts: Vec<&str> = std::iter::once(self.returned.as_str())
             .filter(|returned| !returned.is_empty())
             .chain(self.instructions.iter().map(String::as_str))
             .collect();
@@ -269,7 +272,7 @@ mod tests {
         cx.use_instruction("Second.");
         cx.use_instruction("Third.");
         assert_eq!(
-            cx.declared.instructions("First."),
+            cx.into_declared("First.".to_owned()).instructions(),
             Ok(Some("First.\n\nSecond.\n\nThird.".to_owned()))
         );
     }
@@ -278,13 +281,16 @@ mod tests {
     fn an_empty_returned_text_is_skipped() {
         let mut cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
         cx.use_instruction("Only.");
-        assert_eq!(cx.declared.instructions(""), Ok(Some("Only.".to_owned())));
+        assert_eq!(
+            cx.into_declared(String::new()).instructions(),
+            Ok(Some("Only.".to_owned()))
+        );
     }
 
     #[test]
     fn no_instructions_at_all_is_none() {
         let cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
-        assert_eq!(cx.declared.instructions(""), Ok(None));
+        assert_eq!(cx.into_declared(String::new()).instructions(), Ok(None));
     }
 
     #[test]
@@ -293,7 +299,7 @@ mod tests {
         cx.use_instruction("Again.");
         cx.use_instruction("Again.");
         assert_eq!(
-            cx.declared.instructions("Again."),
+            cx.into_declared("Again.".to_owned()).instructions(),
             Ok(Some("Again.\n\nAgain.\n\nAgain.".to_owned()))
         );
     }

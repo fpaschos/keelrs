@@ -87,7 +87,7 @@ async fn use_sandbox_twice_fails() {
     });
     let reason = failure_reason(agent).await;
     assert!(
-        reason.contains("`use_sandbox` was called 2 times in one render; call it once"),
+        reason.contains("`use_sandbox` was called 2 times in one turn setup; call it once"),
         "{reason}"
     );
 }

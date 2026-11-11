@@ -1,6 +1,6 @@
 //! The Rig integration: steps one Rig `AgentRun` per dispatch; the only module where Rig types appear (ADR 0004).
 //!
-//! Each render's tools go to the model and stay pinned for the `CallTools`
+//! Each turn's tools go to the model and stay pinned for the `CallTools`
 //! step that follows its model call (How a tool call runs).
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::{InstanceAgent, SettledValue};
+use crate::agent::{SettledValue, TurnSetup};
 use crate::builtin::structured::{
     FINISH_STRUCTURED, FOOTER, MAX_STRUCTURED_REASKS, REASK, Structured,
 };
@@ -139,16 +139,16 @@ type Running = BoxFuture<'static, Result<(CallId, ToolAnswer), String>>;
 /// One dispatch's run on Rig's `AgentRun`, driven one [`step`](Self::step) at a
 /// time so the caller stores what each step produced before the next one.
 pub(crate) struct Run {
-    agent: InstanceAgent,
+    setup: TurnSetup,
     run: AgentRun,
     structured: Option<Structured>,
     reasks: usize,
     /// What this instance's built-in tools remember; handed back at the end.
     caches: Caches,
     connect: Connect,
-    /// Connected from the first render and kept for every turn (use_model behaviour).
+    /// Connected from the first turn setup and kept for every turn (use_model behaviour).
     connected: Option<(DynModel<Completion>, Option<Thinking>)>,
-    /// The last render's tools, by name, and its sandbox, for the `CallTools`
+    /// The last turn's tools, by name, and its sandbox, for the `CallTools`
     /// step after its model call.
     pinned: Option<(Arc<HashMap<String, Tool>>, Sandbox)>,
     /// How many of the run's messages earlier steps produced.
@@ -160,18 +160,18 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    /// A run of the instance's `agent` on `text` after `history`, its built-in
+    /// A run on `text` after `history`, each turn set up by `setup`, its built-in
     /// tools remembering in `caches`. With `structured`, the run must end with
     /// a successful `finish_structured` call.
     pub(crate) fn new(
-        agent: InstanceAgent,
+        setup: TurnSetup,
         text: String,
         history: Vec<Message>,
         structured: Option<Structured>,
         caches: Caches,
     ) -> Self {
         Self::with_connect(
-            agent,
+            setup,
             text,
             history,
             structured,
@@ -186,7 +186,7 @@ impl Run {
 
     /// [`Run::new`], connecting the declared model with `connect`.
     pub(crate) fn with_connect(
-        agent: InstanceAgent,
+        setup: TurnSetup,
         text: String,
         history: Vec<Message>,
         structured: Option<Structured>,
@@ -201,9 +201,9 @@ impl Run {
         };
         let run = AgentRun::new(RigMessage::user(text))
             .with_history(history)
-            .max_turns(agent.max_turns);
+            .max_turns(setup.max_turns);
         Self {
-            agent,
+            setup,
             run,
             structured,
             reasks: 0,
@@ -277,9 +277,9 @@ impl Run {
                     let (tools, sandbox) = self
                         .pinned
                         .as_ref()
-                        .ok_or("the run called tools before any render")?;
+                        .ok_or("the run called tools before any turn setup")?;
                     // One reply's calls run concurrently; Rig commits them in call order.
-                    // Each shares the render's tools.
+                    // Each shares the turn's tools.
                     for call in calls {
                         let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
                         self.calls.push(Box::pin(
@@ -304,7 +304,7 @@ impl Run {
     fn next_step(&mut self) -> Result<AgentRunStep, String> {
         self.run.next_step().map_err(|e| match e {
             PromptError::MaxTurns { .. } => {
-                format!("turn limit ({}) reached", self.agent.max_turns)
+                format!("turn limit ({}) reached", self.setup.max_turns)
             }
             e => e.to_string(),
         })
@@ -339,23 +339,23 @@ impl Run {
         found.ok_or_else(|| format!("no result for tool call `{id}`"))
     }
 
-    /// Renders the agent and calls the model once, leaving its answer with the run.
+    /// Sets up the turn and calls the model once, leaving its answer with the run.
     async fn call_model(
         &mut self,
         prompt: &RigMessage,
         history: &[Arc<RigMessage>],
     ) -> Result<(), String> {
-        let max_turns = self.agent.max_turns;
+        let max_turns = self.setup.max_turns;
         // The agent function runs again before every turn (ADR 0004).
-        let (cx, returned) = self.agent.render();
-        let declared = cx.model()?;
-        let sb = cx.sandbox()?.clone();
-        let instructions = cx.instructions(&returned)?;
-        let skills = cx.skills()?;
-        let names = cx.builtin_names()?;
-        let declared_tools = cx.tools()?;
+        let declared = self.setup.run();
+        let declared_model = declared.model()?;
+        let sb = declared.sandbox()?.clone();
+        let instructions = declared.instructions()?;
+        let skills = declared.skills()?;
+        let names = declared.builtin_names()?;
+        let declared_tools = declared.tools()?;
         // Flue's order: the sandbox built-ins, the skill tools, then the declared ones.
-        // The cache is taken only once the render is valid, so a failed one keeps it.
+        // The cache is taken only once the turn setup is valid, so a failed one keeps it.
         let tools: Vec<Tool> = builtin::tools(&sb, &self.caches.seen(sb.id()), &names)
             .into_iter()
             .chain(skill_tools(skills))
@@ -366,7 +366,7 @@ impl Run {
             Some(connected) => connected,
             None => self
                 .connected
-                .insert(((self.connect)(declared)?, declared.thinking)),
+                .insert(((self.connect)(declared_model)?, declared_model.thinking)),
         };
         let definitions = tools
             .iter()
@@ -415,7 +415,7 @@ impl Run {
         let mut outcome = run
             .model_response(ModelTurn::from_policy(&response, policy))
             .map_err(|e| e.to_string())?;
-        // A call to a tool this render did not declare is skipped with
+        // A call to a tool this turn did not declare is skipped with
         // the names it did; its siblings are re-issued next turn.
         while let ModelTurnOutcome::NeedsResolution(invalid) = outcome {
             let available = match invalid.available_tools.as_slice() {
@@ -476,7 +476,7 @@ async fn answer(
         PendingToolCall::Malformed(call) => return Ok((call.id().clone(), call.answer(None))),
         other => return Err(format!("unsupported tool call {other:?}")),
     };
-    // The run only emits calls the pinned render declared.
+    // The run only emits calls the pinned turn setup declared.
     let tool = tools
         .get(&**exec.name())
         .ok_or_else(|| format!("tool \"{}\" was not declared this turn", exec.name()))?;

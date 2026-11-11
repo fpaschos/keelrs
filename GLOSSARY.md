@@ -1,7 +1,7 @@
 # keelrs
 
 A Flue-style agent framework for Rust: the model reasons, keelrs gives it a model, a sandbox, tools and conversations.
-Terms follow Flue's where Flue has one.
+Terms follow Flue's where Flue has one, except turn setup (Flue's render).
 
 ## Language
 
@@ -33,7 +33,7 @@ conversation.
 _Avoid_: Conversation id, session id, key
 
 **Instance data**:
-What an agent instance is about, given once when it is created and fixed for its whole life; every render reads it.
+What an agent instance is about, given once when it is created and fixed for its whole life; every turn setup reads it.
 What changes from one dispatch to the next travels in the message instead.
 _Avoid_: Initial data, props, input, state
 
@@ -65,9 +65,10 @@ _Avoid_: Submission id, request id, message id
 The claim ticket for one dispatched message, used to read its reply later.
 _Avoid_: Admission, ticket
 
-**Render**:
-One run of the agent function, before a turn's model call; what it declares holds for that turn only.
-_Avoid_: Config run, call, iteration
+**Turn setup**:
+One run of the agent function, before a turn's model call; it sets up what that turn uses, and what it declares holds
+for that turn only.
+_Avoid_: Render, config run, call, iteration
 
 **Turn**:
 One model call within a dispatch, with the agent function run before it; a dispatch takes one turn, plus one more for
