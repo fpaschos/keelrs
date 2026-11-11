@@ -18,8 +18,7 @@ pub async fn contract(store: &Store) {
     let store = store.clone().lease_ttl(TTL);
     a_live_lease_is_held(&store).await;
     an_expired_lease_is_taken_over(&store).await;
-    a_released_lease_is_free_at_once(&store).await;
-    a_stale_release_is_a_no_op(&store).await;
+    a_released_lease_is_free_at_once_and_a_stale_release_is_a_no_op(&store).await;
     a_taken_over_writer_is_fenced(&store).await;
     an_append_at_the_wrong_head_stores_nothing(&store).await;
     read_returns_the_events_after_a_seq_in_order(&store).await;
@@ -76,7 +75,7 @@ async fn an_expired_lease_is_taken_over(store: &Store) {
     assert!(second > first, "epoch {second:?} after {first:?}");
 }
 
-async fn a_released_lease_is_free_at_once(store: &Store) {
+async fn a_released_lease_is_free_at_once_and_a_stale_release_is_a_no_op(store: &Store) {
     let id = InstanceId::fresh();
     let first = store.acquire(AGENT, &id).await.expect("first acquire");
     store.release(AGENT, &id, first).await.expect("release");
@@ -85,13 +84,6 @@ async fn a_released_lease_is_free_at_once(store: &Store) {
         .await
         .expect("acquire after release");
     assert!(second > first, "epoch {second:?} after {first:?}");
-}
-
-async fn a_stale_release_is_a_no_op(store: &Store) {
-    let id = InstanceId::fresh();
-    let first = store.acquire(AGENT, &id).await.expect("first acquire");
-    store.release(AGENT, &id, first).await.expect("release");
-    store.acquire(AGENT, &id).await.expect("second acquire");
     store
         .release(AGENT, &id, first)
         .await

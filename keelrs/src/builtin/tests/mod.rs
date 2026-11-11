@@ -6,14 +6,13 @@
 #![allow(clippy::disallowed_methods)] // the fixture files are set up on the host
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rig_tools::Seen;
 use serde_json::{Value, json};
 
 use crate::agent::rig::call;
 use crate::sandbox::{self, Sandbox, SandboxPath};
+use crate::test_support::Folder;
 use crate::tool::{Called, FailKind};
 
 mod bash;
@@ -26,18 +25,15 @@ mod write;
 
 /// A temp folder with a local sandbox rooted in it, removed on drop.
 struct Fixture {
-    dir: PathBuf,
+    dir: Folder,
     sb: Sandbox,
     seen: Seen,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("keelrs-builtin-{}-{n}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let sb = sandbox::local().root(&dir).open().await.unwrap();
+        let dir = Folder::new();
+        let sb = sandbox::local().root(&dir.0).open().await.unwrap();
         Self {
             dir,
             sb,
@@ -47,15 +43,13 @@ impl Fixture {
 
     /// Writes `contents` at `relative` on the host, creating its folders.
     fn put(&self, relative: &str, contents: &str) -> &Self {
-        let path = self.dir.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
+        self.dir.write(relative, contents);
         self
     }
 
     /// What the host holds at `relative`.
     fn get(&self, relative: &str) -> String {
-        fs::read_to_string(self.dir.join(relative)).unwrap()
+        fs::read_to_string(self.dir.path(relative)).unwrap()
     }
 
     /// One call of the built-in `name`, run as a turn runs it.
@@ -98,7 +92,7 @@ impl Fixture {
     }
 
     fn exists(&self, relative: &str) -> bool {
-        self.dir.join(relative).exists()
+        self.dir.path(relative).exists()
     }
 
     async fn glob(&self, pattern: &str, path: Option<&str>, hidden: bool) -> String {
@@ -155,11 +149,5 @@ fn shown(called: Called) -> String {
         Ok(Value::String(text)) => text,
         Ok(other) => panic!("a built-in returns text, not {other}"),
         Err(failed) => format!("Err: {failed}"),
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }

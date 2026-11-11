@@ -12,6 +12,19 @@ mod temp_dir;
 
 use temp_dir::{TempDir, open};
 
+/// Whether process `pid` ends within 5 s, checked from inside `sb`.
+async fn gone(sb: &keelrs::sandbox::Sandbox, pid: &str) -> bool {
+    let alive = format!("kill -0 {} 2>/dev/null && echo alive", pid.trim());
+    for _ in 0..50 {
+        let ran = sb.exec(ExecRequest::shell(&alive)).await.unwrap().run();
+        if ran.await.unwrap().stdout.is_empty() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 #[tokio::test]
 async fn a_command_starts_in_the_work_dir_and_reports_its_exit() {
     let dir = TempDir::new();
@@ -143,15 +156,10 @@ async fn dropping_an_execution_kills_its_group() {
         panic!("no pid");
     };
     drop(running);
-    let alive = format!("kill -0 {} 2>/dev/null && echo alive", pid.trim());
-    for _ in 0..50 {
-        let ran = sb.exec(ExecRequest::shell(&alive)).await.unwrap().run();
-        if ran.await.unwrap().stdout.is_empty() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the background sleep outlived its dropped execution");
+    assert!(
+        gone(&sb, &pid).await,
+        "the background sleep outlived its dropped execution"
+    );
 }
 
 #[test]
@@ -262,15 +270,10 @@ async fn a_timeout_stops_a_group_member_that_ignores_sigterm() {
         .unwrap();
     assert_eq!(ran.exit, Exit::TimedOut);
     let pid = std::fs::read_to_string(pid).unwrap();
-    let alive = format!("kill -0 {} 2>/dev/null && echo alive", pid.trim());
-    for _ in 0..50 {
-        let ran = sb.exec(ExecRequest::shell(&alive)).await.unwrap().run();
-        if ran.await.unwrap().stdout.is_empty() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("a member that ignored SIGTERM outlived the timeout");
+    assert!(
+        gone(&sb, &pid).await,
+        "a member that ignored SIGTERM outlived the timeout"
+    );
 }
 
 #[tokio::test]

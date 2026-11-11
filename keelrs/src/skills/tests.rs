@@ -4,55 +4,37 @@
 #![allow(clippy::disallowed_methods)] // skill folders are set up on the host
 
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
 
 use super::tools::skill_tools;
 use super::{Discover, Skill, discover};
 use crate::agent::rig::call;
-
-pub(crate) fn haiku() -> Skill {
-    Skill::new("haiku", "Write a haiku.", "Three lines: 5, 7, 5.").unwrap()
-}
-
-pub(crate) fn sonnet() -> Skill {
-    Skill::new("sonnet", "Write a sonnet.", "Fourteen lines.")
-        .unwrap()
-        .file("references/forms.md", "Petrarchan or Shakespearean.")
-        .unwrap()
-}
+use crate::test_support::{Folder, haiku, sonnet};
 
 #[tokio::test]
-async fn activating_a_skill_returns_its_instructions_and_lists_its_resources() {
-    let text = activate(&[haiku(), sonnet()], "sonnet").await;
-    assert_eq!(
-        text,
-        "Run the skill named \"sonnet\".\n\n\
-         <skill_instructions>\nFourteen lines.\n</skill_instructions>\n\n\
-         Supporting skill resources are available but are not loaded into context unless needed:\n\
-         <skill_resources>\n- references/forms.md\n</skill_resources>"
-    );
-}
-
-#[tokio::test]
-async fn activating_a_skill_without_files_lists_no_resources() {
-    let text = activate(&[haiku()], "haiku").await;
-    assert_eq!(
-        text,
-        "Run the skill named \"haiku\".\n\n\
-         <skill_instructions>\nThree lines: 5, 7, 5.\n</skill_instructions>"
-    );
-}
-
-#[tokio::test]
-async fn activating_an_unknown_skill_names_the_available_ones() {
-    let text = activate(&[haiku(), sonnet()], "limerick").await;
-    assert_eq!(
-        text,
-        "skill \"limerick\" is not available; available skills: haiku, sonnet"
-    );
+async fn activating_a_skill_returns_its_instructions_and_lists_its_resources_if_any() {
+    let cases = [
+        (
+            "sonnet",
+            "Run the skill named \"sonnet\".\n\n\
+             <skill_instructions>\nFourteen lines.\n</skill_instructions>\n\n\
+             Supporting skill resources are available but are not loaded into context unless needed:\n\
+             <skill_resources>\n- references/forms.md\n</skill_resources>",
+        ),
+        (
+            "haiku",
+            "Run the skill named \"haiku\".\n\n\
+             <skill_instructions>\nThree lines: 5, 7, 5.\n</skill_instructions>",
+        ),
+        (
+            "limerick",
+            "skill \"limerick\" is not available; available skills: haiku, sonnet",
+        ),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(activate(&[haiku(), sonnet()], name).await, expected);
+    }
 }
 
 /// A skill with one file at `references/file` holding `bytes`.
@@ -180,42 +162,12 @@ async fn a_path_outside_the_skill_or_not_in_it_is_refused() {
 
 // Discovered skills: files listed at discovery, read from disk on request.
 
-/// A temp folder of skill folders, removed on drop.
-pub(crate) struct Folder(pub(crate) PathBuf);
-
 impl Folder {
-    pub(crate) fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("keelrs-skills-{}-{n}", std::process::id()));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    /// Writes `contents` at `relative`, creating its folders.
-    pub(crate) fn write(&self, relative: &str, contents: &str) -> &Self {
-        let path = self.0.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-        self
-    }
-
-    /// What the folder holds at `relative`; `None` when nothing is there.
-    pub(crate) fn read(&self, relative: &str) -> Option<String> {
-        fs::read_to_string(self.0.join(relative)).ok()
-    }
-
     /// The one skill discovered in this folder.
     async fn skill(&self) -> Skill {
         let discovered = discover(Discover::new().root(&self.0)).await;
         let [skill] = <[Skill; 1]>::try_from(discovered.skills).unwrap();
         skill
-    }
-}
-
-impl Drop for Folder {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

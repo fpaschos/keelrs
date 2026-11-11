@@ -45,7 +45,7 @@ async fn grep_stops_at_100_kb_however_much_context_is_asked() {
 }
 
 #[tokio::test]
-async fn grep_lists_matching_lines_leaving_out_ignored_and_hidden_files() {
+async fn grep_lists_matching_lines_leaving_out_ignored_and_hidden_files_unless_asked() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
@@ -58,12 +58,7 @@ src/lib.rs:5: pub fn twice(x: i32) -> i32 {
 src/lib.rs:9: pub fn thrice(x: i32) -> i32 {
 src/main.rs:1: fn main() {"
     );
-}
-
-#[tokio::test]
-async fn grep_with_hidden_searches_hidden_files_but_never_ignored_ones() {
-    let fx = Fixture::new().await;
-    fx.project();
+    // With `hidden`, hidden files are searched, ignored ones still not.
     assert_eq!(
         fx.grep("fn (hidden|generated)", json!({"hidden": true}))
             .await,
@@ -117,13 +112,13 @@ src/lib.rs-11- }"
 async fn grep_names_the_files_it_could_not_search() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "needle\n");
-    fs::write(fx.dir.join("b.bin"), b"needle \xff\n").unwrap();
+    fs::write(fx.dir.path("b.bin"), b"needle \xff\n").unwrap();
     assert_eq!(
         fx.grep("needle", json!({})).await,
         "a.txt:1: needle\n[not searched, over 16 MB, not UTF-8 or unreadable: b.bin]"
     );
     for n in 0..6 {
-        fs::write(fx.dir.join(format!("c{n}.bin")), b"\xff").unwrap();
+        fs::write(fx.dir.path(&format!("c{n}.bin")), b"\xff").unwrap();
     }
     assert_eq!(
         fx.grep("haystack", json!({})).await,

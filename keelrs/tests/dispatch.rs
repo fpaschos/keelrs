@@ -1,111 +1,11 @@
 //! Dispatch, read and ask through the public API, with no network.
 
-mod common;
-
-use common::temp_sandbox;
-use std::convert::Infallible;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime, Tool, ToolCall};
+use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime};
 use serde::{Deserialize, Serialize};
-
-/// Asks a fresh instance of `agent` one message and returns its failure reason.
-async fn failure_reason(agent: Agent) -> String {
-    let runtime = Runtime::start([&agent]).unwrap();
-    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
-    match instance.ask("Say hello").await {
-        Err(Error::Run {
-            outcome: Outcome::Failed { reason },
-            ..
-        }) => reason,
-        other => panic!("expected a failed run, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn an_agent_that_never_calls_use_model_fails() {
-    let agent = Agent::new("no-model", |_: &mut AgentContext| "Greet.".into());
-    let reason = failure_reason(agent).await;
-    assert!(reason.contains("never called `use_model`"), "{reason}");
-}
-
-#[tokio::test]
-async fn an_agent_that_calls_use_model_twice_fails() {
-    let agent = Agent::new("two-models", |cx: &mut AgentContext| {
-        cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_model("anthropic/claude-opus-5-5");
-        "Greet.".into()
-    });
-    let reason = failure_reason(agent).await;
-    assert!(reason.contains("called 2 times"), "{reason}");
-}
-
-#[tokio::test]
-async fn an_empty_model_id_fails() {
-    let agent = Agent::new("empty-model", |cx: &mut AgentContext| {
-        cx.use_model("");
-        "Greet.".into()
-    });
-    let reason = failure_reason(agent).await;
-    assert!(reason.contains("empty model id"), "{reason}");
-}
-
-#[tokio::test]
-async fn blank_use_instruction_text_fails() {
-    let sb = temp_sandbox().await;
-    let agent = Agent::new("blank-instruction", move |cx: &mut AgentContext| {
-        cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(&sb).only([]);
-        cx.use_instruction("  ");
-        "Greet.".into()
-    });
-    let reason = failure_reason(agent).await;
-    assert!(
-        reason.contains("`use_instruction` was given empty text"),
-        "{reason}"
-    );
-}
-
-#[tokio::test]
-async fn an_unknown_vendor_fails_with_rigs_reason() {
-    let sb = temp_sandbox().await;
-    let agent = Agent::new("unknown-vendor", move |cx: &mut AgentContext| {
-        cx.use_model("nope/model");
-        cx.use_sandbox(&sb).only([]);
-        "Greet.".into()
-    });
-    let reason = failure_reason(agent).await;
-    assert!(reason.contains("nope"), "{reason}");
-}
-
-#[tokio::test]
-async fn a_declared_finish_structured_fails_plain_and_structured_asks() {
-    let sb = temp_sandbox().await;
-    let agent = Agent::new("reserved", move |cx: &mut AgentContext| {
-        cx.use_model("anthropic/claude-sonnet-5-5");
-        cx.use_sandbox(&sb).only([]);
-        cx.use_tool(Tool::host(
-            "finish_structured",
-            "Mine.",
-            async |_: ToolCall<()>| Ok::<_, Infallible>("ran"),
-        ));
-        String::new()
-    });
-    let expected = "`finish_structured` is reserved for keelrs's built-in tool";
-    let runtime = Runtime::start([&agent]).unwrap();
-    let instance = runtime.instance(&agent, InstanceId::new("test")).unwrap();
-    let plain = instance.ask("go").await.map(|_| ());
-    let structured = instance.ask_structured::<String>("go").await.map(drop);
-    for result in [plain, structured] {
-        assert!(
-            matches!(&result, Err(Error::Run { outcome: Outcome::Failed { reason }, .. })
-                if reason == expected),
-            "{result:?}"
-        );
-    }
-}
 
 #[tokio::test]
 async fn a_read_issued_before_the_run_settles_gets_the_outcome() {

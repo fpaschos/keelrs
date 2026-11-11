@@ -18,6 +18,8 @@ pub mod __private {
 mod builtin;
 mod error;
 mod event;
+#[cfg(test)]
+mod test_support;
 mod tool;
 
 pub use agent::{Agent, AgentContext, AgentInstance, DispatchId, InstanceId, Receipt, Reply};

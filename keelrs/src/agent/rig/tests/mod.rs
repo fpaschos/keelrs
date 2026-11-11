@@ -20,7 +20,7 @@ use tokio::sync::Barrier;
 
 use super::*;
 use crate::sandbox::unused;
-use crate::skills::tests::{Folder, haiku, sonnet};
+use crate::test_support::{Folder, haiku, sonnet};
 use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 
 mod builtin;

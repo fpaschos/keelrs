@@ -20,11 +20,7 @@ async fn a_tool_result_reaches_the_model_and_the_run_settles() {
 
 #[tokio::test]
 async fn a_sandboxed_tool_gets_the_sandbox_its_turn_declared() {
-    let root = crate::sandbox::local()
-        .root(std::env::temp_dir())
-        .open()
-        .await
-        .unwrap();
+    let (_folder, root) = sandboxed().await;
     let declared = root.work_dir("keelrs-declared");
     let expected = json!({"id": declared.id().to_string(), "dir": declared.dir().to_string()});
     let agent = sandboxed_agent(move |cx| {

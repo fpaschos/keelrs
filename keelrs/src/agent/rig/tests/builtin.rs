@@ -93,28 +93,30 @@ fn edit_one(path: &str) -> [MockTurn; 2] {
 
 const STALE: &str = "changed since it was last read";
 
+/// `caches` reads `path` in `sb`, then the file changes on the host.
+async fn read_then_change(folder: &Folder, sb: &Sandbox, path: &str, caches: &mut Caches) {
+    folder.write(path, "one\n");
+    scripted_in(&agent_in(sb), read(path), caches)
+        .await
+        .unwrap();
+    folder.write(path, "two\n");
+}
+
+/// What the edit of `one` in `path` in `sb` returned.
+async fn edit_result(sb: &Sandbox, path: &str, caches: &mut Caches) -> String {
+    let edited = scripted_in(&agent_in(sb), edit_one(path), caches).await;
+    results(&edited.unwrap()).remove(0).0
+}
+
 #[tokio::test]
 async fn each_instance_remembers_only_what_its_own_builtins_read() {
     let (folder, sb) = sandboxed().await;
-    folder.write("a.txt", "one\n");
     let (mut reader, mut other) = (Caches::default(), Caches::default());
-    scripted_in(&agent_in(&sb), read("a.txt"), &mut reader)
-        .await
-        .unwrap();
-    folder.write("a.txt", "two\n");
-
-    let theirs = results(
-        &scripted_in(&agent_in(&sb), edit_one("a.txt"), &mut other)
-            .await
-            .unwrap(),
-    );
-    assert!(!theirs[0].0.contains(STALE), "{theirs:?}");
-    let mine = results(
-        &scripted_in(&agent_in(&sb), edit_one("a.txt"), &mut reader)
-            .await
-            .unwrap(),
-    );
-    assert!(mine[0].0.contains(STALE), "{mine:?}");
+    read_then_change(&folder, &sb, "a.txt", &mut reader).await;
+    let theirs = edit_result(&sb, "a.txt", &mut other).await;
+    assert!(!theirs.contains(STALE), "{theirs}");
+    let mine = edit_result(&sb, "a.txt", &mut reader).await;
+    assert!(mine.contains(STALE), "{mine}");
 }
 
 #[tokio::test]
@@ -125,54 +127,31 @@ async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
         .open()
         .await
         .unwrap();
-    folder.write("a.txt", "one\n");
     let mut caches = Caches::default();
-    scripted_in(&agent_in(&first), read("a.txt"), &mut caches)
-        .await
-        .unwrap();
-    folder.write("a.txt", "two\n");
+    read_then_change(&folder, &first, "a.txt", &mut caches).await;
     scripted_in(&agent_in(&second), [MockTurn::text("Done.")], &mut caches)
         .await
         .unwrap();
 
     // Back in the first sandbox, the edit reads the file afresh, not the old read.
-    let edited = scripted_in(&agent_in(&first), edit_one("a.txt"), &mut caches)
-        .await
-        .unwrap();
-    let edited = results(&edited);
-    assert!(
-        edited[0].0.starts_with("`old_text` was not found"),
-        "{edited:?}"
-    );
+    let edited = edit_result(&first, "a.txt", &mut caches).await;
+    assert!(edited.starts_with("`old_text` was not found"), "{edited}");
 }
 
 #[tokio::test]
 async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
     let (folder, root) = sandboxed().await;
-    folder.write("sub/a.txt", "one\n");
     let mut caches = Caches::default();
-    scripted_in(&agent_in(&root), read("sub/a.txt"), &mut caches)
-        .await
-        .unwrap();
-    folder.write("sub/a.txt", "two\n");
-
-    let sub = root.work_dir("sub");
-    let edited = scripted_in(&agent_in(&sub), edit_one("a.txt"), &mut caches)
-        .await
-        .unwrap();
-    let edited = results(&edited);
-    assert!(edited[0].0.contains(STALE), "{edited:?}");
+    read_then_change(&folder, &root, "sub/a.txt", &mut caches).await;
+    let edited = edit_result(&root.work_dir("sub"), "a.txt", &mut caches).await;
+    assert!(edited.contains(STALE), "{edited}");
 }
 
 #[tokio::test]
 async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
     let (folder, first) = sandboxed().await;
-    folder.write("a.txt", "one\n");
     let mut caches = Caches::default();
-    scripted_in(&agent_in(&first), read("a.txt"), &mut caches)
-        .await
-        .unwrap();
-    folder.write("a.txt", "two\n");
+    read_then_change(&folder, &first, "a.txt", &mut caches).await;
     let unknown = sandboxed_agent(|cx| {
         cx.use_sandbox(&unused()).only(["shell"]);
     });
@@ -180,9 +159,6 @@ async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
         .await
         .unwrap_err();
 
-    let edited = scripted_in(&agent_in(&first), edit_one("a.txt"), &mut caches)
-        .await
-        .unwrap();
-    let edited = results(&edited);
-    assert!(edited[0].0.contains(STALE), "{edited:?}");
+    let edited = edit_result(&first, "a.txt", &mut caches).await;
+    assert!(edited.contains(STALE), "{edited}");
 }

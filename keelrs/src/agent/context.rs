@@ -267,40 +267,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn returned_text_comes_first_then_each_use_instruction_in_call_order() {
-        let mut cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
-        cx.use_instruction("Second.");
-        cx.use_instruction("Third.");
-        assert_eq!(
-            cx.into_declared("First.".to_owned()).instructions(),
-            Ok(Some("First.\n\nSecond.\n\nThird.".to_owned()))
-        );
-    }
-
-    #[test]
-    fn an_empty_returned_text_is_skipped() {
-        let mut cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
-        cx.use_instruction("Only.");
-        assert_eq!(
-            cx.into_declared(String::new()).instructions(),
-            Ok(Some("Only.".to_owned()))
-        );
-    }
-
-    #[test]
-    fn no_instructions_at_all_is_none() {
-        let cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
-        assert_eq!(cx.into_declared(String::new()).instructions(), Ok(None));
-    }
-
-    #[test]
-    fn duplicate_texts_are_kept() {
-        let mut cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
-        cx.use_instruction("Again.");
-        cx.use_instruction("Again.");
-        assert_eq!(
-            cx.into_declared("Again.".to_owned()).instructions(),
-            Ok(Some("Again.\n\nAgain.\n\nAgain.".to_owned()))
-        );
+    fn the_returned_text_comes_first_then_each_use_instruction_in_call_order() {
+        let cases: [(&str, &[&str], Option<&str>); 4] = [
+            (
+                "First.",
+                &["Second.", "Third."],
+                Some("First.\n\nSecond.\n\nThird."),
+            ),
+            ("", &["Only."], Some("Only.")),
+            ("", &[], None),
+            (
+                "Again.",
+                &["Again.", "Again."],
+                Some("Again.\n\nAgain.\n\nAgain."),
+            ),
+        ];
+        for (returned, uses, expected) in cases {
+            let mut cx = AgentContext::new(Arc::new(()), InstanceId::new("test"));
+            for text in uses {
+                cx.use_instruction(*text);
+            }
+            let instructions = cx.into_declared(returned.to_owned()).instructions();
+            assert_eq!(
+                instructions,
+                Ok(expected.map(str::to_owned)),
+                "{returned:?} {uses:?}"
+            );
+        }
     }
 }

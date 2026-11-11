@@ -3,12 +3,17 @@
 use super::*;
 
 #[tokio::test]
-async fn glob_lists_matching_files_sorted_leaving_out_ignored_and_hidden_ones() {
+async fn glob_lists_matching_files_sorted_leaving_out_ignored_and_hidden_unless_asked() {
     let fx = Fixture::new().await;
     fx.project();
     assert_eq!(
         fx.glob("**/*.rs", None, false).await,
         "src/deep/x.rs\nsrc/lib.rs\nsrc/main.rs"
+    );
+    // With `hidden`, hidden files are listed, ignored ones still not.
+    assert_eq!(
+        fx.glob("**/*.rs", None, true).await,
+        ".hidden/notes.rs\nsrc/deep/x.rs\nsrc/lib.rs\nsrc/main.rs"
     );
 }
 
@@ -28,16 +33,6 @@ async fn glob_is_a_path_glob_from_the_searched_directory() {
     assert_eq!(
         fx.glob("./src/*", None, false).await,
         "src/lib.rs\nsrc/main.rs"
-    );
-}
-
-#[tokio::test]
-async fn glob_with_hidden_lists_hidden_files_but_never_ignored_ones() {
-    let fx = Fixture::new().await;
-    fx.project();
-    assert_eq!(
-        fx.glob("**/*.rs", None, true).await,
-        ".hidden/notes.rs\nsrc/deep/x.rs\nsrc/lib.rs\nsrc/main.rs"
     );
 }
 

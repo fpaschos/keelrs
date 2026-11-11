@@ -20,7 +20,7 @@ mod frontmatter;
 pub(crate) mod tools;
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
 
 pub use discover::{Discover, Discovered, SkillProblem, discover};
 
