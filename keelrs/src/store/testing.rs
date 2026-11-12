@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
-use super::{Seq, Store, StoreError};
+use super::{Result, Seq, Store, StoreError};
 use crate::event::Event;
-use crate::{DispatchId, Error, InstanceId};
+use crate::{DispatchId, InstanceId};
 
 /// The lease length the checks use; they wait out one lease, so it is short.
 const TTL: Duration = Duration::from_millis(200);
@@ -31,12 +31,12 @@ fn event(n: u64) -> (Option<DispatchId>, Event) {
     (None, Event::Created { data })
 }
 
-fn is_held(result: &crate::Result<impl std::fmt::Debug>) -> bool {
-    matches!(result, Err(Error::Store(StoreError::Held { .. })))
+fn is_held<T>(result: &Result<T>) -> bool {
+    matches!(result, Err(StoreError::Held { .. }))
 }
 
-fn is_fenced(result: &crate::Result<impl std::fmt::Debug>) -> bool {
-    matches!(result, Err(Error::Store(StoreError::Fenced { .. })))
+fn is_fenced<T>(result: &Result<T>) -> bool {
+    matches!(result, Err(StoreError::Fenced { .. }))
 }
 
 async fn seqs(store: &Store, id: &InstanceId, after: u64) -> Vec<u64> {

@@ -338,7 +338,7 @@ impl InstanceActor {
             .append(&self.name, &self.id, epoch, expected, &events)
             .await
         {
-            return Err(self.reset(store_error(e)));
+            return Err(self.reset(e));
         }
         // Numbered as the store numbered them: `expected`+1…
         let mut seq = expected;
@@ -366,7 +366,7 @@ impl InstanceActor {
         match self.store.renew(&self.name, &self.id, epoch).await {
             Ok(()) => self.lease = Some((epoch, asked + trusted(&self.store))),
             Err(e) => {
-                self.reset(store_error(e));
+                self.reset(e);
             }
         }
     }
@@ -426,15 +426,6 @@ pub(super) fn closing(
         .into_iter()
         .map(|part| (Some(dispatch), Event::ToolResult(part)))
         .collect()
-}
-
-fn store_error(error: Error) -> StoreError {
-    match error {
-        Error::Store(error) => error,
-        other => StoreError::Failed {
-            reason: other.to_string(),
-        },
-    }
 }
 
 /// What a read of `dispatch_id` gets once it settled with `result`.

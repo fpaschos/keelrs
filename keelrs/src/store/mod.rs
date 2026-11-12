@@ -22,7 +22,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
-use crate::{DispatchId, InstanceId, Result};
+use crate::{DispatchId, InstanceId};
+
+/// What a store operation gives back: its value, or why the store could not.
+type Result<T> = std::result::Result<T, StoreError>;
 
 mod memory;
 #[cfg(any(test, feature = "testing"))]

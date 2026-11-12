@@ -6,8 +6,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
-use super::{Epoch, Seq, StoreBackend, StoreError, StoredEvent};
-use crate::{InstanceId, Result};
+use super::{Epoch, Result, Seq, StoreBackend, StoreError, StoredEvent};
+use crate::InstanceId;
 
 /// Streams keyed by `(agent, instance)`.
 #[derive(Debug, Default)]
@@ -26,12 +26,11 @@ fn key(agent: &str, instance: &InstanceId) -> (String, InstanceId) {
     (agent.to_owned(), instance.clone())
 }
 
-fn fenced(agent: &str, instance: &InstanceId) -> crate::Error {
+fn fenced(agent: &str, instance: &InstanceId) -> StoreError {
     StoreError::Fenced {
         agent: agent.to_owned(),
         id: instance.clone(),
     }
-    .into()
 }
 
 #[async_trait::async_trait]
@@ -44,8 +43,7 @@ impl StoreBackend for Memory {
             return Err(StoreError::Held {
                 agent: agent.to_owned(),
                 id: instance.clone(),
-            }
-            .into());
+            });
         }
         stream.epoch += 1;
         stream.expires = Some(now + ttl);
