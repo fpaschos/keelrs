@@ -17,10 +17,11 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::event::Event;
 use crate::{DispatchId, InstanceId, Result};
 
 mod memory;
@@ -274,38 +275,46 @@ impl Store {
         self.backend.read(agent, instance, after).await
     }
 
-    /// Appends `events` after checking they are numbered `expected`+1… with
-    /// no gap and belong to the stream named.
+    /// Appends `events`, each with the dispatch that caused it, numbered
+    /// `expected`+1… in the stream of instance `instance` of `agent`.
     pub(crate) async fn append(
         &self,
         agent: &str,
         instance: &InstanceId,
         epoch: Epoch,
         expected: Seq,
-        events: &[StoredEvent],
+        events: &[(Option<DispatchId>, Event)],
     ) -> Result<()> {
+        let at = now_ms();
         let mut seq = expected;
-        for event in events {
-            seq = seq.next();
-            if event.agent != agent || event.instance != *instance {
-                return Err(failed(format!(
-                    "event {} belongs to instance `{}` of agent `{}`, not `{instance}` of `{agent}`",
-                    event.id, event.instance, event.agent
-                )));
-            }
-            if event.seq != seq {
-                return Err(failed(format!(
-                    "event {} has seq {}, expected {seq}",
-                    event.id, event.seq
-                )));
-            }
-        }
+        let stored: Vec<StoredEvent> = events
+            .iter()
+            .map(|(dispatch, event)| {
+                seq = seq.next();
+                let (kind, event) = event.to_parts();
+                StoredEvent {
+                    id: EventId::fresh(),
+                    agent: agent.to_owned(),
+                    instance: instance.clone(),
+                    seq,
+                    dispatch: *dispatch,
+                    at,
+                    kind,
+                    event,
+                }
+            })
+            .collect();
         self.backend
-            .append(agent, instance, epoch, expected, events)
+            .append(agent, instance, epoch, expected, &stored)
             .await
     }
 }
 
-fn failed(reason: String) -> crate::Error {
-    StoreError::Failed { reason }.into()
+/// Now, in ms since the Unix epoch.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }

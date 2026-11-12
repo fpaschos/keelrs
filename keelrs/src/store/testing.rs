@@ -3,8 +3,9 @@
 
 use std::time::Duration;
 
-use super::{EventId, Seq, Store, StoreError, StoredEvent};
-use crate::{Error, InstanceId};
+use super::{Seq, Store, StoreError};
+use crate::event::Event;
+use crate::{DispatchId, Error, InstanceId};
 
 /// The lease length the checks use; they wait out one lease, so it is short.
 const TTL: Duration = Duration::from_millis(200);
@@ -22,21 +23,12 @@ pub async fn contract(store: &Store) {
     a_taken_over_writer_is_fenced(&store).await;
     an_append_at_the_wrong_head_stores_nothing(&store).await;
     read_returns_the_events_after_a_seq_in_order(&store).await;
-    store_refuses_gaps_and_foreign_events(&store).await;
 }
 
-/// An event numbered `seq` in the stream `instance` of the contract agent.
-fn event(instance: &InstanceId, seq: u64) -> StoredEvent {
-    StoredEvent {
-        id: EventId::fresh(),
-        agent: AGENT.to_owned(),
-        instance: instance.clone(),
-        seq: Seq::new(seq),
-        dispatch: None,
-        at: 0,
-        kind: "note".to_owned(),
-        event: serde_json::json!({ "n": seq }),
-    }
+/// An event that tells its stream apart by `n`.
+fn event(n: u64) -> (Option<DispatchId>, Event) {
+    let data = serde_json::json!({ "n": n });
+    (None, Event::Created { data })
 }
 
 fn is_held(result: &crate::Result<impl std::fmt::Debug>) -> bool {
@@ -99,7 +91,7 @@ async fn a_taken_over_writer_is_fenced(store: &Store) {
     let id = InstanceId::fresh();
     let old = store.acquire(AGENT, &id).await.expect("first acquire");
     store
-        .append(AGENT, &id, old, Seq::default(), &[event(&id, 1)])
+        .append(AGENT, &id, old, Seq::default(), &[event(1)])
         .await
         .expect("append while holding");
     tokio::time::sleep(TTL * 2).await;
@@ -110,7 +102,7 @@ async fn a_taken_over_writer_is_fenced(store: &Store) {
         "the old writer's renew got {renewed:?}"
     );
     let appended = store
-        .append(AGENT, &id, old, Seq::new(1), &[event(&id, 2)])
+        .append(AGENT, &id, old, Seq::new(1), &[event(2)])
         .await;
     assert!(
         is_fenced(&appended),
@@ -121,7 +113,7 @@ async fn a_taken_over_writer_is_fenced(store: &Store) {
         .await
         .expect("the new writer renews");
     store
-        .append(AGENT, &id, new, Seq::new(1), &[event(&id, 2)])
+        .append(AGENT, &id, new, Seq::new(1), &[event(2)])
         .await
         .expect("the new writer appends");
     assert_eq!(seqs(store, &id, 0).await, [1, 2]);
@@ -131,24 +123,12 @@ async fn an_append_at_the_wrong_head_stores_nothing(store: &Store) {
     let id = InstanceId::fresh();
     let epoch = store.acquire(AGENT, &id).await.expect("acquire");
     store
-        .append(
-            AGENT,
-            &id,
-            epoch,
-            Seq::default(),
-            &[event(&id, 1), event(&id, 2)],
-        )
+        .append(AGENT, &id, epoch, Seq::default(), &[event(1), event(2)])
         .await
         .expect("append");
     // Expects head 1, but it is 2: neither event may land.
     let stale = store
-        .append(
-            AGENT,
-            &id,
-            epoch,
-            Seq::new(1),
-            &[event(&id, 2), event(&id, 3)],
-        )
+        .append(AGENT, &id, epoch, Seq::new(1), &[event(2), event(3)])
         .await;
     assert!(is_fenced(&stale), "an append at a stale head got {stale:?}");
     assert_eq!(seqs(store, &id, 0).await, [1, 2]);
@@ -161,40 +141,23 @@ async fn read_returns_the_events_after_a_seq_in_order(store: &Store) {
         "a new stream is empty"
     );
     let epoch = store.acquire(AGENT, &id).await.expect("acquire");
-    let events = [event(&id, 1), event(&id, 2)];
+    let events = [event(1), event(2)];
     store
         .append(AGENT, &id, epoch, Seq::default(), &events)
         .await
         .expect("append");
     store
-        .append(AGENT, &id, epoch, Seq::new(2), &[event(&id, 3)])
+        .append(AGENT, &id, epoch, Seq::new(2), &[event(3)])
         .await
         .expect("append");
     assert_eq!(seqs(store, &id, 1).await, [2, 3]);
     let read = store.read(AGENT, &id, Seq::default()).await.expect("read");
-    assert_eq!(read[..2], events, "events come back as they were stored");
-}
-
-async fn store_refuses_gaps_and_foreign_events(store: &Store) {
-    let id = InstanceId::fresh();
-    let epoch = store.acquire(AGENT, &id).await.expect("acquire");
-    let failed = |r: &crate::Result<()>| matches!(r, Err(Error::Store(StoreError::Failed { .. })));
-    let gap = store
-        .append(
-            AGENT,
-            &id,
-            epoch,
-            Seq::default(),
-            &[event(&id, 1), event(&id, 3)],
-        )
-        .await;
-    assert!(failed(&gap), "a gap got {gap:?}");
-    let other = InstanceId::fresh();
-    let foreign = store
-        .append(AGENT, &id, epoch, Seq::default(), &[event(&other, 1)])
-        .await;
-    assert!(failed(&foreign), "another stream's event got {foreign:?}");
-    assert!(seqs(store, &id, 0).await.is_empty(), "nothing was stored");
+    let bodies: Vec<_> = read[..2]
+        .iter()
+        .map(|e| (e.kind.clone(), e.event.clone()))
+        .collect();
+    let sent: Vec<_> = events.iter().map(|(_, e)| e.to_parts()).collect();
+    assert_eq!(bodies, sent, "events come back as they were stored");
 }
 
 #[cfg(test)]

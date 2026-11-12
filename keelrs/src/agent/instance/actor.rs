@@ -2,7 +2,7 @@
 //! writer of its instance's event stream while it holds the stream's lease.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use futures::future::{BoxFuture, OptionFuture};
 use serde_json::Value;
@@ -18,7 +18,7 @@ use crate::agent::rig::{self, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
-use crate::store::{Epoch, EventId, Seq, Store, StoreError, StoredEvent};
+use crate::store::{Epoch, Seq, Store, StoreError};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// How many commands an instance's inbox holds before `dispatch` and `read` wait.
@@ -332,38 +332,22 @@ impl InstanceActor {
         let Some((epoch, _)) = self.lease else {
             return Err(self.reset(self.fenced()));
         };
-        let at = now_ms();
         let expected = self.folded.last;
-        let mut seq = expected;
-        let stored: Vec<StoredEvent> = events
-            .iter()
-            .map(|(dispatch, event)| {
-                seq = seq.next();
-                let (kind, event) = event.to_parts();
-                StoredEvent {
-                    id: EventId::fresh(),
-                    agent: self.name.clone(),
-                    instance: self.id.clone(),
-                    seq,
-                    dispatch: *dispatch,
-                    at,
-                    kind,
-                    event,
-                }
-            })
-            .collect();
         if let Err(e) = self
             .store
-            .append(&self.name, &self.id, epoch, expected, &stored)
+            .append(&self.name, &self.id, epoch, expected, &events)
             .await
         {
             return Err(self.reset(store_error(e)));
         }
-        for (stored, (_, event)) in stored.iter().zip(events) {
+        // Numbered as the store numbered them: `expected`+1…
+        let mut seq = expected;
+        for (dispatch, event) in events {
+            seq = seq.next();
             let settles = matches!(event, Event::Settled { .. });
-            self.folded.apply(stored.seq, stored.dispatch, event);
+            self.folded.apply(seq, dispatch, event);
             if settles
-                && let Some(dispatch) = stored.dispatch
+                && let Some(dispatch) = dispatch
                 && let Some(result) = self.folded.settled.get(&dispatch)
             {
                 for read in self.waiting.remove(&dispatch).unwrap_or_default() {
@@ -459,12 +443,4 @@ fn answer(dispatch_id: DispatchId, result: &Result<SettledValue, Outcome>) -> Re
         outcome,
         dispatch_id,
     })
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }

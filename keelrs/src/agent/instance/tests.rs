@@ -17,7 +17,7 @@ use crate::agent::rig::tests::{agent as scripted, clock};
 use crate::agent::rig::{Run, Step};
 use crate::builtin::Caches;
 use crate::event::Event;
-use crate::store::{EventId, Seq, StoredEvent};
+use crate::store::Seq;
 use crate::{Agent, AgentContext};
 
 /// The turn setup of an agent on the mock model with one tool, `current_time`.
@@ -214,26 +214,9 @@ async fn left_queued(store: &Store, agent: &str, id: &InstanceId) -> [Receipt; 2
             },
         ),
     ];
-    let stored: Vec<StoredEvent> = events
-        .iter()
-        .zip(1..)
-        .map(|((dispatch, event), seq)| {
-            let (kind, event) = event.to_parts();
-            StoredEvent {
-                id: EventId::fresh(),
-                agent: agent.to_owned(),
-                instance: id.clone(),
-                seq: Seq::new(seq),
-                dispatch: *dispatch,
-                at: 0,
-                kind,
-                event,
-            }
-        })
-        .collect();
     let epoch = store.acquire(agent, id).await.unwrap();
     store
-        .append(agent, id, epoch, Seq::default(), &stored)
+        .append(agent, id, epoch, Seq::default(), &events)
         .await
         .unwrap();
     store.release(agent, id, epoch).await.unwrap();
