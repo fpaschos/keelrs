@@ -1,8 +1,8 @@
 //! The built-in tools, `read`, `write`, `edit`, `bash`, `grep`, `glob`,
 //! `delete` and `move`: sandboxed [`Tool`]s that every turn gets, unless it
 //! narrows them with
-//! [`only`](crate::agent::BuiltinTools::only). They are built each render
-//! over that render's sandbox, as the skill tools are, and act only through
+//! [`only`](crate::agent::BuiltinTools::only). They are built each turn
+//! over that turn's sandbox, as the skill tools are, and act only through
 //! [`Sandbox`]'s own methods, so they behave alike on every backend.
 //!
 //! They reuse rig-tools' text logic (`Seen`, `ReadArgs::show`,
@@ -46,7 +46,7 @@ pub(crate) struct Caches(Option<(SandboxId, Seen)>);
 
 impl Caches {
     /// What this instance has seen in the sandbox `id`; empty when the last
-    /// render's sandbox was another.
+    /// turn's sandbox was another.
     pub(crate) fn seen(&mut self, id: SandboxId) -> Seen {
         match &self.0 {
             Some((current, seen)) if *current == id => seen.clone(),

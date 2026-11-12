@@ -4,7 +4,7 @@
 
 ```
 HOST ─ always: the agent, the Rig run, the model, secrets (ADR 0005)
-  render(cx): cx.use_sandbox(sb), exactly once (ADR 0006) · cx.use_tool(Tool::host | Tool::sandbox)
+  turn setup(cx): cx.use_sandbox(sb), exactly once (ADR 0006) · cx.use_tool(Tool::host | Tool::sandbox)
       │
   agent/rig  (only place Rig types live, ADR 0004)
       │ model asks for a tool call

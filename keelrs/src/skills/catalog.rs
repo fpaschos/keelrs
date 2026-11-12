@@ -3,7 +3,7 @@
 use super::Skill;
 
 /// Flue's `## Available Skills` section, one line per skill in mount order;
-/// `None` without skills. Rebuilt every turn from that render's skills.
+/// `None` without skills. Rebuilt every turn from that turn's skills.
 pub(crate) fn catalog(skills: &[Skill]) -> Option<String> {
     if skills.is_empty() {
         return None;

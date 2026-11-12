@@ -49,6 +49,10 @@ Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSAR
 
 Tests follow the design, never shape it. A behaviour no agreed seam reaches waits for one, or goes untested for now; wrapping existing state in a new type so a test can reach it is the antipattern. TDD tests are scaffolding: once the loop is green, review them: unify, move to the agreed public seam, or delete the ones that only restate the code.
 
+## Talking to the user
+
+Write every message to the user in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, one meaning per word. `GLOSSARY.md` terms and code names are your technical names; use them as they are. To clarify or to propose a design decision, ask one question, give the options with your recommendation, and wait for the answer.
+
 ## Checks
 
 Run before you call a change done, in both workspaces; all must pass:

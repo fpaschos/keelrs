@@ -1,10 +1,11 @@
 //! Structured results: the reserved `finish_structured` tool, driven through
-//! `run_with` on rig-core's scripted model.
+//! `Run` on rig-core's scripted model.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::*;
+use crate::builtin::structured::StructuredSpec;
 
 /// Runs `agent` on one message asking for a `T`, and returns every request the model got.
 async fn structured<T: DeserializeOwned + JsonSchema + 'static>(
@@ -14,7 +15,7 @@ async fn structured<T: DeserializeOwned + JsonSchema + 'static>(
     drive(
         agent,
         turns,
-        Some(Structured::of::<T>()),
+        Some(Structured::from_spec(StructuredSpec::of::<T>())),
         &mut Caches::default(),
     )
     .await

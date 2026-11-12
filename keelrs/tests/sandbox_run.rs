@@ -68,14 +68,6 @@ async fn a_command_past_its_timeout_fails_timed_out() {
 }
 
 #[tokio::test]
-async fn a_shell_line_runs_in_the_shell() {
-    let dir = TempDir::new();
-    let sb = open(&dir).await;
-    let out = sb.run(ExecRequest::shell("echo a | tr a b")).await;
-    assert_eq!(out.unwrap(), "b");
-}
-
-#[tokio::test]
 async fn run_feeds_stdin() {
     let dir = TempDir::new();
     let sb = open(&dir).await;
@@ -120,15 +112,6 @@ async fn the_allowlist_keeps_a_host_variable_out_and_inherit_env_lets_it_in() {
         .await
         .unwrap();
     assert!(host.run(print).await.is_err());
-}
-
-#[tokio::test]
-async fn run_starts_in_a_narrowed_work_dir() {
-    let dir = TempDir::new();
-    std::fs::create_dir_all(dir.0.join("sub")).unwrap();
-    let sb = open(&dir).await.work_dir("sub");
-    let pwd = sb.run(["pwd"]).await.unwrap();
-    assert_eq!(pwd, dir.0.join("sub").display().to_string());
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Errors returned by keelrs.
 
 use crate::sandbox::SandboxError;
+use crate::store::StoreError;
 use crate::{DispatchId, InstanceId};
 
 /// Something keelrs could not do.
@@ -51,10 +52,14 @@ pub enum Error {
     /// A sandbox could not do what was asked.
     #[error(transparent)]
     Sandbox(#[from] SandboxError),
+    /// The store could not do what was asked.
+    #[error(transparent)]
+    Store(#[from] StoreError),
 }
 
 /// How a dispatched message settled when it produced no reply.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     /// The run ended in an error.
     Failed {

@@ -3,16 +3,11 @@
 use super::*;
 
 #[tokio::test]
-async fn bash_runs_in_the_work_dir_and_says_how_it_ended() {
+async fn bash_runs_in_the_work_dir_merges_stderr_in_order_and_says_how_it_ended() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "");
     assert_eq!(fx.bash("ls; exit 3", None).await, "a.txt\n[exit code 3]");
     assert_eq!(fx.bash("true", None).await, "[exit code 0]");
-}
-
-#[tokio::test]
-async fn bash_merges_stderr_into_stdout_in_order() {
-    let fx = Fixture::new().await;
     assert_eq!(
         fx.bash("echo out; echo err >&2; echo again", None).await,
         "out\nerr\nagain\n[exit code 0]"
@@ -29,11 +24,7 @@ async fn bash_keeps_the_last_2000_lines_and_says_how_many_were_cut() {
     assert_eq!(lines[1], "501");
     assert_eq!(lines[2000], "2500");
     assert_eq!(lines[2001], "[exit code 0]");
-}
-
-#[tokio::test]
-async fn bash_counts_the_lines_cut_from_output_past_100_kb() {
-    let fx = Fixture::new().await;
+    // Past 100 KB, the count still covers every cut line.
     let ran = fx.bash("seq 1 30000", None).await;
     let lines: Vec<&str> = ran.lines().collect();
     assert_eq!(lines[0], "[28000 earlier lines cut]");

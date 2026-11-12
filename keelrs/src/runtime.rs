@@ -12,47 +12,47 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::TurnSetup;
+use crate::store::Store;
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
 /// The running keelrs instance that knows the agents and hosts their instances.
 ///
-/// Dropping it stops every agent instance: runs in flight and queued settle as
-/// [`Outcome::Aborted`](crate::Outcome::Aborted).
+/// Dropping it stops every agent instance and releases their leases: runs in
+/// flight stop, and a later runtime on the same [`Store`] settles the one that
+/// was running as [`Outcome::Aborted`](crate::Outcome::Aborted) and runs the
+/// queued ones.
 #[derive(Debug)]
 pub struct Runtime {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Inner {
     agents: HashMap<String, AnyAgent>,
     /// Instances already spawned, keyed by `(agent name, instance id)`, so the
     /// same id continues the same conversation; each with its data as JSON.
     instances: Mutex<HashMap<(String, InstanceId), (AgentInstance, Value)>>,
+    /// Where the instances' events are kept.
+    store: Store,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
 
 impl Runtime {
-    /// Starts a runtime hosting `agents`: a tuple, for agents with different
-    /// data types, or an array, `Vec` or slice of one type, each by value or
-    /// by reference.
+    /// A runtime with settings other than the defaults, such as its [`Store`].
+    #[must_use]
+    pub fn builder() -> RuntimeBuilder {
+        RuntimeBuilder::default()
+    }
+
+    /// Starts a runtime hosting `agents`, keeping their events in memory:
+    /// a tuple, for agents with different data types, or an array, `Vec` or
+    /// slice of one type, each by value or by reference.
     ///
     /// Fails with [`Error::DuplicateAgent`] when two agents share a name.
     pub fn start(agents: impl Agents) -> Result<Self> {
-        let mut registry = HashMap::new();
-        for agent in agents.into_agents() {
-            let name = agent.name.clone();
-            if registry.insert(name.clone(), agent).is_some() {
-                return Err(Error::DuplicateAgent(name));
-            }
-        }
-        Ok(Self {
-            inner: Arc::new(Inner {
-                agents: registry,
-                ..Inner::default()
-            }),
-        })
+        Self::builder().start(agents)
     }
 
     /// The instance `id` of an agent without data: created on first use,
@@ -122,14 +122,52 @@ impl Runtime {
             Entry::Vacant(entry) => {
                 let instance = AgentInstance::spawn(
                     name,
-                    registered.for_instance(id.clone(), data),
+                    TurnSetup::new(registered, id.clone(), data),
                     id,
+                    json.clone(),
+                    self.inner.store.clone(),
                     &self.inner.shutdown,
                 );
                 entry.insert((instance.clone(), json));
                 Ok(instance)
             }
         }
+    }
+}
+
+/// Settings for a [`Runtime`], from [`Runtime::builder`].
+#[derive(Debug, Default)]
+pub struct RuntimeBuilder {
+    store: Store,
+}
+
+impl RuntimeBuilder {
+    /// Keeps the instances' events in `store` rather than in memory.
+    #[must_use]
+    pub fn store(mut self, store: Store) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Starts the runtime hosting `agents`, as [`Runtime::start`] does.
+    ///
+    /// Fails with [`Error::DuplicateAgent`] when two agents share a name.
+    pub fn start(self, agents: impl Agents) -> Result<Runtime> {
+        let mut registry = HashMap::new();
+        for agent in agents.into_agents() {
+            let name = agent.name.clone();
+            if registry.insert(name.clone(), agent).is_some() {
+                return Err(Error::DuplicateAgent(name));
+            }
+        }
+        Ok(Runtime {
+            inner: Arc::new(Inner {
+                agents: registry,
+                instances: Mutex::default(),
+                store: self.store,
+                shutdown: CancellationToken::new(),
+            }),
+        })
     }
 }
 

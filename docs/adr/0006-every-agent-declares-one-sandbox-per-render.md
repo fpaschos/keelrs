@@ -1,5 +1,7 @@
 # Every agent declares exactly one sandbox per render
 
+> "Render" is now "turn setup" (`GLOSSARY.md`); this record keeps its original words.
+
 Every agent function calls `use_sandbox` exactly once per render, as it calls `use_model`: no call, or a second one, settles the dispatch as Failed, and there is no default sandbox (`sandbox::local()` is the one to reach for when there is nothing else). This reverses [#40](https://github.com/fpaschos/keelrs/issues/40) decision 7 (optional, at most once) and [#42](https://github.com/fpaschos/keelrs/issues/42) decision 3 (no sandbox, no built-ins). The alternative, an optional sandbox, keeps sandbox-free agents a few lines shorter, but every layer then carries the "no sandbox" case: a `sandboxed` flag on each tool, a check that a sandboxed tool has a sandbox, a panic behind that check, built-ins that appear and disappear, and a fallback in every plan that reads through the sandbox (AGENTS.md, skills). With one sandbox always present, that case does not exist.
 
 ## Consequences

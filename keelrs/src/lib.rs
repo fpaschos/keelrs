@@ -8,6 +8,7 @@ pub mod model;
 pub mod runtime;
 pub mod sandbox;
 pub mod skills;
+pub mod store;
 
 #[doc(hidden)]
 pub mod __private {
@@ -17,6 +18,8 @@ pub mod __private {
 mod builtin;
 mod error;
 mod event;
+#[cfg(test)]
+mod test_support;
 mod tool;
 
 pub use agent::{Agent, AgentContext, AgentInstance, DispatchId, InstanceId, Receipt, Reply};
@@ -24,6 +27,6 @@ pub use agent::{Agent, AgentContext, AgentInstance, DispatchId, InstanceId, Rece
 pub use async_trait::async_trait;
 pub use error::{Error, Outcome, Result};
 pub use model::{Model, Thinking};
-pub use runtime::{Agents, AnyAgent, Runtime};
+pub use runtime::{Agents, AnyAgent, Runtime, RuntimeBuilder};
 pub use skills::Skill;
 pub use tool::{Tool, ToolCall};

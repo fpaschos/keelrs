@@ -3,7 +3,7 @@
 //! helpers here, the tests by topic in the child modules.
 //!
 //! Unit tests, not `keelrs/tests/`: they inject the model through the private
-//! `run_with` and read Rig's messages from `Settled`, neither of which the
+//! `Run::with_connect` and read Rig's messages from `Settled`, neither of which the
 //! public API exposes (Rig types stay in this module, ADR 0004).
 
 use std::convert::Infallible;
@@ -18,9 +18,23 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Barrier;
 
+use std::sync::Arc;
+
+use rig_core::completion::CompletionRequest;
+use rig_core::message::{Message as RigMessage, ToolFunction, ToolName};
+use rig_core::tool::ToolErrorKind;
+use serde_json::Value;
+
+use super::call::result;
 use super::*;
-use crate::sandbox::unused;
-use crate::skills::tests::{Folder, haiku, sonnet};
+use crate::Tool;
+use crate::agent::TurnSetup;
+use crate::builtin::Caches;
+use crate::builtin::structured::{FINISH_STRUCTURED, Structured};
+use crate::event::Event;
+use crate::sandbox::{Sandbox, unused};
+use crate::test_support::{Folder, haiku, sonnet};
+use crate::tool::{FailKind, Failed};
 use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 
 mod builtin;
@@ -55,17 +69,90 @@ async fn drive(
     structured: Option<Structured>,
     caches: &mut Caches,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
-    let model = MockCompletionModel::from_turns(turns);
-    let settled = run_with(
-        agent.for_instance(InstanceId::new("test"), ()),
-        "Go".to_owned(),
+    let (run, model) = scripted_run(
+        agent,
+        "Go",
         Vec::new(),
         structured,
-        caches,
-        |_| Ok(model.clone().erase()),
-    )
-    .await;
+        std::mem::take(caches),
+        turns,
+    );
+    let (run, settled) = settle(run).await;
+    *caches = run.into_caches();
     (settled, model.requests())
+}
+
+/// A run of `agent` on `text` after `history`, against a model that replies
+/// with `turns`; and that model, which keeps every request it got.
+pub(crate) fn scripted_run(
+    agent: &Agent,
+    text: &str,
+    history: Vec<Message>,
+    structured: Option<Structured>,
+    caches: Caches,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> (Run, MockCompletionModel) {
+    let model = MockCompletionModel::from_turns(turns);
+    let mock = model.clone();
+    let run = Run::with_connect(
+        TurnSetup::new(agent, InstanceId::new("test"), ()),
+        text.to_owned(),
+        history,
+        structured,
+        caches,
+        Box::new(move |_| Ok(mock.clone().erase())),
+    );
+    (run, model)
+}
+
+/// A run that settled with a reply, as its steps produced it.
+#[derive(Debug)]
+pub(crate) struct Settled {
+    /// The final assistant text.
+    pub(crate) reply: String,
+    /// What the run accepted, prompt first, excluding the input history.
+    pub(crate) messages: Vec<Message>,
+    /// The structured result `finish_structured` recorded, when one was asked for.
+    pub(crate) structured: Option<Value>,
+}
+
+/// Steps `run` to settled, folding each step's events with [`record`], as
+/// the instance does.
+pub(crate) async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
+    let mut messages = Vec::new();
+    loop {
+        let (next, step) = run.step().await;
+        run = next;
+        match step {
+            Ok(Step::Append(events)) => fold(&mut messages, events),
+            Ok(Step::Settled(events, value)) => {
+                fold(&mut messages, events);
+                // What the steps produced folds back to what the run itself committed.
+                let folded: Vec<&RigMessage> = messages.iter().map(|m| m.0.as_ref()).collect();
+                let committed: Vec<&RigMessage> =
+                    run.run.messages().iter().map(AsRef::as_ref).collect();
+                assert_eq!(folded, committed, "the stored history differs from Rig's");
+                let settled = Settled {
+                    reply: value.text,
+                    messages,
+                    structured: value.structured,
+                };
+                return (run, Ok(settled));
+            }
+            Err(reason) => return (run, Err(reason)),
+        }
+    }
+}
+
+/// Adds a step's events to `history`; a run produces only messages and tool results.
+fn fold(history: &mut Vec<Message>, events: Vec<Event>) {
+    for event in events {
+        assert!(
+            matches!(event, Event::Message(_) | Event::ToolResult(_)),
+            "a run produced {event:?}"
+        );
+        record(history, event);
+    }
 }
 
 /// Every tool result the run accepted, in order, as (text or JSON, is_error).
@@ -113,7 +200,7 @@ fn agent_in(sb: &Sandbox) -> Agent {
 }
 
 /// An agent on the mock model, in an unused sandbox with no built-ins.
-fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
+pub(crate) fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) -> Agent {
     let sb = unused();
     sandboxed_agent(move |cx| {
         cx.use_sandbox(&sb).only([]);
@@ -130,7 +217,7 @@ fn sandboxed_agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 'static) 
     })
 }
 
-fn clock() -> Tool {
+pub(crate) fn clock() -> Tool {
     Tool::host(
         "current_time",
         "The current time.",
