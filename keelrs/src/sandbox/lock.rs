@@ -62,12 +62,6 @@ impl Drop for Entry {
 }
 
 impl Sandbox {
-    /// How many files of this sandbox are locked or waited on now.
-    #[cfg(test)]
-    pub(crate) fn locked(&self) -> usize {
-        self.locks.0.lock().len()
-    }
-
     /// Holds `path` against the built-in file tools and other holders on
     /// this sandbox until the guard drops. Take it around a whole
     /// read-modify-write. Resolved as [`canonical`](Self::canonical) does,

@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::actor::{Control, InstanceActor};
 use crate::agent::TurnSetup;
+use crate::agent::rig::Connect;
 use crate::builtin::structured::StructuredSpec;
 use crate::store::Store;
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
@@ -40,18 +41,26 @@ pub struct AgentInstance {
 
 impl AgentInstance {
     /// Spawns the actor for instance `id` of the agent named `name`, its turns
-    /// set up by `setup`, created with `data` (as JSON) and kept in `store`;
-    /// `shutdown` cancelling stops it.
+    /// set up by `setup` and its model connected by `connect`, created with
+    /// `data` (as JSON) and kept in `store`; `shutdown` cancelling stops it.
     pub(crate) fn spawn(
         name: String,
         setup: TurnSetup,
+        connect: Connect,
         id: InstanceId,
         data: Value,
         store: Store,
         shutdown: &CancellationToken,
     ) -> Self {
-        let (inbox, control) =
-            InstanceActor::spawn(name, setup, id.clone(), data, store, shutdown.child_token());
+        let (inbox, control) = InstanceActor::spawn(
+            name,
+            setup,
+            connect,
+            id.clone(),
+            data,
+            store,
+            shutdown.child_token(),
+        );
         Self { id, inbox, control }
     }
 
@@ -220,6 +229,3 @@ impl Reply {
         self.dispatch_id
     }
 }
-
-#[cfg(test)]
-mod tests;

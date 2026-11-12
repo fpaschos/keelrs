@@ -2,52 +2,10 @@
 
 #![allow(clippy::disallowed_methods)] // skill folders are set up on the host
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{fs, process};
-
 use keelrs::Skill;
 use keelrs::skills::{Discover, SkillProblem, discover};
 
-/// A temp folder removed on drop.
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("keelrs-discover-{}-{n}", process::id()));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    /// The fixture path `relative`.
-    fn path(&self, relative: &str) -> PathBuf {
-        self.0.join(relative)
-    }
-
-    /// Writes `contents` at `relative`, creating its folders.
-    fn write(&self, relative: &str, contents: &str) -> &Self {
-        let path = self.path(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-        self
-    }
-
-    /// Writes `<root>/<folder>/SKILL.md` naming the skill `name`.
-    fn skill(&self, root: &str, folder: &str, name: &str, description: &str) -> &Self {
-        self.write(
-            &format!("{root}/{folder}/SKILL.md"),
-            &format!("---\nname: {name}\ndescription: {description}\n---\nBody of {name}.\n"),
-        )
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use crate::support::TempDir;
 
 /// `(name, description)` of each discovered skill, in order.
 fn found(discovered: &keelrs::skills::Discovered) -> Vec<(&str, &str)> {
@@ -60,7 +18,7 @@ fn found(discovered: &keelrs::skills::Discovered) -> Vec<(&str, &str)> {
 
 #[tokio::test]
 async fn a_root_yields_its_skill_folders_in_name_order() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill("skills", "review", "review", "Review code.")
         .skill("skills", "haiku", "haiku", "Write a haiku.");
@@ -74,7 +32,7 @@ async fn a_root_yields_its_skill_folders_in_name_order() {
 
 #[tokio::test]
 async fn a_folder_that_cannot_be_a_skill_is_skipped_with_a_problem() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill("skills", "haiku", "haiku", "Write a haiku.")
         .write("skills/bare/SKILL.md", "---\nname: bare\n---\nBody.\n")
@@ -102,7 +60,7 @@ async fn a_folder_that_cannot_be_a_skill_is_skipped_with_a_problem() {
 
 #[tokio::test]
 async fn an_unquoted_value_with_a_colon_is_read_as_text() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture.write(
         "skills/review/SKILL.md",
         "---\nname: review\ndescription: Use when: the user asks for a review: code or docs\n\
@@ -121,7 +79,7 @@ async fn an_unquoted_value_with_a_colon_is_read_as_text() {
 
 #[tokio::test]
 async fn a_secret_file_is_left_out_with_a_problem_and_clutter_silently() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill("skills", "deploy", "deploy", "Deploy the app.")
         .write("skills/deploy/.env.local", "TOKEN=1")
@@ -153,7 +111,7 @@ async fn a_secret_file_is_left_out_with_a_problem_and_clutter_silently() {
 
 #[tokio::test]
 async fn conventional_roots_read_agents_before_claude() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill(".agents/skills", "a", "keelrs-test-review", "From .agents.")
         .skill(".claude/skills", "b", "keelrs-test-review", "From .claude.")
@@ -180,7 +138,7 @@ async fn conventional_roots_read_agents_before_claude() {
 
 #[tokio::test]
 async fn a_discovered_skill_is_found_by_name() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture.skill("skills", "haiku", "haiku", "Write a haiku.");
     let discovered = discover(Discover::new().root(fixture.path("skills"))).await;
     assert_eq!(
@@ -195,7 +153,7 @@ async fn a_discovered_skill_is_found_by_name() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_symlink_that_leaves_the_skill_folder_is_left_out_with_a_problem() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill("skills", "lint", "lint", "Lint code.")
         .write("shared/rules.md", "Shared.");
@@ -219,7 +177,7 @@ async fn a_symlink_that_leaves_the_skill_folder_is_left_out_with_a_problem() {
 
 #[tokio::test]
 async fn the_first_root_wins_a_name_and_the_later_folder_is_a_problem() {
-    let fixture = Fixture::new();
+    let fixture = TempDir::new();
     fixture
         .skill("project", "review", "review", "Review this project's code.")
         .skill("user", "review", "review", "Review any code.")

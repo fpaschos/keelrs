@@ -7,10 +7,7 @@ use std::time::Duration;
 
 use keelrs::sandbox::{self, Chunk, ExecRequest, Exit};
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
-use temp_dir::{TempDir, open};
+use crate::support::{TempDir, open};
 
 /// Whether process `pid` ends within 5 s, checked from inside `sb`.
 async fn gone(sb: &keelrs::sandbox::Sandbox, pid: &str) -> bool {

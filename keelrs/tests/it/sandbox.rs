@@ -7,10 +7,7 @@ use keelrs::Error;
 use keelrs::sandbox::{ContentHash, Listing, SandboxError, SandboxPath};
 use rig_tools::workspace::{Local, Workspace as _};
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
-use temp_dir::{TempDir, open};
+use crate::support::{TempDir, open};
 
 #[tokio::test]
 async fn a_written_file_reads_back_from_a_relative_path() {

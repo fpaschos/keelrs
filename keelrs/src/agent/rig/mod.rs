@@ -14,7 +14,7 @@ pub(crate) use call::args_schema;
 #[cfg(test)]
 pub(crate) use call::call;
 pub(crate) use history::{Message, ToolResultPart, close_pending, record};
-pub(crate) use run::{Run, Step};
+pub(crate) use run::{Connect, Run, Step, connect_catalog};
 
 #[cfg(test)]
 pub(crate) mod tests;

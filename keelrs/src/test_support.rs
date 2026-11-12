@@ -32,11 +32,6 @@ impl Folder {
     pub(crate) fn path(&self, relative: &str) -> PathBuf {
         self.0.join(relative)
     }
-
-    /// What the folder holds at `relative`; `None` when nothing is there.
-    pub(crate) fn read(&self, relative: &str) -> Option<String> {
-        fs::read_to_string(self.0.join(relative)).ok()
-    }
 }
 
 impl Drop for Folder {

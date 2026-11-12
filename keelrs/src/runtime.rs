@@ -13,6 +13,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::TurnSetup;
+use crate::agent::rig::{self, Connect};
 use crate::store::Store;
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
@@ -27,7 +28,6 @@ pub struct Runtime {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
     agents: HashMap<String, AnyAgent>,
     /// Instances already spawned, keyed by `(agent name, instance id)`, so the
@@ -35,8 +35,20 @@ struct Inner {
     instances: Mutex<HashMap<(String, InstanceId), (AgentInstance, Value)>>,
     /// Where the instances' events are kept.
     store: Store,
+    /// Connects the model each run declares.
+    connect: Connect,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
+}
+
+impl fmt::Debug for Inner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Inner")
+            .field("agents", &self.agents)
+            .field("instances", &self.instances)
+            .field("store", &self.store)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Runtime {
@@ -123,6 +135,7 @@ impl Runtime {
                 let instance = AgentInstance::spawn(
                     name,
                     TurnSetup::new(registered, id.clone(), data),
+                    Arc::clone(&self.inner.connect),
                     id,
                     json.clone(),
                     self.inner.store.clone(),
@@ -139,6 +152,8 @@ impl Runtime {
 #[derive(Debug, Default)]
 pub struct RuntimeBuilder {
     store: Store,
+    #[cfg(feature = "testing")]
+    model: Option<crate::testing::ScriptedModel>,
 }
 
 impl RuntimeBuilder {
@@ -146,6 +161,15 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn store(mut self, store: Store) -> Self {
         self.store = store;
+        self
+    }
+
+    /// Answers every instance's turns from `model`, in place of the model
+    /// each declares (the `testing` feature).
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn model(mut self, model: crate::testing::ScriptedModel) -> Self {
+        self.model = Some(model);
         self
     }
 
@@ -160,11 +184,19 @@ impl RuntimeBuilder {
                 return Err(Error::DuplicateAgent(name));
             }
         }
+        #[cfg(feature = "testing")]
+        let connect = self
+            .model
+            .as_ref()
+            .map_or_else(rig::connect_catalog, crate::testing::ScriptedModel::connect);
+        #[cfg(not(feature = "testing"))]
+        let connect = rig::connect_catalog();
         Ok(Runtime {
             inner: Arc::new(Inner {
                 agents: registry,
                 instances: Mutex::default(),
                 store: self.store,
+                connect,
                 shutdown: CancellationToken::new(),
             }),
         })

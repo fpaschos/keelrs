@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::fold::Folded;
 use super::{Command, SettledValue};
 use crate::agent::TurnSetup;
-use crate::agent::rig::{self, Message, Run, Step};
+use crate::agent::rig::{self, Connect, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
@@ -36,6 +36,8 @@ type Running = BoxFuture<'static, (DispatchId, Run, Result<Step, String>)>;
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 pub(super) struct InstanceActor {
     setup: TurnSetup,
+    /// Connects the model each run declares.
+    connect: Connect,
     /// The agent's name, which with `id` names the instance's event stream.
     name: String,
     id: InstanceId,
@@ -64,6 +66,7 @@ impl InstanceActor {
     pub(super) fn spawn(
         name: String,
         setup: TurnSetup,
+        connect: Connect,
         id: InstanceId,
         data: Value,
         store: Store,
@@ -73,6 +76,7 @@ impl InstanceActor {
         let (control, controls) = mpsc::channel(1);
         let actor = Self {
             setup,
+            connect,
             name,
             id,
             data,
@@ -242,6 +246,7 @@ impl InstanceActor {
             self.folded.history.clone(),
             next.structured.map(Structured::from_spec),
             std::mem::take(&mut self.caches),
+            self.connect.clone(),
         );
         self.run_step(next.dispatch, run);
     }

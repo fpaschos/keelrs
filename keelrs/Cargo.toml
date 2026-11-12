@@ -33,8 +33,9 @@ tokio-util.workspace = true
 uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]
-rig-core = { workspace = true, features = ["test-utils"] }
+# The tests use the `testing` feature.
+keelrs = { path = ".", features = ["testing"] }
 
 [features]
-# The store contract suite, `keelrs::store::testing`.
-testing = []
+# The store contract suite (`keelrs::store::testing`) and the scripted model (`keelrs::testing`).
+testing = ["rig-core/test-utils"]

@@ -7,10 +7,7 @@ use std::time::Duration;
 use keelrs::Error;
 use keelrs::sandbox::SandboxError;
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
-use temp_dir::{TempDir, open};
+use crate::support::{TempDir, open};
 
 /// `work`, or a panic naming `what` if it takes over a second.
 async fn within<T>(what: &str, work: impl Future<Output = T>) -> T {

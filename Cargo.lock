@@ -998,6 +998,7 @@ dependencies = [
  "futures",
  "ignore",
  "include_dir",
+ "keelrs",
  "libc",
  "parking_lot",
  "process-wrap",

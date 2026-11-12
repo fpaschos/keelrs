@@ -3,14 +3,11 @@
 
 #![allow(clippy::disallowed_methods)] // the test sets up its dir on the host
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
 use std::time::Duration;
 
+use crate::support::{TempDir, open};
 use keelrs::Error;
 use keelrs::sandbox::{self, Command, ExecRequest, Exit, Ran, SandboxError};
-use temp_dir::{TempDir, open};
 
 #[tokio::test]
 async fn run_returns_stdout_without_its_trailing_newlines() {
