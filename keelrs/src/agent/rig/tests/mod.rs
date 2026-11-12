@@ -18,9 +18,23 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Barrier;
 
+use std::sync::Arc;
+
+use rig_core::completion::CompletionRequest;
+use rig_core::message::{Message as RigMessage, ToolFunction, ToolName};
+use rig_core::tool::ToolErrorKind;
+use serde_json::Value;
+
+use super::call::result;
 use super::*;
-use crate::sandbox::unused;
+use crate::Tool;
+use crate::agent::TurnSetup;
+use crate::builtin::Caches;
+use crate::builtin::structured::{FINISH_STRUCTURED, Structured};
+use crate::event::Event;
+use crate::sandbox::{Sandbox, unused};
 use crate::test_support::{Folder, haiku, sonnet};
+use crate::tool::{FailKind, Failed};
 use crate::{Agent, AgentContext, InstanceId, Skill, ToolCall};
 
 mod builtin;
