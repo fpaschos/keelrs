@@ -5,30 +5,25 @@ use std::sync::Arc;
 
 use keelrs::store::Store;
 use keelrs::testing::ScriptedModel;
-use keelrs::{InstanceId, Runtime, Tool, ToolCall};
+use keelrs::{InstanceId, Tool, ToolCall};
 use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
-use crate::support::{TIMEOUT, agent, clock, is_aborted, once_free, runtime, until_requests};
+use crate::support::{
+    TIMEOUT, agent, ask, clock, instance, is_aborted, once_free, runtime_on, until_requests,
+};
 
 #[tokio::test]
 async fn a_later_runtimes_model_sees_the_history_the_first_one_stored() {
     let store = Store::in_memory();
     let agent = agent(|cx| cx.use_tool(clock())).await;
     let id = InstanceId::fresh();
-    let on = |model: &ScriptedModel| {
-        Runtime::builder()
-            .store(store.clone())
-            .model(model.clone())
-            .start([&agent])
-            .unwrap()
-    };
 
     let first = ScriptedModel::new()
         .calls([("c1", "current_time", json!({}))])
         .reply("It is noon.");
-    let runtime = on(&first);
+    let runtime = runtime_on(&store, &agent, &first);
     let instance = runtime.instance(&agent, id.clone()).unwrap();
     let earlier = instance.dispatch("What time is it?").await.unwrap();
     let reply = timeout(TIMEOUT, instance.read(&earlier)).await;
@@ -36,7 +31,7 @@ async fn a_later_runtimes_model_sees_the_history_the_first_one_stored() {
     drop(runtime);
 
     let later = ScriptedModel::new().reply("Still noon.");
-    let runtime = on(&later);
+    let runtime = runtime_on(&store, &agent, &later);
     let instance = runtime.instance(&agent, id).unwrap();
     // Its events number on from the first runtime's, or the store would refuse them.
     let receipt = once_free(|| instance.dispatch("And now?")).await.unwrap();
@@ -63,8 +58,7 @@ async fn a_later_runtimes_model_sees_the_history_the_first_one_stored() {
 async fn abort_stops_a_live_step_and_settles_it_as_aborted() {
     let agent = agent(|cx| cx.use_tool(clock())).await;
     let model = ScriptedModel::new().hang().reply("Noon.");
-    let runtime = runtime(&agent, &model);
-    let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (_runtime, instance) = instance(&agent, &model);
     let receipt = instance.dispatch("What time is it?").await.unwrap();
     until_requests(&model, 1).await;
 
@@ -72,8 +66,7 @@ async fn abort_stops_a_live_step_and_settles_it_as_aborted() {
     let read = timeout(TIMEOUT, instance.read(&receipt)).await.unwrap();
     assert!(is_aborted(&read), "got {read:?}");
     // The instance takes the next dispatch.
-    let reply = timeout(TIMEOUT, instance.ask("And now?")).await.unwrap();
-    assert_eq!(reply.unwrap().text(), "Noon.");
+    assert_eq!(ask(&instance, "And now?").await.unwrap().text(), "Noon.");
 }
 
 #[tokio::test]
@@ -98,18 +91,14 @@ async fn an_aborted_dispatchs_open_tool_calls_are_answered_before_the_next_one()
     let model = ScriptedModel::new()
         .calls([("c1", "wait", json!({}))])
         .reply("Noon.");
-    let runtime = runtime(&agent, &model);
-    let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (_runtime, instance) = instance(&agent, &model);
     let aborted = instance.dispatch("What time is it?").await.unwrap();
     timeout(TIMEOUT, started.notified()).await.unwrap();
 
     instance.abort().await.unwrap();
     let read = timeout(TIMEOUT, instance.read(&aborted)).await.unwrap();
     assert!(is_aborted(&read), "got {read:?}");
-    timeout(TIMEOUT, instance.ask("Try again."))
-        .await
-        .unwrap()
-        .unwrap();
+    ask(&instance, "Try again.").await.unwrap();
     assert_eq!(
         model.requests()[1].messages,
         [

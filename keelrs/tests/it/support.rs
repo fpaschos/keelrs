@@ -9,12 +9,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use keelrs::sandbox::{self, Sandbox};
-use keelrs::store::StoreError;
+use keelrs::store::{Store, StoreError};
 use keelrs::testing::{Request, ScriptedModel};
-use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Runtime, Skill, Tool, ToolCall};
+use keelrs::{
+    Agent, AgentContext, AgentInstance, Error, InstanceId, Outcome, Reply, Runtime, Skill, Tool,
+    ToolCall,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::time::timeout;
 
 /// A fresh dir under the system temp dir, removed on drop.
@@ -80,6 +83,16 @@ pub(crate) fn is_aborted<T>(result: &keelrs::Result<T>) -> bool {
     )
 }
 
+pub(crate) fn is_failed<T>(result: &keelrs::Result<T>) -> bool {
+    matches!(
+        result,
+        Err(Error::Run {
+            outcome: Outcome::Failed { .. },
+            ..
+        })
+    )
+}
+
 /// Waits until `model` got `n` requests.
 pub(crate) async fn until_requests(model: &ScriptedModel, n: usize) {
     timeout(TIMEOUT, async {
@@ -133,12 +146,28 @@ pub(crate) async fn agent(declare: impl Fn(&mut AgentContext) + Send + Sync + 's
     })
 }
 
-/// A runtime hosting `agent`, its turns answered by `model`.
-pub(crate) fn runtime(agent: &Agent, model: &ScriptedModel) -> Runtime {
+/// A runtime on `store` hosting `agent`, its turns answered by `model`.
+pub(crate) fn runtime_on(store: &Store, agent: &Agent, model: &ScriptedModel) -> Runtime {
     Runtime::builder()
+        .store(store.clone())
         .model(model.clone())
         .start([agent])
         .unwrap()
+}
+
+/// A fresh instance of `agent` on a runtime of its own (dropped with it),
+/// its turns answered by `model`.
+pub(crate) fn instance(agent: &Agent, model: &ScriptedModel) -> (Runtime, AgentInstance) {
+    let runtime = runtime_on(&Store::in_memory(), agent, model);
+    let instance = runtime.instance(agent, InstanceId::fresh()).unwrap();
+    (runtime, instance)
+}
+
+/// Asks `instance` `message`, failing the test if it does not settle in time.
+pub(crate) async fn ask(instance: &AgentInstance, message: &str) -> keelrs::Result<Reply> {
+    timeout(TIMEOUT, instance.ask(message))
+        .await
+        .expect("the dispatch settles")
 }
 
 /// Asks a fresh instance of `agent` `message`, answered by `model`; the reply's text.
@@ -147,12 +176,9 @@ pub(crate) async fn scripted(
     model: &ScriptedModel,
     message: &str,
 ) -> keelrs::Result<String> {
-    let runtime = runtime(agent, model);
-    let instance = runtime.instance(agent, InstanceId::fresh()).unwrap();
-    let reply = timeout(TIMEOUT, instance.ask(message)).await;
-    reply
-        .expect("the dispatch settles")
-        .map(|reply| reply.text().to_owned())
+    let (_runtime, instance) = instance(agent, model);
+    let reply = ask(&instance, message).await?;
+    Ok(reply.text().to_owned())
 }
 
 pub(crate) fn clock() -> Tool {
@@ -189,16 +215,24 @@ pub(crate) fn reason<T: std::fmt::Debug>(result: keelrs::Result<T>) -> String {
     }
 }
 
-/// Every tool result the model's last request carried, in order: `result:<text>`
-/// or `error:<text>`.
-pub(crate) fn last_results(model: &ScriptedModel) -> Vec<String> {
-    let requests = model.requests();
-    let last = requests.last().expect("the model was called");
-    last.messages
+/// The tool results among `messages`, in order: `result:<text>` or `error:<text>`.
+pub(crate) fn tool_results(messages: &[String]) -> Vec<String> {
+    messages
         .iter()
         .filter(|m| m.starts_with("result:") || m.starts_with("error:"))
         .cloned()
         .collect()
+}
+
+/// Every tool result the model's last request carried.
+pub(crate) fn last_results(model: &ScriptedModel) -> Vec<String> {
+    let requests = model.requests();
+    tool_results(&requests.last().expect("the model was called").messages)
+}
+
+/// The arguments of one `edit` of `path`, replacing `old` with `new`.
+pub(crate) fn edit(path: &str, old: &str, new: &str) -> Value {
+    json!({"path": path, "edits": [{"old_text": old, "new_text": new}]})
 }
 
 /// What `agent`'s first turn sent a model that replies "Done.".

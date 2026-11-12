@@ -1,27 +1,36 @@
 //! Structured results: `ask_structured` and the reserved `finish_structured` tool.
 
+use keelrs::AgentInstance;
 use keelrs::testing::{Request, ScriptedModel};
-use keelrs::{Agent, InstanceId};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::time::timeout;
 
-use crate::support::{TIMEOUT, agent, clock, reason, runtime, scripted, tool_names};
+use crate::support::{
+    TIMEOUT, agent, ask, clock, instance, reason, scripted, tool_names, tool_results as results,
+};
 
 const FINISH: &str = "finish_structured";
+
+/// Asks `instance` for a `T`, failing the test if it does not settle in time.
+async fn ask_for<T: DeserializeOwned + JsonSchema + 'static>(
+    instance: &AgentInstance,
+) -> keelrs::Result<T> {
+    timeout(TIMEOUT, instance.ask_structured::<T>("Go"))
+        .await
+        .expect("the dispatch settles")
+}
 
 /// Asks a fresh instance of `agent` for a `T`, answered by `model`; also
 /// what each turn sent the model.
 async fn structured<T: DeserializeOwned + JsonSchema + 'static>(
-    agent: &Agent,
+    agent: &keelrs::Agent,
     model: &ScriptedModel,
 ) -> (keelrs::Result<T>, Vec<Request>) {
-    let runtime = runtime(agent, model);
-    let instance = runtime.instance(agent, InstanceId::fresh()).unwrap();
-    let result = timeout(TIMEOUT, instance.ask_structured::<T>("Go")).await;
-    (result.expect("the dispatch settles"), model.requests())
+    let (_runtime, instance) = instance(agent, model);
+    (ask_for(&instance).await, model.requests())
 }
 
 /// [`structured`] by an agent with `current_time`, then a plain "Next" on
@@ -30,26 +39,12 @@ async fn structured<T: DeserializeOwned + JsonSchema + 'static>(
 async fn then_history<T: DeserializeOwned + JsonSchema + 'static>(
     model: ScriptedModel,
 ) -> (keelrs::Result<T>, Vec<String>) {
-    let agent = &agent(|cx| cx.use_tool(clock())).await;
+    let agent = agent(|cx| cx.use_tool(clock())).await;
     let model = model.reply("Ok.");
-    let runtime = runtime(agent, &model);
-    let instance = runtime.instance(agent, InstanceId::fresh()).unwrap();
-    let result = timeout(TIMEOUT, instance.ask_structured::<T>("Go")).await;
-    timeout(TIMEOUT, instance.ask("Next"))
-        .await
-        .unwrap()
-        .unwrap();
-    let messages = model.requests().pop().unwrap().messages;
-    (result.expect("the dispatch settles"), messages)
-}
-
-/// The tool results among `messages`: `result:<text>` or `error:<text>`.
-fn results(messages: &[String]) -> Vec<&str> {
-    messages
-        .iter()
-        .map(String::as_str)
-        .filter(|m| m.starts_with("result:") || m.starts_with("error:"))
-        .collect()
+    let (_runtime, instance) = instance(&agent, &model);
+    let result = ask_for(&instance).await;
+    ask(&instance, "Next").await.unwrap();
+    (result, model.requests().pop().unwrap().messages)
 }
 
 /// A plan of work.
@@ -150,7 +145,7 @@ async fn a_t_that_is_not_an_object_travels_wrapped_as_result_and_settles_unwrapp
     ]);
     let (result, requests) = structured::<Verdict>(&agent(|_| {}).await, &model).await;
     assert_eq!(result.unwrap(), Verdict::RequestChanges);
-    let rejected = results(&requests[1].messages)[0];
+    let rejected = &results(&requests[1].messages)[0];
     assert!(
         rejected.starts_with("error:"),
         "an unknown variant is an error"
@@ -302,7 +297,7 @@ async fn nullable_array_elements_keep_their_type_checks() {
     let model = finishing([json!({"result": [123]}), json!({"result": ["one", null]})]);
     let (result, requests) = structured::<Vec<Option<String>>>(&agent(|_| {}).await, &model).await;
     assert_eq!(result.unwrap(), [Some("one".to_owned()), None]);
-    let refused = results(&requests[1].messages)[0];
+    let refused = &results(&requests[1].messages)[0];
     assert!(
         refused.starts_with("error:"),
         "a number is not a nullable string"
@@ -337,7 +332,7 @@ async fn a_wrapped_recursive_result_checks_its_descendants_schema() {
     let valid = json!([{"label": "root", "children": [{"label": "leaf", "children": []}]}]);
     let model = finishing([json!({"result": invalid}), json!({"result": valid})]);
     let (result, requests) = structured::<Vec<Tree>>(&agent(|_| {}).await, &model).await;
-    let refused = results(&requests[1].messages)[0];
+    let refused = &results(&requests[1].messages)[0];
     assert!(
         refused.starts_with("error:"),
         "a descendant's empty label is refused"

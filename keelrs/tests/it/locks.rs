@@ -6,10 +6,10 @@ use std::time::Duration;
 use keelrs::sandbox::Sandbox;
 use keelrs::testing::ScriptedModel;
 use keelrs::{Agent, Tool, ToolCall};
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::time::timeout;
 
-use crate::support::{TempDir, last_results, open, sandboxed_agent, scripted};
+use crate::support::{TempDir, edit, last_results, open, sandboxed_agent, scripted};
 
 /// A tool of the user's that appends `two` to `path` under `sb.lock`, slowly:
 /// a change made between its read and its write would be lost.
@@ -44,11 +44,6 @@ fn appending_in(sb: &Sandbox, path: &'static str) -> Agent {
         cx.use_sandbox(&sb);
         cx.use_tool(append_slowly(path));
     })
-}
-
-/// One `edit` of `path`, replacing `old` with `new`.
-fn edit(path: &str, old: &str, new: &str) -> Value {
-    json!({"path": path, "edits": [{"old_text": old, "new_text": new}]})
 }
 
 /// Runs `agent` on `model`, which ends with "Done."; the tool results the

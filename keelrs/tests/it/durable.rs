@@ -4,11 +4,13 @@
 
 use keelrs::store::{Store, StoreError};
 use keelrs::testing::ScriptedModel;
-use keelrs::{Agent, AgentContext, Error, InstanceId, Outcome, Receipt, Runtime};
+use keelrs::{Agent, AgentContext, Error, InstanceId, Receipt, Runtime};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::support::{TIMEOUT, agent, clock, is_aborted, once_free, until_requests};
+use crate::support::{
+    TIMEOUT, agent, clock, is_aborted, is_failed, once_free, runtime_on, until_requests,
+};
 
 /// An agent whose every run fails at once: it never calls `use_model`.
 fn failing() -> Agent<u32> {
@@ -20,16 +22,6 @@ fn on(store: &Store, agent: &Agent<u32>) -> Runtime {
         .store(store.clone())
         .start([agent])
         .unwrap()
-}
-
-fn is_failed(result: &keelrs::Result<impl std::fmt::Debug>) -> bool {
-    matches!(
-        result,
-        Err(Error::Run {
-            outcome: Outcome::Failed { .. },
-            ..
-        })
-    )
 }
 
 #[tokio::test]
@@ -95,11 +87,7 @@ async fn left_interrupted(store: &Store, agent: &Agent, id: &InstanceId) -> [Rec
     let model = ScriptedModel::new()
         .calls([("c1", "current_time", json!({}))])
         .hang();
-    let runtime = Runtime::builder()
-        .store(store.clone())
-        .model(model.clone())
-        .start([agent])
-        .unwrap();
+    let runtime = runtime_on(store, agent, &model);
     let instance = runtime.instance(agent, id.clone()).unwrap();
     let receipts = [
         instance.dispatch("One").await.unwrap(),
@@ -110,15 +98,6 @@ async fn left_interrupted(store: &Store, agent: &Agent, id: &InstanceId) -> [Rec
     receipts
 }
 
-/// A runtime on `store` hosting `agent`, answered by `model`.
-fn later(store: &Store, agent: &Agent, model: &ScriptedModel) -> Runtime {
-    Runtime::builder()
-        .store(store.clone())
-        .model(model.clone())
-        .start([agent])
-        .unwrap()
-}
-
 #[tokio::test]
 async fn a_read_that_recovers_the_stream_aborts_the_interrupted_dispatch_and_runs_the_queued_one() {
     let (store, id) = (Store::in_memory(), InstanceId::fresh());
@@ -126,7 +105,7 @@ async fn a_read_that_recovers_the_stream_aborts_the_interrupted_dispatch_and_run
     let [first, second] = left_interrupted(&store, &agent, &id).await;
 
     let model = ScriptedModel::new().reply("Two done.");
-    let runtime = later(&store, &agent, &model);
+    let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, id).unwrap();
     let read = timeout(TIMEOUT, once_free(|| instance.read(&second))).await;
     assert_eq!(read.unwrap().unwrap().text(), "Two done.");
@@ -140,7 +119,7 @@ async fn abort_settles_dispatches_it_has_not_recovered_yet() {
     let receipts = left_interrupted(&store, &agent, &id).await;
 
     let model = ScriptedModel::new();
-    let runtime = later(&store, &agent, &model);
+    let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, id).unwrap();
     once_free(|| instance.abort()).await.unwrap();
     for receipt in &receipts {

@@ -3,17 +3,15 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use keelrs::sandbox::Sandbox;
 use keelrs::testing::ScriptedModel;
 use keelrs::{Agent, AgentInstance, InstanceId, Tool, ToolCall};
 use parking_lot::Mutex;
-use serde_json::json;
-use tokio::time::timeout;
+use serde_json::{Value, json};
 
 use crate::support::{
-    TIMEOUT, TempDir, agent, clock, first_request, haiku, last_results, open, reason, runtime,
+    TempDir, agent, ask, clock, edit, first_request, haiku, instance, last_results, open, reason,
     sandboxed_agent, scripted, tool_names,
 };
 
@@ -92,67 +90,52 @@ const STALE: &str = "changed since it was last read";
 
 /// The sandbox an agent's next turn setup declares, and whether it also
 /// declares an unknown built-in, so its turn setup fails.
-struct Switch {
-    sb: Mutex<Sandbox>,
-    broken: AtomicBool,
-}
-
-impl Switch {
-    fn new(sb: &Sandbox) -> Arc<Self> {
-        Arc::new(Self {
-            sb: Mutex::new(sb.clone()),
-            broken: AtomicBool::new(false),
-        })
-    }
-
-    fn to(&self, sb: &Sandbox) {
-        *self.sb.lock() = sb.clone();
-    }
-}
+type Switch = Arc<Mutex<(Sandbox, bool)>>;
 
 /// An agent with the built-ins, in the sandbox `switch` holds at each turn setup.
-fn switching(switch: &Arc<Switch>) -> Agent {
-    let switch = Arc::clone(switch);
-    sandboxed_agent(move |cx| {
-        let sb = switch.sb.lock().clone();
-        let declared = cx.use_sandbox(&sb);
-        if switch.broken.load(Ordering::Relaxed) {
-            declared.only(["shell"]);
+fn switching(sb: &Sandbox) -> (Agent, Switch) {
+    let switch: Switch = Arc::new(Mutex::new((sb.clone(), false)));
+    let agent = sandboxed_agent({
+        let switch = Arc::clone(&switch);
+        move |cx| {
+            let (sb, broken) = switch.lock().clone();
+            let declared = cx.use_sandbox(&sb);
+            if broken {
+                declared.only(["shell"]);
+            }
         }
-    })
+    });
+    (agent, switch)
 }
 
-/// The model reads `path`, then is done.
-fn read(model: ScriptedModel, path: &str) -> ScriptedModel {
-    model
-        .calls([("c1", "read", json!({"path": path}))])
-        .reply("Done.")
+/// A call that reads `path`.
+fn read(path: &str) -> (&'static str, &'static str, Value) {
+    ("c1", "read", json!({"path": path}))
 }
 
-/// The model edits `one` to `1` in `path`, then is done.
-fn edit_one(model: ScriptedModel, path: &str) -> ScriptedModel {
-    let edit = json!({"path": path, "edits": [{"old_text": "one", "new_text": "1"}]});
-    model.calls([("c1", "edit", edit)]).reply("Done.")
+/// A call that edits `one` to `1` in `path`.
+fn edit_one(path: &str) -> (&'static str, &'static str, Value) {
+    ("c1", "edit", edit(path, "one", "1"))
 }
 
 /// Asks `instance` to go; what its last tool result was.
 async fn go(instance: &AgentInstance, model: &ScriptedModel) -> String {
-    let reply = timeout(TIMEOUT, instance.ask("Go")).await.unwrap();
-    reply.unwrap();
+    ask(instance, "Go").await.unwrap();
     last_results(model).pop().unwrap()
 }
 
 #[tokio::test]
 async fn each_instance_remembers_only_what_its_own_builtins_read() {
     let dir = TempDir::new();
-    let switch = Switch::new(&open(&dir).await);
-    let agent = switching(&switch);
-    let model = edit_one(
-        edit_one(read(ScriptedModel::new(), "a.txt"), "a.txt"),
-        "a.txt",
-    );
-    let runtime = runtime(&agent, &model);
-    let reader = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (agent, _) = switching(&open(&dir).await);
+    let model = ScriptedModel::new()
+        .calls([read("a.txt")])
+        .reply("Done.")
+        .calls([edit_one("a.txt")])
+        .reply("Done.")
+        .calls([edit_one("a.txt")])
+        .reply("Done.");
+    let (runtime, reader) = instance(&agent, &model);
     let other = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
     dir.write("a.txt", "one\n");
@@ -168,20 +151,23 @@ async fn each_instance_remembers_only_what_its_own_builtins_read() {
 async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
     let dir = TempDir::new();
     let (first, second) = (open(&dir).await, open(&dir).await);
-    let switch = Switch::new(&first);
-    let agent = switching(&switch);
-    let model = edit_one(read(ScriptedModel::new(), "a.txt").reply("Done."), "a.txt");
-    let runtime = runtime(&agent, &model);
-    let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (agent, switch) = switching(&first);
+    let model = ScriptedModel::new()
+        .calls([read("a.txt")])
+        .reply("Done.")
+        .reply("Done.")
+        .calls([edit_one("a.txt")])
+        .reply("Done.");
+    let (_runtime, instance) = instance(&agent, &model);
 
     dir.write("a.txt", "one\n");
     go(&instance, &model).await;
     dir.write("a.txt", "two\n");
-    switch.to(&second);
-    timeout(TIMEOUT, instance.ask("Go")).await.unwrap().unwrap();
+    *switch.lock() = (second, false);
+    ask(&instance, "Go").await.unwrap();
 
     // Back in the first sandbox, the edit reads the file afresh, not the old read.
-    switch.to(&first);
+    *switch.lock() = (first, false);
     let edited = go(&instance, &model).await;
     assert!(
         edited.starts_with("error:`old_text` was not found"),
@@ -193,16 +179,18 @@ async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
 async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
     let dir = TempDir::new();
     let root = open(&dir).await;
-    let switch = Switch::new(&root);
-    let agent = switching(&switch);
-    let model = edit_one(read(ScriptedModel::new(), "sub/a.txt"), "a.txt");
-    let runtime = runtime(&agent, &model);
-    let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (agent, switch) = switching(&root);
+    let model = ScriptedModel::new()
+        .calls([read("sub/a.txt")])
+        .reply("Done.")
+        .calls([edit_one("a.txt")])
+        .reply("Done.");
+    let (_runtime, instance) = instance(&agent, &model);
 
     dir.write("sub/a.txt", "one\n");
     go(&instance, &model).await;
     dir.write("sub/a.txt", "two\n");
-    switch.to(&root.work_dir("sub"));
+    *switch.lock() = (root.work_dir("sub"), false);
     let edited = go(&instance, &model).await;
     assert!(edited.contains(STALE), "{edited}");
 }
@@ -211,22 +199,21 @@ async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
 async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
     let dir = TempDir::new();
     let (first, second) = (open(&dir).await, open(&TempDir::new()).await);
-    let switch = Switch::new(&first);
-    let agent = switching(&switch);
-    let model = edit_one(read(ScriptedModel::new(), "a.txt"), "a.txt");
-    let runtime = runtime(&agent, &model);
-    let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
+    let (agent, switch) = switching(&first);
+    let model = ScriptedModel::new()
+        .calls([read("a.txt")])
+        .reply("Done.")
+        .calls([edit_one("a.txt")])
+        .reply("Done.");
+    let (_runtime, instance) = instance(&agent, &model);
 
     dir.write("a.txt", "one\n");
     go(&instance, &model).await;
     dir.write("a.txt", "two\n");
-    switch.to(&second);
-    switch.broken.store(true, Ordering::Relaxed);
-    let failed = timeout(TIMEOUT, instance.ask("Go")).await.unwrap();
-    reason(failed);
+    *switch.lock() = (second, true);
+    reason(ask(&instance, "Go").await);
 
-    switch.to(&first);
-    switch.broken.store(false, Ordering::Relaxed);
+    *switch.lock() = (first, false);
     let edited = go(&instance, &model).await;
     assert!(edited.contains(STALE), "{edited}");
 }
