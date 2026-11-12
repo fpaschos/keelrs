@@ -33,27 +33,6 @@ fn is_failed(result: &keelrs::Result<impl std::fmt::Debug>) -> bool {
 }
 
 #[tokio::test]
-async fn a_later_runtime_recovers_the_instance_and_continues_its_stream() {
-    let store = Store::in_memory();
-    let agent = failing();
-    let id = InstanceId::new("recovered");
-
-    let first = on(&store, &agent);
-    let instance = first.instance_with(&agent, id.clone(), 7).unwrap();
-    let earlier = instance.dispatch("Hello").await.unwrap();
-    assert!(is_failed(&instance.read(&earlier).await));
-    drop(first);
-
-    let second = on(&store, &agent);
-    let instance = second.instance_with(&agent, id, 7).unwrap();
-    // Its events number on from the first runtime's, or the store would refuse them.
-    let later = once_free(|| instance.dispatch("Again")).await.unwrap();
-    assert!(is_failed(&instance.read(&later).await));
-    // The first runtime's dispatch is read from the stream.
-    assert!(is_failed(&instance.read(&earlier).await));
-}
-
-#[tokio::test]
 async fn a_second_runtime_is_held_off_until_the_first_drops() {
     let store = Store::in_memory();
     let agent = failing();

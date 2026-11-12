@@ -30,13 +30,15 @@ async fn a_later_runtimes_model_sees_the_history_the_first_one_stored() {
         .reply("It is noon.");
     let runtime = on(&first);
     let instance = runtime.instance(&agent, id.clone()).unwrap();
-    let reply = timeout(TIMEOUT, instance.ask("What time is it?")).await;
+    let earlier = instance.dispatch("What time is it?").await.unwrap();
+    let reply = timeout(TIMEOUT, instance.read(&earlier)).await;
     assert_eq!(reply.unwrap().unwrap().text(), "It is noon.");
     drop(runtime);
 
     let later = ScriptedModel::new().reply("Still noon.");
     let runtime = on(&later);
     let instance = runtime.instance(&agent, id).unwrap();
+    // Its events number on from the first runtime's, or the store would refuse them.
     let receipt = once_free(|| instance.dispatch("And now?")).await.unwrap();
     timeout(TIMEOUT, instance.read(&receipt))
         .await
@@ -52,6 +54,9 @@ async fn a_later_runtimes_model_sees_the_history_the_first_one_stored() {
             "And now?"
         ]
     );
+    // The first runtime's dispatch is read from the stream.
+    let reply = instance.read(&earlier).await.unwrap();
+    assert_eq!(reply.text(), "It is noon.");
 }
 
 #[tokio::test]

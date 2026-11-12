@@ -1,4 +1,5 @@
-//! One call, through the seam `answer` runs it with.
+//! One call through the crate-private `rig::call`, the seam `answer` runs it with:
+//! arguments, decode errors and timeouts no public seam reaches alone.
 
 use super::*;
 
