@@ -236,13 +236,12 @@ struct Folded {
 impl Folded {
     fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: Event) {
         self.last = seq;
-        let start = |pending: &mut VecDeque<Admitted>| {
-            if let Some(first) = pending.front_mut()
-                && Some(first.dispatch) == dispatch
-            {
-                first.started = true;
-            }
-        };
+        if matches!(event, Event::Message(_) | Event::ToolResult(_))
+            && let Some(first) = self.pending.front_mut()
+            && Some(first.dispatch) == dispatch
+        {
+            first.started = true;
+        }
         match event {
             Event::Created { data } => self.data = Some(data),
             Event::Dispatched { text, structured } => {
@@ -255,14 +254,8 @@ impl Folded {
                     });
                 }
             }
-            Event::Message(message) => {
-                start(&mut self.pending);
-                self.history.push(message);
-            }
-            Event::ToolResult(part) => {
-                start(&mut self.pending);
-                rig::push_result(&mut self.history, &part);
-            }
+            Event::Message(message) => self.history.push(message),
+            Event::ToolResult(part) => rig::push_result(&mut self.history, &part),
             Event::Settled { result } => {
                 if let Some(dispatch) = dispatch {
                     self.pending.retain(|a| a.dispatch != dispatch);
