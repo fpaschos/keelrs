@@ -59,14 +59,14 @@ impl Folded {
                     });
                 }
             }
-            Event::Message(message) => self.history.push(message),
-            Event::ToolResult(part) => rig::push_result(&mut self.history, &part),
             Event::Settled { result } => {
                 if let Some(dispatch) = dispatch {
                     self.pending.retain(|a| a.dispatch != dispatch);
                     self.settled.insert(dispatch, result);
                 }
             }
+            // A message or tool result: the history the next run reads.
+            event => rig::record(&mut self.history, event),
         }
     }
 }

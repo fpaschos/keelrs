@@ -13,38 +13,25 @@ use std::time::Duration;
 use super::actor::closing;
 use super::fold::Folded;
 use super::*;
-use crate::agent::rig::tests::{agent as scripted, clock};
-use crate::agent::rig::{Run, Step};
+use crate::agent::rig::tests::{agent as scripted, clock, scripted_run};
+use crate::agent::rig::{Run, Step, tests as rig_tests};
 use crate::builtin::Caches;
 use crate::event::Event;
 use crate::store::Seq;
 use crate::{Agent, AgentContext};
 
-/// The turn setup of an agent on the mock model with one tool, `current_time`.
-fn setup() -> TurnSetup {
-    let agent = scripted(|cx| {
-        cx.use_tool(clock());
-    });
-    TurnSetup::new(&agent, InstanceId::new("test"), ())
-}
-
-/// A run of `text` after the folded history, against a model replying with `turns`.
+/// A run of `text` after the folded history, by an agent with one tool,
+/// `current_time`, against a model replying with `turns`.
 fn run(
     folded: &Folded,
     text: &str,
     turns: impl IntoIterator<Item = MockTurn>,
 ) -> (Run, MockCompletionModel) {
-    let model = MockCompletionModel::from_turns(turns);
-    let mock = model.clone();
-    let run = Run::with_connect(
-        setup(),
-        text.to_owned(),
-        folded.history.clone(),
-        None,
-        Caches::default(),
-        Box::new(move |_| Ok(mock.clone().erase())),
-    );
-    (run, model)
+    let agent = scripted(|cx| {
+        cx.use_tool(clock());
+    });
+    let history = folded.history.clone();
+    scripted_run(&agent, text, history, None, Caches::default(), turns)
 }
 
 /// Test helpers that fold as the actor appends, numbering each event.
@@ -63,21 +50,16 @@ impl Folded {
         dispatch
     }
 
-    /// Steps `run` to settled, folding every step.
-    async fn settle(&mut self, dispatch: DispatchId, mut run: Run) {
-        loop {
-            let (next, step) = run.step().await;
-            run = next;
-            match step.unwrap() {
-                Step::Append(events) => self.fold(dispatch, events),
-                Step::Settled(events, value) => {
-                    self.fold(dispatch, events);
-                    let result = Ok(value);
-                    self.fold(dispatch, [Event::Settled { result }]);
-                    return;
-                }
-            }
-        }
+    /// Runs `run` to settled and folds what it accepted, then `settled`.
+    async fn settle(&mut self, dispatch: DispatchId, run: Run) {
+        let settled = rig_tests::settle(run).await.1.expect("the run settles");
+        self.fold(dispatch, settled.messages.into_iter().map(Event::Message));
+        let text = settled.reply;
+        let result = Ok(SettledValue {
+            text,
+            structured: settled.structured,
+        });
+        self.fold(dispatch, [Event::Settled { result }]);
     }
 }
 

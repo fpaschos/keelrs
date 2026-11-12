@@ -9,6 +9,8 @@ use rig_core::message::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::event::Event;
+
 /// One message a run accepted; opaque so Rig's type stays in this module.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -20,9 +22,19 @@ pub(crate) struct Message(pub(super) Arc<RigMessage>);
 #[serde(transparent)]
 pub(crate) struct ToolResultPart(pub(super) RigToolResult);
 
+/// Adds a run's message or tool result to `history`, as the next run reads
+/// it; any other event leaves it unchanged.
+pub(crate) fn record(history: &mut Vec<Message>, event: Event) {
+    match event {
+        Event::Message(message) => history.push(message),
+        Event::ToolResult(part) => push_result(history, &part),
+        _ => {}
+    }
+}
+
 /// Adds `part` to `history`: into the tool results that follow the last
 /// assistant message, kept in its call order, or as a new user message.
-pub(crate) fn push_result(history: &mut Vec<Message>, part: &ToolResultPart) {
+fn push_result(history: &mut Vec<Message>, part: &ToolResultPart) {
     let order: Vec<CallId> = history
         .iter()
         .rev()

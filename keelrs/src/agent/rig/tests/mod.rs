@@ -69,34 +69,56 @@ async fn drive(
     structured: Option<Structured>,
     caches: &mut Caches,
 ) -> (Result<Settled, String>, Vec<CompletionRequest>) {
-    let model = MockCompletionModel::from_turns(turns);
-    let mock = model.clone();
-    let run = Run::with_connect(
-        TurnSetup::new(agent, InstanceId::new("test"), ()),
-        "Go".to_owned(),
+    let (run, model) = scripted_run(
+        agent,
+        "Go",
         Vec::new(),
         structured,
         std::mem::take(caches),
-        Box::new(move |_| Ok(mock.clone().erase())),
+        turns,
     );
     let (run, settled) = settle(run).await;
     *caches = run.into_caches();
     (settled, model.requests())
 }
 
-/// A run that settled with a reply, as its steps produced it.
-#[derive(Debug)]
-struct Settled {
-    /// The final assistant text.
-    reply: String,
-    /// What the run accepted, prompt first, excluding the input history.
-    messages: Vec<Message>,
-    /// The structured result `finish_structured` recorded, when one was asked for.
-    structured: Option<Value>,
+/// A run of `agent` on `text` after `history`, against a model that replies
+/// with `turns`; and that model, which keeps every request it got.
+pub(crate) fn scripted_run(
+    agent: &Agent,
+    text: &str,
+    history: Vec<Message>,
+    structured: Option<Structured>,
+    caches: Caches,
+    turns: impl IntoIterator<Item = MockTurn>,
+) -> (Run, MockCompletionModel) {
+    let model = MockCompletionModel::from_turns(turns);
+    let mock = model.clone();
+    let run = Run::with_connect(
+        TurnSetup::new(agent, InstanceId::new("test"), ()),
+        text.to_owned(),
+        history,
+        structured,
+        caches,
+        Box::new(move |_| Ok(mock.clone().erase())),
+    );
+    (run, model)
 }
 
-/// Steps `run` to settled, folding each step's messages as the instance does.
-async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
+/// A run that settled with a reply, as its steps produced it.
+#[derive(Debug)]
+pub(crate) struct Settled {
+    /// The final assistant text.
+    pub(crate) reply: String,
+    /// What the run accepted, prompt first, excluding the input history.
+    pub(crate) messages: Vec<Message>,
+    /// The structured result `finish_structured` recorded, when one was asked for.
+    pub(crate) structured: Option<Value>,
+}
+
+/// Steps `run` to settled, folding each step's events with [`record`], as
+/// the instance does.
+pub(crate) async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
     let mut messages = Vec::new();
     loop {
         let (next, step) = run.step().await;
@@ -122,14 +144,14 @@ async fn settle(mut run: Run) -> (Run, Result<Settled, String>) {
     }
 }
 
-/// Adds a step's messages and tool results to `history`.
+/// Adds a step's events to `history`; a run produces only messages and tool results.
 fn fold(history: &mut Vec<Message>, events: Vec<Event>) {
     for event in events {
-        match event {
-            Event::Message(message) => history.push(message),
-            Event::ToolResult(part) => push_result(history, &part),
-            other => panic!("a run produced {other:?}"),
-        }
+        assert!(
+            matches!(event, Event::Message(_) | Event::ToolResult(_)),
+            "a run produced {event:?}"
+        );
+        record(history, event);
     }
 }
 

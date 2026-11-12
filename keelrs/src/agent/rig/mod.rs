@@ -13,7 +13,7 @@ mod run;
 pub(crate) use call::args_schema;
 #[cfg(test)]
 pub(crate) use call::call;
-pub(crate) use history::{Message, ToolResultPart, close_pending, push_result};
+pub(crate) use history::{Message, ToolResultPart, close_pending, record};
 pub(crate) use run::{Run, Step};
 
 #[cfg(test)]
