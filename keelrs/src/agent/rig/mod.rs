@@ -4,17 +4,22 @@
 //! step that follows its model call (How a tool call runs).
 //!
 //! `history.rs` holds the messages a run accepted; `run.rs` the stepper;
-//! `call.rs` how one tool call runs.
+//! `call.rs` how one tool call runs; `scripted.rs` the scripted model
+//! behind `keelrs::testing`.
 
 mod call;
 mod history;
 mod run;
+#[cfg(feature = "testing")]
+mod scripted;
 
 pub(crate) use call::args_schema;
 #[cfg(test)]
 pub(crate) use call::call;
 pub(crate) use history::{Message, ToolResultPart, close_pending, record};
 pub(crate) use run::{Connect, Run, Step, connect_catalog};
+#[cfg(feature = "testing")]
+pub(crate) use scripted::Script;
 
 #[cfg(test)]
 pub(crate) mod tests;
