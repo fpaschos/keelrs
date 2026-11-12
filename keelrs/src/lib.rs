@@ -9,6 +9,8 @@ pub mod runtime;
 pub mod sandbox;
 pub mod skills;
 pub mod store;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 #[doc(hidden)]
 pub mod __private {

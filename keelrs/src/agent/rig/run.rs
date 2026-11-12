@@ -42,8 +42,18 @@ pub(crate) enum Step {
     Settled(Vec<Event>, SettledValue),
 }
 
-/// Connects the declared model.
-pub(crate) type Connect = Box<dyn Fn(&Model) -> Result<DynModel<Completion>, String> + Send + Sync>;
+/// Connects the declared model; shared by every run of a runtime.
+pub(crate) type Connect = Arc<dyn Fn(&Model) -> Result<DynModel<Completion>, String> + Send + Sync>;
+
+/// Connects the declared model through Rig's built-in catalog.
+pub(crate) fn connect_catalog() -> Connect {
+    let catalog = Catalog::builtin();
+    Arc::new(move |model| {
+        catalog
+            .connect(model.id.as_str())
+            .map_err(|e| e.to_string())
+    })
+}
 
 /// A tool call running; it yields its id and the answer.
 type Running = BoxFuture<'static, Result<(CallId, ToolAnswer), String>>;
@@ -73,31 +83,9 @@ pub(crate) struct Run {
 
 impl Run {
     /// A run on `text` after `history`, each turn set up by `setup`, its built-in
-    /// tools remembering in `caches`. With `structured`, the run must end with
-    /// a successful `finish_structured` call.
+    /// tools remembering in `caches`, its model connected by `connect`. With
+    /// `structured`, the run must end with a successful `finish_structured` call.
     pub(crate) fn new(
-        setup: TurnSetup,
-        text: String,
-        history: Vec<Message>,
-        structured: Option<Structured>,
-        caches: Caches,
-    ) -> Self {
-        Self::with_connect(
-            setup,
-            text,
-            history,
-            structured,
-            caches,
-            Box::new(|model| {
-                Catalog::builtin()
-                    .connect(model.id.as_str())
-                    .map_err(|e| e.to_string())
-            }),
-        )
-    }
-
-    /// [`Run::new`], connecting the declared model with `connect`.
-    pub(crate) fn with_connect(
         setup: TurnSetup,
         text: String,
         history: Vec<Message>,

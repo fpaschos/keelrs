@@ -12,8 +12,9 @@ use serde_json::{Value, json};
 
 use crate::agent::rig::call;
 use crate::sandbox::{self, Sandbox, SandboxPath};
-use crate::test_support::Folder;
 use crate::tool::{Called, FailKind};
+use assert_fs::TempDir;
+use assert_fs::prelude::*;
 
 mod bash;
 mod edit;
@@ -25,15 +26,15 @@ mod write;
 
 /// A temp folder with a local sandbox rooted in it, removed on drop.
 struct Fixture {
-    dir: Folder,
+    dir: TempDir,
     sb: Sandbox,
     seen: Seen,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        let dir = Folder::new();
-        let sb = sandbox::local().root(&dir.0).open().await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let sb = sandbox::local().root(dir.path()).open().await.unwrap();
         Self {
             dir,
             sb,
@@ -43,13 +44,13 @@ impl Fixture {
 
     /// Writes `contents` at `relative` on the host, creating its folders.
     fn put(&self, relative: &str, contents: &str) -> &Self {
-        self.dir.write(relative, contents);
+        self.dir.child(relative).write_str(contents).unwrap();
         self
     }
 
     /// What the host holds at `relative`.
     fn get(&self, relative: &str) -> String {
-        fs::read_to_string(self.dir.path(relative)).unwrap()
+        fs::read_to_string(self.dir.join(relative)).unwrap()
     }
 
     /// One call of the built-in `name`, run as a turn runs it.
@@ -92,7 +93,7 @@ impl Fixture {
     }
 
     fn exists(&self, relative: &str) -> bool {
-        self.dir.path(relative).exists()
+        self.dir.join(relative).exists()
     }
 
     async fn glob(&self, pattern: &str, path: Option<&str>, hidden: bool) -> String {

@@ -7,10 +7,7 @@ use std::time::Duration;
 use keelrs::Error;
 use keelrs::sandbox::SandboxError;
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
-use temp_dir::{TempDir, open};
+use crate::support::{open, temp_dir};
 
 /// `work`, or a panic naming `what` if it takes over a second.
 async fn within<T>(what: &str, work: impl Future<Output = T>) -> T {
@@ -21,7 +18,7 @@ async fn within<T>(what: &str, work: impl Future<Output = T>) -> T {
 
 #[tokio::test]
 async fn a_lock_out_of_the_work_dir_is_refused_and_holds_nothing() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
 
     let refused = sb.lock("../outside").await;
@@ -42,7 +39,7 @@ async fn a_lock_out_of_the_work_dir_is_refused_and_holds_nothing() {
 
 #[tokio::test]
 async fn a_locked_file_waits_for_its_holder_on_every_clone() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let held = sb.lock("sub/f").await.unwrap();
 
@@ -59,11 +56,11 @@ async fn a_locked_file_waits_for_its_holder_on_every_clone() {
 
 #[tokio::test]
 async fn a_lock_names_its_files_canonical_in_the_order_given() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
 
     let held = sb.lock_all(["b", "sub/../a", "./b"]).await.unwrap();
-    let root = dir.0.to_str().unwrap();
+    let root = dir.to_str().unwrap();
     let paths: Vec<&str> = held.paths().iter().map(|path| path.as_str()).collect();
     assert_eq!(
         paths,
@@ -77,7 +74,7 @@ async fn a_lock_names_its_files_canonical_in_the_order_given() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lock_all_in_opposite_orders_does_not_deadlock() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     for _ in 0..50 {
         let (one, two) = (sb.clone(), sb.clone());

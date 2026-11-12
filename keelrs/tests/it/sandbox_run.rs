@@ -3,18 +3,15 @@
 
 #![allow(clippy::disallowed_methods)] // the test sets up its dir on the host
 
-#[path = "common/temp_dir.rs"]
-mod temp_dir;
-
 use std::time::Duration;
 
+use crate::support::{open, temp_dir};
 use keelrs::Error;
 use keelrs::sandbox::{self, Command, ExecRequest, Exit, Ran, SandboxError};
-use temp_dir::{TempDir, open};
 
 #[tokio::test]
 async fn run_returns_stdout_without_its_trailing_newlines() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let out = sb.run(["sh", "-c", "printf ' a\\n\\n'"]).await.unwrap();
     assert_eq!(out, " a");
@@ -22,7 +19,7 @@ async fn run_returns_stdout_without_its_trailing_newlines() {
 
 #[tokio::test]
 async fn a_command_that_exits_non_zero_fails_with_what_it_printed() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let error = sb
         .run(["sh", "-c", "echo out; echo oops >&2; exit 3"])
@@ -43,7 +40,7 @@ async fn a_command_that_exits_non_zero_fails_with_what_it_printed() {
 
 #[tokio::test]
 async fn a_failure_with_nothing_on_stderr_gives_the_tail_of_stdout_or_no_reason() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let merged = ExecRequest::shell("echo broke >&2; exit 1").merge_stderr();
     let error = sb.run(merged).await.unwrap_err();
@@ -57,7 +54,7 @@ async fn a_failure_with_nothing_on_stderr_gives_the_tail_of_stdout_or_no_reason(
 
 #[tokio::test]
 async fn a_command_past_its_timeout_fails_timed_out() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let request = ExecRequest::argv(["sleep", "5"]).timeout(Duration::from_millis(50));
     let error = sb.run(request).await.unwrap_err();
@@ -69,7 +66,7 @@ async fn a_command_past_its_timeout_fails_timed_out() {
 
 #[tokio::test]
 async fn run_feeds_stdin() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let request = ExecRequest::argv(["cat"]).stdin("hi");
     assert_eq!(sb.run(request).await.unwrap(), "hi");
@@ -77,7 +74,7 @@ async fn run_feeds_stdin() {
 
 #[tokio::test]
 async fn a_missing_program_fails_with_io_because_it_never_ran() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let error = sb.run(["keelrs-no-such-program"]).await.unwrap_err();
     assert!(
@@ -92,7 +89,7 @@ const OFF_ALLOWLIST: &str = "CARGO_PKG_NAME";
 
 #[tokio::test]
 async fn the_allowlist_keeps_a_host_variable_out_and_inherit_env_lets_it_in() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let print = ["printenv", OFF_ALLOWLIST];
 
     let error = open(&dir).await.run(print).await.unwrap_err();
@@ -101,11 +98,11 @@ async fn the_allowlist_keeps_a_host_variable_out_and_inherit_env_lets_it_in() {
         "{error:?}"
     );
 
-    let host = sandbox::local().root(&dir.0).inherit_env().open().await;
+    let host = sandbox::local().root(dir.path()).inherit_env().open().await;
     assert_eq!(host.unwrap().run(print).await.unwrap(), "keelrs");
 
     let host = sandbox::local()
-        .root(&dir.0)
+        .root(dir.path())
         .inherit_env()
         .env_remove(OFF_ALLOWLIST)
         .open()
