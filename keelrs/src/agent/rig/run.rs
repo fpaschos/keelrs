@@ -47,8 +47,9 @@ pub(crate) type Connect = Arc<dyn Fn(&Model) -> Result<DynModel<Completion>, Str
 
 /// Connects the declared model through Rig's built-in catalog.
 pub(crate) fn connect_catalog() -> Connect {
-    Arc::new(|model| {
-        Catalog::builtin()
+    let catalog = Catalog::builtin();
+    Arc::new(move |model| {
+        catalog
             .connect(model.id.as_str())
             .map_err(|e| e.to_string())
     })

@@ -184,13 +184,9 @@ impl RuntimeBuilder {
                 return Err(Error::DuplicateAgent(name));
             }
         }
-        #[cfg(feature = "testing")]
-        let connect = self
-            .model
-            .as_ref()
-            .map_or_else(rig::connect_catalog, crate::testing::ScriptedModel::connect);
-        #[cfg(not(feature = "testing"))]
         let connect = rig::connect_catalog();
+        #[cfg(feature = "testing")]
+        let connect = self.model.map_or(connect, |model| model.connect());
         Ok(Runtime {
             inner: Arc::new(Inner {
                 agents: registry,

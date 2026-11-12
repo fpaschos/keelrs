@@ -6,15 +6,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rig_core::completion::{CompletionRequest, ToolDefinition};
-use rig_core::driver::{Exchange, Model, Opened, Opening, Transport};
+use rig_core::completion::CompletionRequest;
+use rig_core::driver::{Exchange, Model, Opening, Transport};
 use rig_core::error::ProviderError;
 use rig_core::message::{
     AssistantContent, Message as RigMessage, ToolCall, ToolFunction, ToolName, ToolResultContent,
     UserContent,
 };
 use rig_core::test_utils::{MockCompletionModel, MockFrame, MockScript, MockTurn};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::Connect;
 use crate::testing::Request;
@@ -26,7 +26,8 @@ pub(crate) struct Script(Arc<Mutex<State>>);
 #[derive(Debug, Default)]
 struct State {
     turns: VecDeque<Turn>,
-    requests: Vec<CompletionRequest>,
+    /// What each turn sent, as plain data.
+    requests: Vec<Request>,
 }
 
 #[derive(Debug)]
@@ -59,7 +60,7 @@ impl Script {
 
     /// What each turn so far sent the model, in order.
     pub(crate) fn requests(&self) -> Vec<Request> {
-        self.0.lock().requests.iter().map(request).collect()
+        self.0.lock().requests.clone()
     }
 
     /// Connects every declared model to this script.
@@ -74,10 +75,10 @@ impl Script {
 }
 
 impl Transport<MockScript> for Script {
-    fn send(&self, request: CompletionRequest, _: Exchange) -> Opening<MockFrame> {
+    fn send(&self, request: CompletionRequest, exchange: Exchange) -> Opening<MockFrame> {
         let turn = {
             let mut state = self.0.lock();
-            state.requests.push(request.clone());
+            state.requests.push(self::request(&request));
             state.turns.pop_front()
         };
         match turn {
@@ -85,15 +86,10 @@ impl Transport<MockScript> for Script {
                 "the scripted model has no turn left".to_owned(),
             )),
             Some(Turn::Hang) => Opening::new(std::future::pending()),
-            // rig-core's own scripted model answers one turn.
-            Some(Turn::Reply(turn)) => Opening::new(async move {
-                let response = MockCompletionModel::from_turns([*turn])
-                    .call(request)
-                    .await?;
-                let document = response.raw.clone();
-                let frame = Ok(MockFrame::Response(Box::new(response)));
-                Ok(Opened::new(futures::stream::iter([frame])).with_document(document))
-            }),
+            // rig-core's runtime answers one turn; it takes no turns once built.
+            Some(Turn::Reply(turn)) => MockCompletionModel::from_turns([*turn])
+                .transport
+                .send(request, exchange),
         }
     }
 }
@@ -111,7 +107,12 @@ fn request(request: &CompletionRequest) -> Request {
             }
         }
     }
-    let tools = request.tools.iter().map(|tool| tool_json(tool)).collect();
+    // A definition serializes as `{name, description, parameters}`.
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| serde_json::to_value(&**tool).expect("a tool definition serializes"))
+        .collect();
     Request {
         instructions,
         messages,
@@ -145,12 +146,4 @@ fn assistant_part(content: &AssistantContent) -> String {
         AssistantContent::ToolCall(call) => format!("call:{}", call.function.name),
         other => format!("{other:?}"),
     }
-}
-
-fn tool_json(tool: &ToolDefinition) -> Value {
-    json!({
-        "name": tool.name.to_string(),
-        "description": tool.description,
-        "parameters": tool.parameters,
-    })
 }
