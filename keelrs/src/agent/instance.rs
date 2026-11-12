@@ -236,6 +236,8 @@ struct Folded {
 impl Folded {
     fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: Event) {
         self.last = seq;
+        // Idempotent: the front dispatch's first message or tool result sets
+        // `started`; every later one sets it again, which changes nothing.
         if matches!(event, Event::Message(_) | Event::ToolResult(_))
             && let Some(first) = self.pending.front_mut()
             && Some(first.dispatch) == dispatch
