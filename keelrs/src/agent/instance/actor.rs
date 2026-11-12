@@ -30,11 +30,8 @@ const ABORTED: &str = "aborted";
 /// An abort, sent on the control channel; answered once it is stored.
 pub(super) type Control = oneshot::Sender<Result<()>>;
 
-/// The dispatch being run, and its step in flight.
-struct Running {
-    dispatch: DispatchId,
-    step: BoxFuture<'static, (Run, Result<Step, String>)>,
-}
+/// The step in flight, with the dispatch it runs for.
+type Running = BoxFuture<'static, (DispatchId, Run, Result<Step, String>)>;
 
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 pub(super) struct InstanceActor {
@@ -96,17 +93,17 @@ impl InstanceActor {
     /// Runs until the runtime is dropped or every handle is gone.
     async fn run(mut self) {
         loop {
-            let renew_at = self.renew_at();
+            let renewal = OptionFuture::from(self.renewal());
             select! {
                 biased;
                 () = self.cancel.cancelled() => break,
                 Some(respond_to) = self.control.recv() => {
                     let _ = respond_to.send(self.abort().await);
                 }
-                Some((run, step)) = OptionFuture::from(self.running.as_mut().map(|r| &mut r.step)) => {
-                    self.stepped(run, step).await;
+                Some((dispatch, run, step)) = OptionFuture::from(self.running.as_mut()) => {
+                    self.stepped(dispatch, run, step).await;
                 }
-                () = tokio::time::sleep_until(renew_at), if self.lease.is_some() => self.renew().await,
+                Some(epoch) = renewal => self.renew(epoch).await,
                 command = self.inbox.recv() => match command {
                     Some(command) => self.command(command).await,
                     None => break,
@@ -251,17 +248,15 @@ impl InstanceActor {
 
     /// Takes `run`'s next step for `dispatch`, kept until it finishes.
     fn run_step(&mut self, dispatch: DispatchId, run: Run) {
-        self.running = Some(Running {
-            dispatch,
-            step: Box::pin(run.step()),
-        });
+        self.running = Some(Box::pin(async move {
+            let (run, step) = run.step().await;
+            (dispatch, run, step)
+        }));
     }
 
-    /// Stores what a step produced, then takes the next one.
-    async fn stepped(&mut self, run: Run, step: Result<Step, String>) {
-        let Some(Running { dispatch, .. }) = self.running.take() else {
-            return;
-        };
+    /// Stores what `dispatch`'s step produced, then takes the next one.
+    async fn stepped(&mut self, dispatch: DispatchId, run: Run, step: Result<Step, String>) {
+        self.running = None;
         let stored = match step {
             Ok(Step::Append(events)) => {
                 let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
@@ -329,9 +324,7 @@ impl InstanceActor {
     /// Stores `events` after the stream's last, then folds them and answers
     /// the reads they settle. Any store failure resets the actor.
     async fn append(&mut self, events: Vec<(Option<DispatchId>, Event)>) -> Result<()> {
-        let Some((epoch, _)) = self.lease else {
-            return Err(self.reset(self.fenced()));
-        };
+        let (epoch, _) = self.lease.expect("every append follows `hold`");
         let expected = self.folded.last;
         if let Err(e) = self
             .store
@@ -358,10 +351,7 @@ impl InstanceActor {
         Ok(())
     }
 
-    async fn renew(&mut self) {
-        let Some((epoch, _)) = self.lease else {
-            return;
-        };
+    async fn renew(&mut self, epoch: Epoch) {
         let asked = Instant::now();
         match self.store.renew(&self.name, &self.id, epoch).await {
             Ok(()) => self.lease = Some((epoch, asked + trusted(&self.store))),
@@ -371,16 +361,16 @@ impl InstanceActor {
         }
     }
 
-    /// When to renew the lease: a third of its TTL after it was last taken or
-    /// renewed (now, when not holding it; the branch is then disabled).
-    fn renew_at(&self) -> Instant {
+    /// While holding the lease: a wait until it is due for renewal, a third
+    /// of its TTL after it was last taken or renewed, yielding its epoch.
+    fn renewal(&self) -> Option<impl Future<Output = Epoch> + use<>> {
+        let (epoch, deadline) = self.lease?;
         let ttl = self.store.ttl();
-        match self.lease {
-            Some((_, deadline)) => {
-                deadline - trusted(&self.store) + (ttl / 3).max(Duration::from_millis(1))
-            }
-            None => Instant::now(),
-        }
+        let at = deadline - trusted(&self.store) + (ttl / 3).max(Duration::from_millis(1));
+        Some(async move {
+            tokio::time::sleep_until(at).await;
+            epoch
+        })
     }
 
     /// Whether the lease can still be trusted to start a step.
