@@ -9,7 +9,9 @@ use keelrs::{Agent, Tool, ToolCall};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::support::{TempDir, edit, last_results, open, sandboxed_agent, scripted};
+use assert_fs::prelude::*;
+
+use crate::support::{edit, last_results, open, sandboxed_agent, scripted, temp_dir, write};
 
 /// A tool of the user's that appends `two` to `path` under `sb.lock`, slowly:
 /// a change made between its read and its write would be lost.
@@ -65,40 +67,40 @@ async fn free(sb: &Sandbox, path: &str) -> bool {
 
 #[tokio::test]
 async fn a_users_locked_tool_and_an_edit_of_one_file_both_land() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("f", "one\n");
+    write(&dir, "f", "one\n");
     let model = ScriptedModel::new().calls([
         ("c1", "append", json!({})),
         ("c2", "edit", edit("f", "one", "1")),
     ]);
     let results = results(&appending_in(&sb, "f"), model).await;
     assert!(all_ok(&results), "{results:?}");
-    assert_eq!(dir.read("f").unwrap(), "1\ntwo\n");
+    dir.child("f").assert("1\ntwo\n");
     assert!(free(&sb, "f").await);
 }
 
 #[tokio::test]
 async fn a_users_locked_tool_and_a_write_of_one_file_run_one_after_the_other() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("f", "one\n");
+    write(&dir, "f", "one\n");
     let write = json!({"path": "f", "content": "new\n"});
     let model = ScriptedModel::new().calls([("c1", "append", json!({})), ("c2", "write", write)]);
     let results = results(&appending_in(&sb, "f"), model).await;
     assert!(all_ok(&results), "{results:?}");
     // Append first, then the write replaces the file whole; or the write
     // first, then the append. Never the append over the text it read before.
-    let text = dir.read("f").unwrap();
+    let text = String::from_utf8(sb.read("f", 1024).await.unwrap().bytes).unwrap();
     assert!(text == "new\n" || text == "new\ntwo\n", "{text:?}");
     assert!(free(&sb, "f").await);
 }
 
 #[tokio::test]
 async fn two_edits_of_one_file_from_the_same_read_both_land() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("f", "one\ntwo\n");
+    write(&dir, "f", "one\ntwo\n");
     let model = ScriptedModel::new()
         .calls([("c0", "read", json!({"path": "f"}))])
         .calls([
@@ -107,15 +109,15 @@ async fn two_edits_of_one_file_from_the_same_read_both_land() {
         ]);
     let results = results(&agent_in(&sb), model).await;
     assert!(all_ok(&results), "{results:?}");
-    assert_eq!(dir.read("f").unwrap(), "1\n2\n");
+    dir.child("f").assert("1\n2\n");
     assert!(free(&sb, "f").await);
 }
 
 #[tokio::test]
 async fn a_failed_edit_releases_its_file() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("f", "one\n");
+    write(&dir, "f", "one\n");
     let model = ScriptedModel::new().calls([
         ("c1", "edit", edit("f", "absent", "1")),
         ("c2", "edit", edit("f", "one", "1")),
@@ -125,23 +127,26 @@ async fn a_failed_edit_releases_its_file() {
         results[0].starts_with("error:") && results[1].starts_with("result:"),
         "{results:?}"
     );
-    assert_eq!(dir.read("f").unwrap(), "1\n");
+    dir.child("f").assert("1\n");
     assert!(free(&sb, "f").await);
 }
 
 #[tokio::test]
 async fn an_edit_beside_a_move_of_its_file_lands_before_it_or_finds_it_gone() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("a", "one\n");
+    write(&dir, "a", "one\n");
     let model = ScriptedModel::new().calls([
         ("c1", "move", json!({"from": "a", "to": "c"})),
         ("c2", "edit", edit("a", "one", "1")),
     ]);
     let results = results(&agent_in(&sb), model).await;
     assert!(results[0].starts_with("result:"), "{results:?}");
-    assert_eq!(dir.read("a"), None, "the edit recreated a");
-    match dir.read("c").unwrap().as_str() {
+    assert!(!dir.child("a").exists(), "the edit recreated a");
+    match String::from_utf8(sb.read("c", 1024).await.unwrap().bytes)
+        .unwrap()
+        .as_str()
+    {
         "1\n" => assert!(results[1].starts_with("result:"), "{results:?}"),
         "one\n" => assert!(results[1].starts_with("error:"), "{results:?}"),
         other => panic!("{other:?}: {results:?}"),
@@ -151,9 +156,9 @@ async fn an_edit_beside_a_move_of_its_file_lands_before_it_or_finds_it_gone() {
 
 #[tokio::test]
 async fn a_work_dir_and_its_sandbox_lock_the_same_file() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    dir.write("sub/f", "one\n");
+    write(&dir, "sub/f", "one\n");
     let (root, sub) = (appending_in(&sb, "sub/f"), agent_in(&sb.work_dir("sub")));
     let appending = results(
         &root,
@@ -166,6 +171,6 @@ async fn a_work_dir_and_its_sandbox_lock_the_same_file() {
     let (appended, edited) = tokio::join!(appending, editing);
     let results = [appended, edited].concat();
     assert!(all_ok(&results), "{results:?}");
-    assert_eq!(dir.read("sub/f").unwrap(), "1\ntwo\n");
+    dir.child("sub/f").assert("1\ntwo\n");
     assert!(free(&sb, "sub/f").await);
 }

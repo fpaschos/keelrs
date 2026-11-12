@@ -1,13 +1,10 @@
 //! What the tests share: temp dirs, sandboxes on them, and agents on a scripted model.
 
-#![allow(clippy::disallowed_methods)] // the dir is made and removed on the host
-
 use std::convert::Infallible;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use assert_fs::TempDir;
+use assert_fs::prelude::*;
 use keelrs::sandbox::{self, Sandbox};
 use keelrs::store::{Store, StoreError};
 use keelrs::testing::{Request, ScriptedModel};
@@ -20,54 +17,26 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::time::timeout;
 
-/// A fresh dir under the system temp dir, removed on drop.
-pub(crate) struct TempDir(pub(crate) PathBuf);
-
-impl TempDir {
-    pub(crate) fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("keelrs-test-{}-{n}", std::process::id()));
-        fs::create_dir_all(&path).unwrap();
-        Self(fs::canonicalize(path).unwrap())
-    }
-
-    /// The path `relative` in the dir.
-    pub(crate) fn path(&self, relative: &str) -> PathBuf {
-        self.0.join(relative)
-    }
-
-    /// Writes `contents` at `relative`, creating its folders.
-    pub(crate) fn write(&self, relative: &str, contents: &str) -> &Self {
-        let path = self.path(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-        self
-    }
-
-    /// What the dir holds at `relative`; `None` when nothing is there.
-    pub(crate) fn read(&self, relative: &str) -> Option<String> {
-        fs::read_to_string(self.path(relative)).ok()
-    }
-
-    /// Writes `<root>/<folder>/SKILL.md` naming the skill `name`.
-    pub(crate) fn skill(&self, root: &str, folder: &str, name: &str, description: &str) -> &Self {
-        self.write(
-            &format!("{root}/{folder}/SKILL.md"),
-            &format!("---\nname: {name}\ndescription: {description}\n---\nBody of {name}.\n"),
-        )
-    }
+/// A fresh dir under the system temp dir, removed on drop. Its path is
+/// canonical (on macOS the temp dir is behind a symlink), as a sandbox sees it.
+pub(crate) fn temp_dir() -> TempDir {
+    TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
 
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+/// Writes `contents` at `relative` in `dir`, creating its folders.
+pub(crate) fn write(dir: &TempDir, relative: &str, contents: &str) {
+    dir.child(relative).write_str(contents).unwrap();
+}
+
+/// Writes `<root>/<folder>/SKILL.md` in `dir`, naming the skill `name`.
+pub(crate) fn skill(dir: &TempDir, root: &str, folder: &str, name: &str, description: &str) {
+    let text = format!("---\nname: {name}\ndescription: {description}\n---\nBody of {name}.\n");
+    write(dir, &format!("{root}/{folder}/SKILL.md"), &text);
 }
 
 /// A local sandbox rooted at `dir`.
 pub(crate) async fn open(dir: &TempDir) -> Sandbox {
-    sandbox::local().root(&dir.0).open().await.unwrap()
+    sandbox::local().root(dir.path()).open().await.unwrap()
 }
 
 /// How long a test waits for a dispatch that should settle.

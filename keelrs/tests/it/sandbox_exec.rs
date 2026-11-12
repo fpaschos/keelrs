@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use keelrs::sandbox::{self, Chunk, ExecRequest, Exit};
 
-use crate::support::{TempDir, open};
+use crate::support::{open, temp_dir};
 
 /// Whether process `pid` ends within 5 s, checked from inside `sb`.
 async fn gone(sb: &keelrs::sandbox::Sandbox, pid: &str) -> bool {
@@ -24,8 +24,8 @@ async fn gone(sb: &keelrs::sandbox::Sandbox, pid: &str) -> bool {
 
 #[tokio::test]
 async fn a_command_starts_in_the_work_dir_and_reports_its_exit() {
-    let dir = TempDir::new();
-    std::fs::create_dir_all(dir.0.join("inner")).unwrap();
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
     let sb = open(&dir).await.work_dir("inner");
     let ran = sb
         .exec(ExecRequest::shell("pwd; echo oops >&2; exit 3"))
@@ -34,14 +34,14 @@ async fn a_command_starts_in_the_work_dir_and_reports_its_exit() {
         .run()
         .await
         .unwrap();
-    assert_eq!(ran.stdout, format!("{}\n", dir.0.join("inner").display()));
+    assert_eq!(ran.stdout, format!("{}\n", dir.join("inner").display()));
     assert_eq!(ran.stderr, "oops\n");
     assert_eq!(ran.exit, Exit::Code(3));
 }
 
 #[tokio::test]
 async fn a_command_past_its_timeout_ends_timed_out() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let started = std::time::Instant::now();
     let ran = sb
@@ -57,7 +57,7 @@ async fn a_command_past_its_timeout_ends_timed_out() {
 
 #[tokio::test]
 async fn merge_stderr_keeps_both_streams_in_order_on_stdout() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let ran = sb
         .exec(ExecRequest::shell("echo one; echo two >&2; echo three").merge_stderr())
@@ -74,9 +74,9 @@ async fn merge_stderr_keeps_both_streams_in_order_on_stdout() {
 async fn a_command_sees_the_allowlist_with_the_builder_changes_but_not_the_host() {
     // Cargo sets `CARGO_PKG_NAME` for this test process.
     assert!(std::env::var("CARGO_PKG_NAME").is_ok());
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = sandbox::local()
-        .root(&dir.0)
+        .root(dir.path())
         .env("KEELRS_GIVEN", "yes")
         .env_remove("HOME")
         .open()
@@ -96,7 +96,7 @@ async fn a_command_sees_the_allowlist_with_the_builder_changes_but_not_the_host(
 
 #[tokio::test]
 async fn a_killed_command_ends_killed() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let started = std::time::Instant::now();
     let mut running = sb.exec(ExecRequest::shell("sleep 30")).await.unwrap();
@@ -107,13 +107,13 @@ async fn a_killed_command_ends_killed() {
 
 #[tokio::test]
 async fn git_terminal_prompt_defaults_off_and_the_builder_overrides_it() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let line = || ExecRequest::shell("echo $GIT_TERMINAL_PROMPT");
     let ran = open(&dir).await.exec(line()).await.unwrap().run().await;
     assert_eq!(ran.unwrap().stdout, "0\n");
 
     let sb = sandbox::local()
-        .root(&dir.0)
+        .root(dir.path())
         .env("GIT_TERMINAL_PROMPT", "1")
         .open()
         .await
@@ -124,7 +124,7 @@ async fn git_terminal_prompt_defaults_off_and_the_builder_overrides_it() {
 
 #[tokio::test]
 async fn a_shell_line_runs_in_the_shell_resolved_at_open_whatever_the_path() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let shell = sb.shell().unwrap().to_string();
     assert!(
@@ -143,7 +143,7 @@ async fn a_shell_line_runs_in_the_shell_resolved_at_open_whatever_the_path() {
 
 #[tokio::test]
 async fn dropping_an_execution_kills_its_group() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let mut running = sb
         .exec(ExecRequest::shell("sleep 30 & echo $!; wait"))
@@ -162,7 +162,7 @@ async fn dropping_an_execution_kills_its_group() {
 #[test]
 #[allow(clippy::disallowed_types)] // with its runtime gone, the check runs on the host
 fn a_command_does_not_outlive_its_runtime() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -197,7 +197,7 @@ fn a_command_does_not_outlive_its_runtime() {
 
 #[tokio::test]
 async fn a_background_leftover_does_not_hold_the_command_open() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let started = std::time::Instant::now();
     let ran = sb
@@ -218,7 +218,7 @@ async fn a_background_leftover_does_not_hold_the_command_open() {
 
 #[tokio::test]
 async fn wait_discards_unread_output_instead_of_blocking_the_command() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let running = sb
         .exec(ExecRequest::shell("head -c 100000000 /dev/zero"))
@@ -230,7 +230,7 @@ async fn wait_discards_unread_output_instead_of_blocking_the_command() {
 
 #[tokio::test]
 async fn a_process_that_leaves_the_group_does_not_hold_the_command_open() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let started = std::time::Instant::now();
     let ran = sb
@@ -251,9 +251,9 @@ async fn a_process_that_leaves_the_group_does_not_hold_the_command_open() {
 
 #[tokio::test]
 async fn a_timeout_stops_a_group_member_that_ignores_sigterm() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
-    let pid = dir.0.join("pid");
+    let pid = dir.join("pid");
     let line = format!(
         "(trap '' TERM; sleep 30) >/dev/null 2>&1 & echo $! > {}; sleep 30",
         pid.display()
@@ -275,7 +275,7 @@ async fn a_timeout_stops_a_group_member_that_ignores_sigterm() {
 
 #[tokio::test]
 async fn a_long_line_is_split_between_characters() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let ran = sb
         .exec(ExecRequest::shell(
@@ -291,7 +291,7 @@ async fn a_long_line_is_split_between_characters() {
 
 #[tokio::test]
 async fn run_keeps_the_last_64_mib_of_a_larger_output_without_slowing_down() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     let run = sb
         .exec(ExecRequest::shell("yes | head -c 80000000"))

@@ -7,22 +7,22 @@ use keelrs::Error;
 use keelrs::sandbox::{ContentHash, Listing, SandboxError, SandboxPath};
 use rig_tools::workspace::{Local, Workspace as _};
 
-use crate::support::{TempDir, open};
+use crate::support::{open, temp_dir};
 
 #[tokio::test]
 async fn a_written_file_reads_back_from_a_relative_path() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     sb.write("notes/a.txt", b"hello".to_vec()).await.unwrap();
     let read = sb.read("notes/a.txt", 1024).await.unwrap();
     assert_eq!(read.bytes, b"hello");
     assert_eq!(read.size, 5);
-    assert_eq!(std::fs::read(dir.0.join("notes/a.txt")).unwrap(), b"hello");
+    assert_eq!(std::fs::read(dir.join("notes/a.txt")).unwrap(), b"hello");
 }
 
 #[tokio::test]
 async fn write_if_writes_over_what_was_seen_and_refuses_a_stale_hash() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let sb = open(&dir).await;
     sb.write("a.txt", b"one".to_vec()).await.unwrap();
 
@@ -37,15 +37,15 @@ async fn write_if_writes_over_what_was_seen_and_refuses_a_stale_hash() {
         .await
         .unwrap();
     assert_eq!(stale.map(|now| now.bytes), Some(b"two".to_vec()));
-    assert_eq!(std::fs::read(dir.0.join("a.txt")).unwrap(), b"two");
+    assert_eq!(std::fs::read(dir.join("a.txt")).unwrap(), b"two");
 }
 
 #[tokio::test]
 async fn a_path_out_of_the_work_dir_is_refused() {
-    let dir = TempDir::new();
-    std::fs::create_dir_all(dir.0.join("inner")).unwrap();
-    std::fs::write(dir.0.join("secret.txt"), "no").unwrap();
-    std::os::unix::fs::symlink(dir.0.join("secret.txt"), dir.0.join("inner/link.txt")).unwrap();
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
+    std::fs::write(dir.join("secret.txt"), "no").unwrap();
+    std::os::unix::fs::symlink(dir.join("secret.txt"), dir.join("inner/link.txt")).unwrap();
     let sb = open(&dir).await.work_dir("inner");
 
     for path in ["../secret.txt", "link.txt", "/etc/hosts"] {
@@ -58,7 +58,7 @@ async fn a_path_out_of_the_work_dir_is_refused() {
             "{path}: {refused:?}"
         );
     }
-    std::fs::write(dir.0.join("inner/own.txt"), "yes").unwrap();
+    std::fs::write(dir.join("inner/own.txt"), "yes").unwrap();
     let read = sb
         .read_files(
             &["../secret.txt", "own.txt", "link.txt", "/etc/hosts"],
@@ -72,47 +72,47 @@ async fn a_path_out_of_the_work_dir_is_refused() {
         write,
         Err(Error::Sandbox(SandboxError::OutsideWorkDir { .. }))
     ));
-    assert!(!dir.0.join("escaped.txt").exists());
+    assert!(!dir.join("escaped.txt").exists());
 }
 
 #[tokio::test]
 async fn a_gitignore_starting_with_a_byte_order_mark_keeps_its_first_rule() {
-    let dir = TempDir::new();
-    std::fs::write(dir.0.join(".gitignore"), "\u{feff}gen/\n").unwrap();
-    std::fs::create_dir_all(dir.0.join("gen")).unwrap();
-    std::fs::write(dir.0.join("gen/out.rs"), "x").unwrap();
-    std::fs::write(dir.0.join("lib.rs"), "x").unwrap();
+    let dir = temp_dir();
+    std::fs::write(dir.join(".gitignore"), "\u{feff}gen/\n").unwrap();
+    std::fs::create_dir_all(dir.join("gen")).unwrap();
+    std::fs::write(dir.join("gen/out.rs"), "x").unwrap();
+    std::fs::write(dir.join("lib.rs"), "x").unwrap();
     let sb = open(&dir).await;
     let listed = sb.list(".", None, Listing::Visible).await.unwrap();
     assert_eq!(
         listed,
-        [SandboxPath::new(dir.0.join("lib.rs").to_str().unwrap()).unwrap()]
+        [SandboxPath::new(dir.join("lib.rs").to_str().unwrap()).unwrap()]
     );
 }
 
 #[tokio::test]
 async fn list_skips_a_name_that_is_not_utf8_and_lists_the_rest() {
     use std::os::unix::ffi::OsStrExt as _;
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let odd = std::ffi::OsStr::from_bytes(b"odd\xff.txt");
-    if std::fs::write(dir.0.join(odd), "x").is_err() {
+    if std::fs::write(dir.join(odd), "x").is_err() {
         return; // the file system takes UTF-8 names only, as macOS's does
     }
-    std::fs::write(dir.0.join("ok.txt"), "x").unwrap();
+    std::fs::write(dir.join("ok.txt"), "x").unwrap();
     let sb = open(&dir).await;
     let listed = sb.list(".", None, Listing::Visible).await.unwrap();
     assert_eq!(
         listed,
-        [SandboxPath::new(dir.0.join("ok.txt").to_str().unwrap()).unwrap()]
+        [SandboxPath::new(dir.join("ok.txt").to_str().unwrap()).unwrap()]
     );
 }
 
 #[tokio::test]
 async fn a_dangling_link_leads_where_it_points_and_out_is_refused() {
-    let dir = TempDir::new();
-    std::fs::create_dir_all(dir.0.join("inner")).unwrap();
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("inner")).unwrap();
     let link = |to: &str, at: &str| {
-        std::os::unix::fs::symlink(dir.0.join(to), dir.0.join(at)).unwrap();
+        std::os::unix::fs::symlink(dir.join(to), dir.join(at)).unwrap();
     };
     link("outside/new.txt", "inner/out.txt");
     link("inner/made/new.txt", "inner/in.txt");
@@ -126,10 +126,10 @@ async fn a_dangling_link_leads_where_it_points_and_out_is_refused() {
         ),
         "{write:?}"
     );
-    assert!(!dir.0.join("outside").exists());
+    assert!(!dir.join("outside").exists());
     sb.write("in.txt", b"x".to_vec()).await.unwrap();
     assert_eq!(
-        std::fs::read_to_string(dir.0.join("inner/made/new.txt")).unwrap(),
+        std::fs::read_to_string(dir.join("inner/made/new.txt")).unwrap(),
         "x"
     );
 }
@@ -157,9 +157,9 @@ const PROJECT: [(&str, &str); 17] = [
 
 #[tokio::test]
 async fn list_leaves_out_what_the_ignore_rules_do_as_rig_tools_lists_it() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     for (path, text) in PROJECT {
-        let at = dir.0.join(path);
+        let at = dir.join(path);
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
         std::fs::write(at, text).unwrap();
     }
@@ -178,7 +178,7 @@ async fn list_leaves_out_what_the_ignore_rules_do_as_rig_tools_lists_it() {
                 .collect();
             listed.sort();
             let mut expected: Vec<String> = Local
-                .files(&dir.0.join(root), None, rig)
+                .files(&dir.join(root), None, rig)
                 .unwrap()
                 .iter()
                 .map(|path| {

@@ -17,7 +17,7 @@ async fn a_read_only_file_is_refused_as_permission_denied() {
     use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new().await;
     fx.put("frozen.txt", "old\n");
-    let path = fx.dir.path("frozen.txt");
+    let path = fx.dir.join("frozen.txt");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
     let args = json!({"path": "frozen.txt", "content": "new\n"});
     let failed = fx.call("write", args).await.unwrap_err();
@@ -30,7 +30,7 @@ async fn write_replaces_a_file_it_cannot_read() {
     use std::os::unix::fs::PermissionsExt as _;
     let fx = Fixture::new().await;
     fx.put("locked.txt", "old\n");
-    let path = fx.dir.path("locked.txt");
+    let path = fx.dir.join("locked.txt");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
     assert_eq!(
         fx.write("locked.txt", "new\n").await,
@@ -43,8 +43,8 @@ async fn write_replaces_a_file_it_cannot_read() {
 #[tokio::test]
 async fn write_through_a_dangling_link_out_of_the_work_dir_is_refused_as_permission_denied() {
     let fx = Fixture::new().await;
-    let outside = fx.dir.0.with_extension("outside");
-    std::os::unix::fs::symlink(outside.join("new.txt"), fx.dir.path("out.txt")).unwrap();
+    let outside = fx.dir.path().with_extension("outside");
+    std::os::unix::fs::symlink(outside.join("new.txt"), fx.dir.join("out.txt")).unwrap();
     let failed = fx
         .call("write", json!({"path": "out.txt", "content": "x"}))
         .await

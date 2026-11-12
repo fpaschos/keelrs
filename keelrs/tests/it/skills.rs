@@ -3,7 +3,7 @@
 
 use keelrs::{Agent, AgentContext, Skill};
 
-use crate::support::{TempDir, agent, clock, first_request, haiku, open, sonnet, tool_names};
+use crate::support::{agent, clock, first_request, haiku, open, sonnet, temp_dir, tool_names};
 
 #[test]
 fn an_embedded_skill_may_hold_templates_named_like_secrets() {
@@ -39,7 +39,7 @@ fn a_code_built_skill_file_stays_inside_its_folder() {
 
 #[tokio::test]
 async fn the_catalog_follows_the_instructions_in_use_skill_order() {
-    let sb = open(&TempDir::new()).await;
+    let sb = open(&temp_dir()).await;
     let agent = Agent::new("poet", move |cx: &mut AgentContext| {
         cx.use_model("scripted/model");
         cx.use_sandbox(&sb).only([]);

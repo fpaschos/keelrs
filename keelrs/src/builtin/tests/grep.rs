@@ -112,13 +112,19 @@ src/lib.rs-11- }"
 async fn grep_names_the_files_it_could_not_search() {
     let fx = Fixture::new().await;
     fx.put("a.txt", "needle\n");
-    fs::write(fx.dir.path("b.bin"), b"needle \xff\n").unwrap();
+    fx.dir
+        .child("b.bin")
+        .write_binary(b"needle \xff\n")
+        .unwrap();
     assert_eq!(
         fx.grep("needle", json!({})).await,
         "a.txt:1: needle\n[not searched, over 16 MB, not UTF-8 or unreadable: b.bin]"
     );
     for n in 0..6 {
-        fs::write(fx.dir.path(&format!("c{n}.bin")), b"\xff").unwrap();
+        fx.dir
+            .child(format!("c{n}.bin"))
+            .write_binary(b"\xff")
+            .unwrap();
     }
     assert_eq!(
         fx.grep("haystack", json!({})).await,

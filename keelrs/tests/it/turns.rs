@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::Barrier;
 
 use crate::support::{
-    TempDir, agent, clock, last_results, lookup_order, open, reason, sandboxed_agent, scripted,
+    agent, clock, last_results, lookup_order, open, reason, sandboxed_agent, scripted, temp_dir,
     tool_names,
 };
 
@@ -30,7 +30,7 @@ async fn a_tool_result_reaches_the_model_and_the_run_settles() {
 
 #[tokio::test]
 async fn a_sandboxed_tool_gets_the_sandbox_its_turn_declared() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let declared = open(&dir).await.work_dir("keelrs-declared");
     let expected = json!({"id": declared.id().to_string(), "dir": declared.dir().to_string()});
     let agent = sandboxed_agent(move |cx| {

@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 
 use crate::support::{
-    TempDir, agent, ask, clock, edit, first_request, haiku, instance, last_results, open, reason,
-    sandboxed_agent, scripted, tool_names,
+    agent, ask, clock, edit, first_request, haiku, instance, last_results, open, reason,
+    sandboxed_agent, scripted, temp_dir, tool_names, write,
 };
 
 /// The built-in tools, in their order.
@@ -22,7 +22,7 @@ const BUILTINS: [&str; 8] = [
 
 #[tokio::test]
 async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared_tools() {
-    let sb = open(&TempDir::new()).await;
+    let sb = open(&temp_dir()).await;
     let agent = sandboxed_agent(move |cx| {
         cx.use_tool(clock());
         cx.use_skill(haiku());
@@ -37,7 +37,7 @@ async fn use_sandbox_alone_declares_the_builtins_before_skill_tools_and_declared
 
 #[tokio::test]
 async fn only_keeps_the_named_builtins_in_their_own_order() {
-    let sb = open(&TempDir::new()).await;
+    let sb = open(&temp_dir()).await;
     let agent = sandboxed_agent(move |cx| {
         cx.use_sandbox(&sb).only(["bash", "glob", "grep", "read"]);
     });
@@ -49,7 +49,7 @@ async fn only_keeps_the_named_builtins_in_their_own_order() {
 
 #[tokio::test]
 async fn an_unknown_name_in_only_fails_the_run() {
-    let sb = open(&TempDir::new()).await;
+    let sb = open(&temp_dir()).await;
     let agent = sandboxed_agent(move |cx| {
         cx.use_sandbox(&sb).only(["read", "shell"]);
     });
@@ -63,7 +63,7 @@ async fn an_unknown_name_in_only_fails_the_run() {
 
 #[tokio::test]
 async fn a_builtin_name_is_reserved_with_or_without_only() {
-    let sb = open(&TempDir::new()).await;
+    let sb = open(&temp_dir()).await;
     for name in BUILTINS {
         let mine = Tool::host(name, "Mine.", async |_: ToolCall<()>| {
             Ok::<_, Infallible>("ran")
@@ -126,7 +126,7 @@ async fn go(instance: &AgentInstance, model: &ScriptedModel) -> String {
 
 #[tokio::test]
 async fn each_instance_remembers_only_what_its_own_builtins_read() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let (agent, _) = switching(&open(&dir).await);
     let model = ScriptedModel::new()
         .calls([read("a.txt")])
@@ -138,9 +138,9 @@ async fn each_instance_remembers_only_what_its_own_builtins_read() {
     let (runtime, reader) = instance(&agent, &model);
     let other = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
-    dir.write("a.txt", "one\n");
+    write(&dir, "a.txt", "one\n");
     go(&reader, &model).await;
-    dir.write("a.txt", "two\n");
+    write(&dir, "a.txt", "two\n");
     let theirs = go(&other, &model).await;
     assert!(!theirs.contains(STALE), "{theirs}");
     let mine = go(&reader, &model).await;
@@ -149,7 +149,7 @@ async fn each_instance_remembers_only_what_its_own_builtins_read() {
 
 #[tokio::test]
 async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let (first, second) = (open(&dir).await, open(&dir).await);
     let (agent, switch) = switching(&first);
     let model = ScriptedModel::new()
@@ -160,9 +160,9 @@ async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
         .reply("Done.");
     let (_runtime, instance) = instance(&agent, &model);
 
-    dir.write("a.txt", "one\n");
+    write(&dir, "a.txt", "one\n");
     go(&instance, &model).await;
-    dir.write("a.txt", "two\n");
+    write(&dir, "a.txt", "two\n");
     *switch.lock() = (second, false);
     ask(&instance, "Go").await.unwrap();
 
@@ -177,7 +177,7 @@ async fn a_turn_in_another_sandbox_forgets_what_the_builtins_read() {
 
 #[tokio::test]
 async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
-    let dir = TempDir::new();
+    let dir = temp_dir();
     let root = open(&dir).await;
     let (agent, switch) = switching(&root);
     let model = ScriptedModel::new()
@@ -187,9 +187,9 @@ async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
         .reply("Done.");
     let (_runtime, instance) = instance(&agent, &model);
 
-    dir.write("sub/a.txt", "one\n");
+    write(&dir, "sub/a.txt", "one\n");
     go(&instance, &model).await;
-    dir.write("sub/a.txt", "two\n");
+    write(&dir, "sub/a.txt", "two\n");
     *switch.lock() = (root.work_dir("sub"), false);
     let edited = go(&instance, &model).await;
     assert!(edited.contains(STALE), "{edited}");
@@ -197,8 +197,8 @@ async fn a_work_dir_of_the_same_sandbox_keeps_what_the_builtins_read() {
 
 #[tokio::test]
 async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
-    let dir = TempDir::new();
-    let (first, second) = (open(&dir).await, open(&TempDir::new()).await);
+    let dir = temp_dir();
+    let (first, second) = (open(&dir).await, open(&temp_dir()).await);
     let (agent, switch) = switching(&first);
     let model = ScriptedModel::new()
         .calls([read("a.txt")])
@@ -207,9 +207,9 @@ async fn a_failed_turn_setup_in_another_sandbox_keeps_what_the_builtins_read() {
         .reply("Done.");
     let (_runtime, instance) = instance(&agent, &model);
 
-    dir.write("a.txt", "one\n");
+    write(&dir, "a.txt", "one\n");
     go(&instance, &model).await;
-    dir.write("a.txt", "two\n");
+    write(&dir, "a.txt", "two\n");
     *switch.lock() = (second, true);
     reason(ask(&instance, "Go").await);
 

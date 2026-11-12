@@ -33,6 +33,7 @@ tokio-util.workspace = true
 uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]
+assert_fs.workspace = true
 # The tests use the `testing` feature.
 keelrs = { path = ".", features = ["testing"] }
 

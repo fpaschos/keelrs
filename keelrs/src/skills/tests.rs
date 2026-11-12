@@ -10,7 +10,10 @@ use serde_json::{Value, json};
 use super::tools::skill_tools;
 use super::{Discover, Skill, discover};
 use crate::agent::rig::call;
-use crate::test_support::{Folder, haiku, sonnet};
+use assert_fs::TempDir;
+use assert_fs::prelude::*;
+
+use crate::test_support::{haiku, sonnet};
 
 #[tokio::test]
 async fn activating_a_skill_returns_its_instructions_and_lists_its_resources_if_any() {
@@ -162,33 +165,39 @@ async fn a_path_outside_the_skill_or_not_in_it_is_refused() {
 
 // Discovered skills: files listed at discovery, read from disk on request.
 
-impl Folder {
-    /// The one skill discovered in this folder.
-    async fn skill(&self) -> Skill {
-        let discovered = discover(Discover::new().root(&self.0)).await;
-        let [skill] = <[Skill; 1]>::try_from(discovered.skills).unwrap();
-        skill
-    }
+/// The one skill discovered in `folder`.
+async fn discovered(folder: &TempDir) -> Skill {
+    let found = discover(Discover::new().root(folder.path())).await;
+    let [skill] = <[Skill; 1]>::try_from(found.skills).unwrap();
+    skill
 }
 
 /// A folder holding the skill `lint` with two supporting files.
-fn lint() -> Folder {
-    let folder = Folder::new();
+fn lint() -> TempDir {
+    let folder = TempDir::new().unwrap();
     folder
-        .write(
-            "lint/SKILL.md",
-            "---\nname: lint\ndescription: Lint code.\n---\nRun the linter.\n",
-        )
-        .write("lint/references/rules.md", "No unused imports.")
-        .write("lint/scripts/run.sh", "cargo clippy");
+        .child("lint/SKILL.md")
+        .write_str("---\nname: lint\ndescription: Lint code.\n---\nRun the linter.\n")
+        .unwrap();
+    folder
+        .child("lint/references/rules.md")
+        .write_str("No unused imports.")
+        .unwrap();
+    folder
+        .child("lint/scripts/run.sh")
+        .write_str("cargo clippy")
+        .unwrap();
     folder
 }
 
 #[tokio::test]
 async fn a_discovered_skill_reads_a_file_from_disk_on_request() {
     let folder = lint();
-    let skill = folder.skill().await;
-    folder.write("lint/references/rules.md", "No unused imports. Edited.");
+    let skill = discovered(&folder).await;
+    folder
+        .child("lint/references/rules.md")
+        .write_str("No unused imports. Edited.")
+        .unwrap();
     let text = read(
         skill,
         json!({"skill": "lint", "path": "references/rules.md"}),
@@ -201,11 +210,14 @@ async fn a_discovered_skill_reads_a_file_from_disk_on_request() {
 #[tokio::test]
 async fn a_discovered_skill_refuses_a_symlink_that_leaves_its_folder() {
     let folder = lint();
-    let skill = folder.skill().await;
-    folder.write("outside.md", "Not the skill's.");
-    let rules = folder.0.join("lint/references/rules.md");
+    let skill = discovered(&folder).await;
+    folder
+        .child("outside.md")
+        .write_str("Not the skill's.")
+        .unwrap();
+    let rules = folder.join("lint/references/rules.md");
     fs::remove_file(&rules).unwrap();
-    std::os::unix::fs::symlink(folder.0.join("outside.md"), &rules).unwrap();
+    std::os::unix::fs::symlink(folder.join("outside.md"), &rules).unwrap();
     let text = read(
         skill,
         json!({"skill": "lint", "path": "references/rules.md"}),
@@ -217,8 +229,8 @@ async fn a_discovered_skill_refuses_a_symlink_that_leaves_its_folder() {
 #[tokio::test]
 async fn a_discovered_skill_never_reads_a_secret() {
     let folder = lint();
-    folder.write("lint/.env", "TOKEN=1");
-    let skill = folder.skill().await;
+    folder.child("lint/.env").write_str("TOKEN=1").unwrap();
+    let skill = discovered(&folder).await;
     let text = read(skill, json!({"skill": "lint", "path": ".env"})).await;
     assert_eq!(
         text,
@@ -230,9 +242,8 @@ async fn a_discovered_skill_never_reads_a_secret() {
 #[tokio::test]
 async fn a_discovered_skill_lists_a_symlink_that_stays_in_its_folder() {
     let folder = lint();
-    std::os::unix::fs::symlink(folder.0.join("lint/references"), folder.0.join("lint/docs"))
-        .unwrap();
-    let skill = folder.skill().await;
+    std::os::unix::fs::symlink(folder.join("lint/references"), folder.join("lint/docs")).unwrap();
+    let skill = discovered(&folder).await;
     let text = activate(&[skill], "lint").await;
     assert!(
         text.ends_with(
