@@ -1,0 +1,5 @@
+interface:
+  display_name: 'Walkthrough'
+  short_description: 'Read a change stop by stop, fix as you go'
+policy:
+  allow_implicit_invocation: false
