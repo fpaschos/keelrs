@@ -1,25 +1,18 @@
-//! Agent instances: a cloneable [`AgentInstance`] handle and the actor behind it
-//! (Alice Ryhl's "Actors with Tokio").
-//!
-//! The actor is the only writer of its instance's event stream, while it
-//! holds the stream's lease. It stores each dispatch before returning its
-//! receipt, runs dispatches one at a time, step by step, storing what each
-//! step produced before the next, and answers reads from what the stream
-//! adds up to ([`Folded`]).
+//! The actor behind an [`AgentInstance`](super::AgentInstance): the only
+//! writer of its instance's event stream while it holds the stream's lease.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::{BoxFuture, OptionFuture};
-use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::fold::Folded;
+use super::{Command, SettledValue};
 use crate::agent::TurnSetup;
 use crate::agent::rig::{self, Message, Run, Step};
 use crate::builtin::Caches;
@@ -34,239 +27,8 @@ const INBOX_CAPACITY: usize = 1024;
 /// What an aborted dispatch's unanswered tool calls are answered with.
 const ABORTED: &str = "aborted";
 
-/// One conversation with an agent, addressed by an id.
-///
-/// A handle to the instance's actor: clones reach the same instance.
-#[derive(Debug, Clone)]
-pub struct AgentInstance {
-    id: InstanceId,
-    /// The actor's inbox.
-    inbox: mpsc::Sender<Command>,
-    /// The actor's control channel, served before the inbox: aborts.
-    control: mpsc::Sender<oneshot::Sender<Result<()>>>,
-}
-
-impl AgentInstance {
-    /// Spawns the actor for instance `id` of the agent named `name`, its turns
-    /// set up by `setup`, created with `data` (as JSON) and kept in `store`;
-    /// `shutdown` cancelling stops it.
-    pub(crate) fn spawn(
-        name: String,
-        setup: TurnSetup,
-        id: InstanceId,
-        data: Value,
-        store: Store,
-        shutdown: &CancellationToken,
-    ) -> Self {
-        let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
-        let (control, controls) = mpsc::channel(1);
-        let actor = InstanceActor {
-            setup,
-            name,
-            id: id.clone(),
-            data,
-            inbox: receiver,
-            control: controls,
-            cancel: shutdown.child_token(),
-            store,
-            lease: None,
-            running: None,
-            waiting: HashMap::new(),
-            caches: Caches::default(),
-            folded: Folded::default(),
-        };
-        tokio::spawn(actor.run());
-        Self { id, inbox, control }
-    }
-
-    /// The id that addresses this instance.
-    #[must_use]
-    pub fn id(&self) -> &InstanceId {
-        &self.id
-    }
-
-    /// Submits `message`; returns a receipt, not the reply.
-    ///
-    /// The message is stored before the receipt returns, and runs after those
-    /// dispatched before it. A store error, or another runtime holding the
-    /// instance, shows up here; a model or connect error on [`read`](Self::read).
-    pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
-        self.submit(message.into(), None).await
-    }
-
-    /// [`dispatch`](Self::dispatch) then [`read`](Self::read): submits `message`
-    /// and waits for its reply.
-    pub async fn ask(&self, message: impl Into<String>) -> Result<Reply> {
-        let receipt = self.dispatch(message).await?;
-        self.read(&receipt).await
-    }
-
-    /// Submits `message` and waits for a result of type `T`: the model must end by calling
-    /// `finish_structured` with `T`'s schema. Plain text is re-asked up to 3 times, then the
-    /// dispatch settles as [`Outcome::Failed`].
-    pub async fn ask_structured<T>(&self, message: impl Into<String>) -> Result<T>
-    where
-        T: DeserializeOwned + JsonSchema + 'static,
-    {
-        let Receipt { dispatch_id } = self
-            .submit(message.into(), Some(StructuredSpec::of::<T>()))
-            .await?;
-        let failed = |reason: String| Error::Run {
-            outcome: Outcome::Failed { reason },
-            dispatch_id,
-        };
-        // The JSON the model sent, which the schema of `finish_structured` checked.
-        let value = self
-            .settled(dispatch_id)
-            .await?
-            .structured
-            .ok_or_else(|| failed("settled without a structured result".to_owned()))?;
-        serde_json::from_value(value).map_err(|e| failed(e.to_string()))
-    }
-
-    /// Waits for the receipt's message to settle and takes its reply.
-    pub async fn read(&self, receipt: &Receipt) -> Result<Reply> {
-        let dispatch_id = receipt.dispatch_id;
-        let settled = self.settled(dispatch_id).await?;
-        Ok(Reply {
-            text: settled.text,
-            dispatch_id,
-        })
-    }
-
-    /// Stops the running dispatch and drops every queued one; each settles as
-    /// [`Outcome::Aborted`]. With nothing running or queued, does nothing.
-    ///
-    /// Served before dispatches and reads already sent.
-    pub async fn abort(&self) -> Result<()> {
-        let (respond_to, response) = oneshot::channel();
-        let _ = self.control.send(respond_to).await;
-        // An actor that is gone, or stops before answering, has nothing left to abort.
-        response.await.unwrap_or(Ok(()))
-    }
-
-    /// Submits `text`, asking for `structured` when given.
-    async fn submit(&self, text: String, structured: Option<StructuredSpec>) -> Result<Receipt> {
-        let dispatch_id = DispatchId::fresh();
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Dispatch {
-            dispatch_id,
-            text,
-            structured,
-            respond_to,
-        };
-        // A gone actor drops `respond_to` with the command: aborted, as below.
-        let _ = self.inbox.send(command).await;
-        response
-            .await
-            .unwrap_or_else(|_| Err(aborted(dispatch_id)))?;
-        Ok(Receipt { dispatch_id })
-    }
-
-    /// Waits for `dispatch_id` to settle and takes what it settled with.
-    async fn settled(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Read {
-            dispatch_id,
-            respond_to,
-        };
-        let _ = self.inbox.send(command).await;
-        // An actor that is gone, or stops before answering (it panicked), counts as aborted.
-        response.await.unwrap_or_else(|_| Err(aborted(dispatch_id)))
-    }
-}
-
-fn aborted(dispatch_id: DispatchId) -> Error {
-    Error::Run {
-        outcome: Outcome::Aborted,
-        dispatch_id,
-    }
-}
-
-/// What an [`AgentInstance`] sends its actor, in order.
-#[derive(Debug)]
-enum Command {
-    Dispatch {
-        dispatch_id: DispatchId,
-        text: String,
-        /// The structured result the message asks for, if any.
-        structured: Option<StructuredSpec>,
-        /// Answered once the dispatch is stored.
-        respond_to: oneshot::Sender<Result<()>>,
-    },
-    Read {
-        dispatch_id: DispatchId,
-        respond_to: oneshot::Sender<Result<SettledValue>>,
-    },
-}
-
-/// What a dispatched message settled with when it produced a reply.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct SettledValue {
-    /// The final assistant text.
-    pub(crate) text: String,
-    /// The structured result, when the message asked for one.
-    pub(crate) structured: Option<Value>,
-}
-
-/// A dispatch stored and not yet settled.
-#[derive(Debug, Clone)]
-struct Admitted {
-    dispatch: DispatchId,
-    text: String,
-    structured: Option<StructuredSpec>,
-    /// Whether its run has stored anything yet.
-    started: bool,
-}
-
-/// What the instance's event stream adds up to; changed only by `apply`.
-#[derive(Debug, Default)]
-struct Folded {
-    /// The `seq` of the last event.
-    last: Seq,
-    /// The data the instance was created with.
-    data: Option<Value>,
-    /// Every message of every dispatch, as the next run's history.
-    history: Vec<Message>,
-    settled: HashMap<DispatchId, Result<SettledValue, Outcome>>,
-    /// Stored dispatches not yet settled, in order; the first may be running.
-    pending: VecDeque<Admitted>,
-}
-
-impl Folded {
-    fn apply(&mut self, seq: Seq, dispatch: Option<DispatchId>, event: Event) {
-        self.last = seq;
-        // Idempotent: the front dispatch's first message or tool result sets
-        // `started`; every later one sets it again, which changes nothing.
-        if matches!(event, Event::Message(_) | Event::ToolResult(_))
-            && let Some(first) = self.pending.front_mut()
-            && Some(first.dispatch) == dispatch
-        {
-            first.started = true;
-        }
-        match event {
-            Event::Created { data } => self.data = Some(data),
-            Event::Dispatched { text, structured } => {
-                if let Some(dispatch) = dispatch {
-                    self.pending.push_back(Admitted {
-                        dispatch,
-                        text,
-                        structured,
-                        started: false,
-                    });
-                }
-            }
-            Event::Message(message) => self.history.push(message),
-            Event::ToolResult(part) => rig::push_result(&mut self.history, &part),
-            Event::Settled { result } => {
-                if let Some(dispatch) = dispatch {
-                    self.pending.retain(|a| a.dispatch != dispatch);
-                    self.settled.insert(dispatch, result);
-                }
-            }
-        }
-    }
-}
+/// An abort, sent on the control channel; answered once it is stored.
+pub(super) type Control = oneshot::Sender<Result<()>>;
 
 /// The dispatch being run, and its step in flight.
 struct Running {
@@ -275,7 +37,7 @@ struct Running {
 }
 
 /// Runs one agent instance's dispatches, one at a time, writing its events.
-struct InstanceActor {
+pub(super) struct InstanceActor {
     setup: TurnSetup,
     /// The agent's name, which with `id` names the instance's event stream.
     name: String,
@@ -283,7 +45,7 @@ struct InstanceActor {
     /// The data the instance is created with, as JSON.
     data: Value,
     inbox: mpsc::Receiver<Command>,
-    control: mpsc::Receiver<oneshot::Sender<Result<()>>>,
+    control: mpsc::Receiver<Control>,
     /// Cancelled when the runtime is dropped.
     cancel: CancellationToken,
     store: Store,
@@ -299,6 +61,38 @@ struct InstanceActor {
 }
 
 impl InstanceActor {
+    /// Spawns the actor for instance `id` of the agent named `name`, holding no
+    /// lease and nothing folded until its first command; returns its inbox and
+    /// its control channel.
+    pub(super) fn spawn(
+        name: String,
+        setup: TurnSetup,
+        id: InstanceId,
+        data: Value,
+        store: Store,
+        cancel: CancellationToken,
+    ) -> (mpsc::Sender<Command>, mpsc::Sender<Control>) {
+        let (inbox, receiver) = mpsc::channel(INBOX_CAPACITY);
+        let (control, controls) = mpsc::channel(1);
+        let actor = Self {
+            setup,
+            name,
+            id,
+            data,
+            inbox: receiver,
+            control: controls,
+            cancel,
+            store,
+            lease: None,
+            running: None,
+            waiting: HashMap::new(),
+            caches: Caches::default(),
+            folded: Folded::default(),
+        };
+        tokio::spawn(actor.run());
+        (inbox, control)
+    }
+
     /// Runs until the runtime is dropped or every handle is gone.
     async fn run(mut self) {
         loop {
@@ -640,7 +434,10 @@ fn trusted(store: &Store) -> Duration {
 }
 
 /// An "aborted" result for each tool call `history` leaves unanswered.
-fn closing(history: &[Message], dispatch: DispatchId) -> Vec<(Option<DispatchId>, Event)> {
+pub(super) fn closing(
+    history: &[Message],
+    dispatch: DispatchId,
+) -> Vec<(Option<DispatchId>, Event)> {
     rig::close_pending(history, ABORTED)
         .into_iter()
         .map(|part| (Some(dispatch), Event::ToolResult(part)))
@@ -671,42 +468,3 @@ fn now_ms() -> u64 {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         })
 }
-
-/// The claim ticket for one dispatched message: plain data, readable from any
-/// handle to the instance that issued it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Receipt {
-    dispatch_id: DispatchId,
-}
-
-impl Receipt {
-    /// The dispatched message this receipt claims.
-    #[must_use]
-    pub fn dispatch_id(&self) -> DispatchId {
-        self.dispatch_id
-    }
-}
-
-/// The settled outcome of one dispatched message.
-#[derive(Debug, Clone)]
-pub struct Reply {
-    text: String,
-    dispatch_id: DispatchId,
-}
-
-impl Reply {
-    /// Final assistant text; empty when there is none.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// The dispatched message this reply settles.
-    #[must_use]
-    pub fn dispatch_id(&self) -> DispatchId {
-        self.dispatch_id
-    }
-}
-
-#[cfg(test)]
-mod tests;

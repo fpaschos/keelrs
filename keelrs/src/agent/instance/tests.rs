@@ -8,8 +8,16 @@ use rig_core::completion::CompletionRequest;
 use rig_core::message::{AssistantContent, Message as RigMessage, ToolResultContent, UserContent};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
+use std::time::Duration;
+
+use super::actor::closing;
+use super::fold::Folded;
 use super::*;
 use crate::agent::rig::tests::{agent as scripted, clock};
+use crate::agent::rig::{Run, Step};
+use crate::builtin::Caches;
+use crate::event::Event;
+use crate::store::{EventId, Seq, StoredEvent};
 use crate::{Agent, AgentContext};
 
 /// The turn setup of an agent on the mock model with one tool, `current_time`.
