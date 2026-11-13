@@ -14,7 +14,7 @@ pub use instance::{AgentInstance, Receipt, Reply};
 
 mod context;
 mod id;
-mod instance;
+pub(crate) mod instance;
 pub(crate) mod rig;
 
 type AgentFn<D> = dyn Fn(&mut AgentContext<D>) -> String + Send + Sync;

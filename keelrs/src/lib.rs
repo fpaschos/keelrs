@@ -17,6 +17,7 @@ pub mod __private {
     pub use include_dir;
 }
 
+mod actors;
 mod builtin;
 mod error;
 mod event;

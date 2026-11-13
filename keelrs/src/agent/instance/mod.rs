@@ -7,8 +7,9 @@
 //! step produced before the next, and answers reads from what the stream
 //! adds up to ([`fold::Folded`]).
 //!
-//! This file holds the handle; `actor.rs` the actor and its lease;
-//! `fold.rs` the fold.
+//! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold.
+//! The handle names the instance by key ([`EntityRef`]): after its actor
+//! ends, the next call starts a new one.
 
 mod actor;
 mod fold;
@@ -17,57 +18,71 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use self::actor::{Control, InstanceActor};
+pub(crate) use self::actor::Control;
+use self::actor::Start;
+use crate::actors::entity::{Entities, EntityRef};
+use crate::actors::{self, AskError, Handle};
 use crate::agent::TurnSetup;
 use crate::agent::rig::Connect;
 use crate::builtin::structured::StructuredSpec;
 use crate::store::Store;
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
+/// Names an instance by its agent's name and its id.
+pub(crate) type InstanceKey = (String, InstanceId);
+
+/// A reference to an instance's actor, by key.
+type InstanceRef = EntityRef<InstanceKey, Command, Control>;
+
+/// Every instance's actor, by key.
+pub(crate) type Instances = Entities<InstanceKey, Command, Control>;
+
+/// Spawns the actor for instance `key` on `rt`, its turns set up by `setup`
+/// and its model connected by `connect`, created with `data` (as JSON) and
+/// kept in `store`; `shutdown` cancelling stops it.
+pub(crate) fn spawn(
+    rt: &tokio::runtime::Handle,
+    shutdown: &CancellationToken,
+    (name, id): &InstanceKey,
+    setup: TurnSetup,
+    data: Value,
+    connect: Connect,
+    store: Store,
+) -> Handle<Command, Control> {
+    let start = Start {
+        name: name.clone(),
+        id: id.clone(),
+        setup,
+        data,
+        connect,
+        store,
+    };
+    actors::spawn(rt, shutdown.child_token(), |mailbox| {
+        actor::run(start, mailbox)
+    })
+}
+
 /// One conversation with an agent, addressed by an id.
 ///
 /// A handle to the instance's actor: clones reach the same instance.
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
-    id: InstanceId,
-    /// The actor's inbox.
-    inbox: mpsc::Sender<Command>,
-    /// The actor's control channel, served before the inbox: aborts.
-    control: mpsc::Sender<Control>,
+    r: InstanceRef,
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of the agent named `name`, its turns
-    /// set up by `setup` and its model connected by `connect`, created with
-    /// `data` (as JSON) and kept in `store`; `shutdown` cancelling stops it.
-    pub(crate) fn spawn(
-        name: String,
-        setup: TurnSetup,
-        connect: Connect,
-        id: InstanceId,
-        data: Value,
-        store: Store,
-        shutdown: &CancellationToken,
-    ) -> Self {
-        let (inbox, control) = InstanceActor::spawn(
-            name,
-            setup,
-            connect,
-            id.clone(),
-            data,
-            store,
-            shutdown.child_token(),
-        );
-        Self { id, inbox, control }
+    /// The handle to the instance `r` names.
+    pub(crate) fn new(r: InstanceRef) -> Self {
+        Self { r }
     }
 
     /// The id that addresses this instance.
     #[must_use]
     pub fn id(&self) -> &InstanceId {
-        &self.id
+        &self.r.key().1
     }
 
     /// Submits `message`; returns a receipt, not the reply.
@@ -124,53 +139,48 @@ impl AgentInstance {
     ///
     /// Served before dispatches and reads already sent.
     pub async fn abort(&self) -> Result<()> {
-        let (respond_to, response) = oneshot::channel();
-        let _ = self.control.send(respond_to).await;
-        // An actor that is gone, or stops before answering, has nothing left to abort.
-        response.await.unwrap_or(Ok(()))
+        self.r
+            .control(std::convert::identity)
+            .await
+            .map_err(|e| self.unavailable(e))?
     }
 
     /// Submits `text`, asking for `structured` when given.
     async fn submit(&self, text: String, structured: Option<StructuredSpec>) -> Result<Receipt> {
         let dispatch_id = DispatchId::fresh();
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Dispatch {
-            dispatch_id,
-            text,
-            structured,
-            respond_to,
-        };
-        // A gone actor drops `respond_to` with the command: aborted, as below.
-        let _ = self.inbox.send(command).await;
-        response
+        self.r
+            .ask(|respond_to| Command::Dispatch {
+                dispatch_id,
+                text,
+                structured,
+                respond_to,
+            })
             .await
-            .unwrap_or_else(|_| Err(aborted(dispatch_id)))?;
+            .map_err(|e| self.unavailable(e))??;
         Ok(Receipt { dispatch_id })
     }
 
     /// Waits for `dispatch_id` to settle and takes what it settled with.
     async fn settled(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Read {
-            dispatch_id,
-            respond_to,
-        };
-        let _ = self.inbox.send(command).await;
-        // An actor that is gone, or stops before answering (it panicked), counts as aborted.
-        response.await.unwrap_or_else(|_| Err(aborted(dispatch_id)))
+        self.r
+            .ask(|respond_to| Command::Read {
+                dispatch_id,
+                respond_to,
+            })
+            .await
+            .map_err(|e| self.unavailable(e))?
     }
-}
 
-fn aborted(dispatch_id: DispatchId) -> Error {
-    Error::Run {
-        outcome: Outcome::Aborted,
-        dispatch_id,
+    /// No actor answered: the runtime was dropped, or the actor ended.
+    fn unavailable<M>(&self, _: AskError<M>) -> Error {
+        let (agent, id) = self.r.key().clone();
+        Error::InstanceUnavailable { agent, id }
     }
 }
 
 /// What an [`AgentInstance`] sends its actor, in order.
 #[derive(Debug)]
-enum Command {
+pub(crate) enum Command {
     Dispatch {
         dispatch_id: DispatchId,
         text: String,
@@ -183,6 +193,16 @@ enum Command {
         dispatch_id: DispatchId,
         respond_to: oneshot::Sender<Result<SettledValue>>,
     },
+}
+
+impl Command {
+    /// Answers the command with `error`.
+    fn fail(self, error: Error) {
+        let _ = match self {
+            Self::Dispatch { respond_to, .. } => respond_to.send(Err(error)).map_err(drop),
+            Self::Read { respond_to, .. } => respond_to.send(Err(error)).map_err(drop),
+        };
+    }
 }
 
 /// What a dispatched message settled with when it produced a reply.

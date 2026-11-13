@@ -6,6 +6,7 @@ mod discover;
 mod dispatch;
 mod durable;
 mod instance;
+mod lifecycle;
 mod locks;
 mod sandbox;
 mod sandbox_backend;
