@@ -62,6 +62,10 @@ pub(crate) fn is_failed<T>(result: &keelrs::Result<T>) -> bool {
     )
 }
 
+pub(crate) fn is_fenced<T>(result: &keelrs::Result<T>) -> bool {
+    matches!(result, Err(Error::Store(StoreError::Fenced { .. })))
+}
+
 /// Waits until `model` got `n` requests.
 pub(crate) async fn until_requests(model: &ScriptedModel, n: usize) {
     timeout(TIMEOUT, async {

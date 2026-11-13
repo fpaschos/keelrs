@@ -3,6 +3,7 @@
 //! and kept: its [`ActorRef`] never changes.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 
 use parking_lot::Mutex;
@@ -29,23 +30,27 @@ impl<Key: Clone + Eq + Hash, A: Actor, V> Entities<Key, A, V> {
         }
     }
 
-    /// The key's actor: spawned once, built from `args` at each start, and
-    /// kept with its start data `init`; when it exists, `check(kept, &init)`
-    /// decides and `args` is dropped.
+    /// The key's actor, kept with its start data `init`: when it exists,
+    /// `check(kept, &init)` decides; otherwise it is spawned, built from
+    /// `args()` at each start.
     pub(crate) fn get<E>(
         &self,
         key: Key,
         init: V,
         check: impl FnOnce(&V, &V) -> Result<(), E>,
-        args: A::Args,
+        args: impl FnOnce() -> A::Args,
     ) -> Result<ActorRef<A::Command>, E> {
-        let mut refs = self.refs.lock();
-        if let Some((r, kept)) = refs.get(&key) {
-            check(kept, &init)?;
-            return Ok(r.clone());
+        match self.refs.lock().entry(key) {
+            Entry::Occupied(entry) => {
+                let (r, kept) = entry.get();
+                check(kept, &init)?;
+                Ok(r.clone())
+            }
+            Entry::Vacant(entry) => {
+                let r = super::spawn::<A>(&self.rt, self.cancel.child_token(), args());
+                entry.insert((r.clone(), init));
+                Ok(r)
+            }
         }
-        let r = super::spawn::<A>(&self.rt, self.cancel.child_token(), args);
-        refs.insert(key, (r.clone(), init));
-        Ok(r)
     }
 }

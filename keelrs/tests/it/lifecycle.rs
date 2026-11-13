@@ -13,7 +13,7 @@ use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::{Instant, timeout};
 
-use crate::support::{TIMEOUT, agent, ask, clock, runtime_on, until_requests};
+use crate::support::{TIMEOUT, agent, ask, clock, is_fenced, runtime_on, until_requests};
 
 /// One stream in memory, as the in-memory store keeps it, with failures the
 /// test switches on.
@@ -155,10 +155,6 @@ impl StoreBackend for Faulty {
         stream.events.extend_from_slice(events);
         Ok(())
     }
-}
-
-fn is_fenced<T>(result: &keelrs::Result<T>) -> bool {
-    matches!(result, Err(Error::Store(StoreError::Fenced { .. })))
 }
 
 #[tokio::test]

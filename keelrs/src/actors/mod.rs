@@ -52,7 +52,8 @@ pub(crate) trait Actor: Sized + Send + 'static {
         cx: &mut Context<Self::Command>,
     ) -> impl Future<Output = Result<Self>> + Send;
 
-    /// Serves one command. An error stops the actor with that cause.
+    /// Serves one command. An error stops the actor with that cause; a
+    /// command left unanswered by it is stashed, and fails with the queue.
     fn handle(
         &mut self,
         command: Self::Command,
@@ -60,8 +61,9 @@ pub(crate) trait Actor: Sized + Send + 'static {
     ) -> impl Future<Output = Result<()>> + Send;
 
     /// The actor is stopped: what it piped is dropped and its lease released.
-    /// On [`Stop::Failed`] the library then fails the queued commands with
-    /// the cause; on [`Stop::Graceful`] they wait for the next start.
+    /// It stashes what it still owes an answer and answers nothing itself.
+    /// On [`Stop::Failed`] the library then fails the stash and the inbox
+    /// with the cause; on [`Stop::Graceful`] they wait for the next start.
     fn stopped(self, why: Stop, cx: &mut Context<Self::Command>)
     -> impl Future<Output = ()> + Send;
 }
@@ -253,9 +255,7 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
             Ok(actor) => actor,
             Err(cause) => {
                 cx.end().await;
-                for command in std::iter::once(first).chain(cx.drain()) {
-                    command.fail(cause.clone());
-                }
+                fail_queued(&mut cx, Some(first), &cause);
                 continue;
             }
         };
@@ -274,19 +274,23 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
                 Some(Next::LeaseLost(cause)) => break Stop::Failed(cause.into()),
             };
         };
-        // The lease is released and the queue taken before any caller hears
-        // of the stop: a caller that retries at once reaches the next start.
         cx.end().await;
-        match why {
-            Stop::Graceful => actor.stopped(Stop::Graceful, &mut cx).await,
-            Stop::Failed(cause) => {
-                let queued = cx.drain();
-                actor.stopped(Stop::Failed(cause.clone()), &mut cx).await;
-                for command in queued {
-                    command.fail(cause.clone());
-                }
-            }
+        let cause = match &why {
+            Stop::Graceful => None,
+            Stop::Failed(cause) => Some(cause.clone()),
+        };
+        actor.stopped(why, &mut cx).await;
+        if let Some(cause) = cause {
+            fail_queued(&mut cx, None, &cause);
         }
+    }
+}
+
+/// Fails `first` and every queued command with `cause`. Called once the
+/// lease is released, so a caller that retries at once reaches the next start.
+fn fail_queued<C: Command>(cx: &mut Context<C>, first: Option<C>, cause: &Error) {
+    for command in first.into_iter().chain(cx.drain()) {
+        command.fail(cause.clone());
     }
 }
 

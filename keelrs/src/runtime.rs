@@ -107,8 +107,8 @@ impl Runtime {
             id: id.clone(),
             reason: e.to_string(),
         })?;
-        let setup = TurnSetup::new(registered, id.clone(), data);
-        self.inner.instances.get(name, id, setup, json)
+        let setup = || TurnSetup::new(registered, id.clone(), data);
+        self.inner.instances.get(name, id.clone(), setup, json)
     }
 }
 

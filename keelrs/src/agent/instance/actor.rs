@@ -6,6 +6,7 @@
 //! library restarts it in place on the next command.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -13,7 +14,7 @@ use tokio::sync::oneshot;
 use super::fold::Folded;
 use super::{Command, SettledValue};
 use crate::actors::lease::Lease;
-use crate::actors::{Actor, Command as _, Context, Stop};
+use crate::actors::{Actor, Context, Stop};
 use crate::agent::TurnSetup;
 use crate::agent::rig::{self, Connect, Message, Run, Step};
 use crate::builtin::Caches;
@@ -25,17 +26,13 @@ use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 /// What an aborted dispatch's unanswered tool calls are answered with.
 const ABORTED: &str = "aborted";
 
-/// Answered once what was asked is stored.
-type Stored = oneshot::Sender<Result<()>>;
-
 /// What the actor is built from: instance `id` of the agent named `name`.
-#[derive(Clone)]
 pub(super) struct Start {
     pub(super) name: String,
     pub(super) id: InstanceId,
     pub(super) setup: TurnSetup,
     /// The data the instance is created with, as JSON.
-    pub(super) data: Value,
+    pub(super) data: Arc<Value>,
     /// Connects the model each run declares.
     pub(super) connect: Connect,
     pub(super) store: Store,
@@ -43,15 +40,13 @@ pub(super) struct Start {
 
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 pub(super) struct InstanceActor {
-    start: Start,
+    start: Arc<Start>,
     /// The held lease's epoch, which every append carries.
     epoch: Epoch,
     /// Whether a step is piped and not yet back.
     stepping: bool,
     /// Reads parked until their dispatch settles.
     waiting: HashMap<DispatchId, Vec<oneshot::Sender<Result<SettledValue>>>>,
-    /// The call whose failure stopped the actor, answered once stopped.
-    failed: Option<Stored>,
     /// What this instance's built-in tools remember of its current sandbox; never stored.
     caches: Caches,
     folded: Folded,
@@ -59,18 +54,17 @@ pub(super) struct InstanceActor {
 
 impl Actor for InstanceActor {
     type Command = Command;
-    type Args = Start;
+    type Args = Arc<Start>;
 
     /// Takes the lease, recovers the stream and starts its first dispatch.
-    async fn start(start: &Start, cx: &mut Context<Command>) -> Result<Self> {
+    async fn start(start: &Arc<Start>, cx: &mut Context<Command>) -> Result<Self> {
         let lease =
             Lease::acquire(start.store.clone(), start.name.clone(), start.id.clone()).await?;
         let mut actor = Self {
-            start: start.clone(),
+            start: Arc::clone(start),
             epoch: lease.epoch(),
             stepping: false,
             waiting: HashMap::new(),
-            failed: None,
             caches: Caches::default(),
             folded: Folded::default(),
         };
@@ -88,8 +82,13 @@ impl Actor for InstanceActor {
                 structured,
                 respond_to,
             } => {
-                if let Err(cause) = self.admit(dispatch_id, text, structured).await {
-                    self.failed = Some(respond_to);
+                if let Err(cause) = self.admit(dispatch_id, &text, structured.as_ref()).await {
+                    cx.stash(Command::Dispatch {
+                        dispatch_id,
+                        text,
+                        structured,
+                        respond_to,
+                    });
                     return Err(cause.into());
                 }
                 let _ = respond_to.send(Ok(()));
@@ -101,7 +100,7 @@ impl Actor for InstanceActor {
             } => self.read(dispatch_id, respond_to),
             Command::AbortQueued { respond_to } => {
                 if let Err(cause) = self.abort(cx).await {
-                    self.failed = Some(respond_to);
+                    cx.stash(Command::AbortQueued { respond_to });
                     return Err(cause.into());
                 }
                 let _ = respond_to.send(Ok(()));
@@ -115,22 +114,15 @@ impl Actor for InstanceActor {
         Ok(())
     }
 
-    /// Stopped gracefully: the parked reads wait for the next start.
-    /// Failed: the failing call and the parked reads get the cause.
-    async fn stopped(self, why: Stop, cx: &mut Context<Command>) {
-        let reads = self.waiting.into_iter().flat_map(|(dispatch_id, reads)| {
-            reads.into_iter().map(move |respond_to| Command::Read {
-                dispatch_id,
-                respond_to,
-            })
-        });
-        match why {
-            Stop::Graceful => reads.for_each(|read| cx.stash(read)),
-            Stop::Failed(cause) => {
-                if let Some(call) = self.failed {
-                    let _ = call.send(Err(cause.clone()));
-                }
-                reads.for_each(|read| read.fail(cause.clone()));
+    /// Stashes the parked reads: a graceful stop serves them at the next
+    /// start, a failure fails them.
+    async fn stopped(self, _: Stop, cx: &mut Context<Command>) {
+        for (dispatch_id, reads) in self.waiting {
+            for respond_to in reads {
+                cx.stash(Command::Read {
+                    dispatch_id,
+                    respond_to,
+                });
             }
         }
     }
@@ -160,14 +152,15 @@ impl InstanceActor {
     async fn admit(
         &mut self,
         dispatch_id: DispatchId,
-        text: String,
-        structured: Option<StructuredSpec>,
+        text: &str,
+        structured: Option<&StructuredSpec>,
     ) -> Result<(), StoreError> {
         let mut events = Vec::new();
         if self.folded.last == Seq::default() {
-            let data = self.start.data.clone();
+            let data = Value::clone(&self.start.data);
             events.push((None, Event::Created { data }));
         }
+        let (text, structured) = (text.to_owned(), structured.cloned());
         events.push((Some(dispatch_id), Event::Dispatched { text, structured }));
         self.append(events).await
     }
@@ -177,7 +170,7 @@ impl InstanceActor {
     async fn recover(&mut self) -> Result<()> {
         let Start {
             name, id, store, ..
-        } = &self.start;
+        } = &*self.start;
         for stored in store.read(name, id, Seq::default()).await? {
             let (seq, dispatch) = (stored.seq, stored.dispatch);
             let event = Event::of(stored).map_err(|reason| StoreError::Failed { reason })?;
@@ -187,7 +180,7 @@ impl InstanceActor {
             .folded
             .data
             .as_ref()
-            .is_some_and(|data| *data != self.start.data)
+            .is_some_and(|data| *data != *self.start.data)
         {
             return Err(Error::InstanceDataConflict {
                 agent: self.start.name.clone(),
@@ -310,7 +303,7 @@ impl InstanceActor {
     async fn append(&mut self, events: Vec<(Option<DispatchId>, Event)>) -> Result<(), StoreError> {
         let Start {
             name, id, store, ..
-        } = &self.start;
+        } = &*self.start;
         let expected = self.folded.last;
         store
             .append(name, id, self.epoch, expected, &events)

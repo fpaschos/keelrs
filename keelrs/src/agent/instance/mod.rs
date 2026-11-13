@@ -14,6 +14,8 @@
 mod actor;
 mod fold;
 
+use std::sync::Arc;
+
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,7 @@ type InstanceKey = (String, InstanceId);
 
 /// Every instance's actor, by key, with the data (as JSON) it was created with.
 pub(crate) struct Instances {
-    entities: Entities<InstanceKey, InstanceActor, Value>,
+    entities: Entities<InstanceKey, InstanceActor, Arc<Value>>,
     /// Connects the model each run declares.
     connect: Connect,
     store: Store,
@@ -56,33 +58,39 @@ impl Instances {
         }
     }
 
-    /// Instance `id` of the agent named `agent`, its turns set up by `setup`,
-    /// created with `data` (as JSON); [`Error::InstanceDataConflict`] when it
-    /// exists with other data. Its actor starts nothing until its first call.
+    /// Instance `id` of the agent named `agent`, its turns set up by
+    /// `setup()`, created with `data` (as JSON); [`Error::InstanceDataConflict`]
+    /// when it exists with other data. Its actor starts nothing until its
+    /// first call.
     pub(crate) fn get(
         &self,
         agent: String,
         id: InstanceId,
-        setup: TurnSetup,
+        setup: impl FnOnce() -> TurnSetup,
         data: Value,
     ) -> Result<AgentInstance> {
         let key = (agent, id);
-        let start = Start {
-            name: key.0.clone(),
-            id: key.1.clone(),
-            setup,
-            data: data.clone(),
-            connect: self.connect.clone(),
-            store: self.store.clone(),
-        };
-        let conflict = |kept: &Value, data: &Value| {
+        let data = Arc::new(data);
+        let conflict = |kept: &Arc<Value>, data: &Arc<Value>| {
             if kept == data {
                 return Ok(());
             }
             let (agent, id) = key.clone();
             Err(Error::InstanceDataConflict { agent, id })
         };
-        let r = self.entities.get(key.clone(), data, conflict, start)?;
+        let start = || {
+            Arc::new(Start {
+                name: key.0.clone(),
+                id: key.1.clone(),
+                setup: setup(),
+                data: Arc::clone(&data),
+                connect: self.connect.clone(),
+                store: self.store.clone(),
+            })
+        };
+        let r = self
+            .entities
+            .get(key.clone(), Arc::clone(&data), conflict, start)?;
         Ok(AgentInstance { key, r })
     }
 }
@@ -222,13 +230,15 @@ enum Command {
 
 impl actors::Command for Command {
     fn fail(self, error: Error) {
-        let _ = match self {
+        match self {
             Self::Dispatch { respond_to, .. } | Self::AbortQueued { respond_to } => {
-                respond_to.send(Err(error)).map_err(drop)
+                let _ = respond_to.send(Err(error));
             }
-            Self::Read { respond_to, .. } => respond_to.send(Err(error)).map_err(drop),
-            Self::Stepped { .. } => Ok(()),
-        };
+            Self::Read { respond_to, .. } => {
+                let _ = respond_to.send(Err(error));
+            }
+            Self::Stepped { .. } => {}
+        }
     }
 }
 
