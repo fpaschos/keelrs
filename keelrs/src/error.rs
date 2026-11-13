@@ -38,8 +38,7 @@ pub enum Error {
         /// Why serialization failed, as plain text.
         reason: String,
     },
-    /// No actor answered for the instance: its runtime was dropped, or its
-    /// actor ended (after a store failure) without answering this call.
+    /// No actor answered for the instance: its runtime was dropped.
     #[error(
         "instance `{id}` of agent `{agent}` did not answer: its runtime was dropped, or its actor failed"
     )]

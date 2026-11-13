@@ -97,7 +97,23 @@ impl Actor for InstanceActor {
             Command::Read {
                 dispatch_id,
                 respond_to,
-            } => self.read(dispatch_id, respond_to),
+            } => {
+                if let Some(result) = self.folded.settled.get(&dispatch_id) {
+                    let _ = respond_to.send(answer(dispatch_id, result));
+                } else if self
+                    .folded
+                    .pending
+                    .iter()
+                    .any(|a| a.dispatch == dispatch_id)
+                {
+                    self.waiting
+                        .entry(dispatch_id)
+                        .or_default()
+                        .push(respond_to);
+                } else {
+                    let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
+                }
+            }
             Command::AbortQueued { respond_to } => {
                 if let Err(cause) = self.abort(cx).await {
                     cx.stash(Command::AbortQueued { respond_to });
@@ -116,7 +132,7 @@ impl Actor for InstanceActor {
 
     /// Stashes the parked reads: a graceful stop serves them at the next
     /// start, a failure fails them.
-    async fn stopped(self, _: Stop, cx: &mut Context<Command>) {
+    async fn stopped(self, _: &Stop, cx: &mut Context<Command>) {
         for (dispatch_id, reads) in self.waiting {
             for respond_to in reads {
                 cx.stash(Command::Read {
@@ -129,25 +145,6 @@ impl Actor for InstanceActor {
 }
 
 impl InstanceActor {
-    /// Answers a read of `dispatch_id` now, or parks it until it settles.
-    fn read(&mut self, dispatch_id: DispatchId, respond_to: oneshot::Sender<Result<SettledValue>>) {
-        if let Some(result) = self.folded.settled.get(&dispatch_id) {
-            let _ = respond_to.send(answer(dispatch_id, result));
-        } else if self
-            .folded
-            .pending
-            .iter()
-            .any(|a| a.dispatch == dispatch_id)
-        {
-            self.waiting
-                .entry(dispatch_id)
-                .or_default()
-                .push(respond_to);
-        } else {
-            let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
-        }
-    }
-
     /// Stores a dispatch, after the instance's `created` when the stream is empty.
     async fn admit(
         &mut self,

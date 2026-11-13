@@ -18,14 +18,14 @@ pub(crate) mod lease;
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::future::{Future, pending};
+use std::future::Future;
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Instant;
+use tokio::time::{self, Instant};
 use tokio_util::sync::CancellationToken;
 
 use self::lease::Lease;
@@ -64,8 +64,11 @@ pub(crate) trait Actor: Sized + Send + 'static {
     /// It stashes what it still owes an answer and answers nothing itself.
     /// On [`Stop::Failed`] the library then fails the stash and the inbox
     /// with the cause; on [`Stop::Graceful`] they wait for the next start.
-    fn stopped(self, why: Stop, cx: &mut Context<Self::Command>)
-    -> impl Future<Output = ()> + Send;
+    fn stopped(
+        self,
+        why: &Stop,
+        cx: &mut Context<Self::Command>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 /// A command an actor's inbox carries.
@@ -189,7 +192,7 @@ impl<C> Context<C> {
                 biased;
                 () = self.cancel.cancelled() => return None,
                 Some(System::Stop) = self.system.recv() => return Some(Next::Stopped),
-                () = sleep_until(renew_at) => {
+                () = time::sleep_until(renew_at.unwrap_or_else(Instant::now)), if renew_at.is_some() => {
                     if let Some(lease) = &mut self.lease
                         && let Err(cause) = lease.renew().await
                     {
@@ -275,12 +278,8 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
             };
         };
         cx.end().await;
-        let cause = match &why {
-            Stop::Graceful => None,
-            Stop::Failed(cause) => Some(cause.clone()),
-        };
-        actor.stopped(why, &mut cx).await;
-        if let Some(cause) = cause {
+        actor.stopped(&why, &mut cx).await;
+        if let Stop::Failed(cause) = why {
             fail_queued(&mut cx, None, &cause);
         }
     }
@@ -291,13 +290,5 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
 fn fail_queued<C: Command>(cx: &mut Context<C>, first: Option<C>, cause: &Error) {
     for command in first.into_iter().chain(cx.drain()) {
         command.fail(cause.clone());
-    }
-}
-
-/// Waits until `at`; forever when `None`.
-async fn sleep_until(at: Option<Instant>) {
-    match at {
-        Some(at) => tokio::time::sleep_until(at).await,
-        None => pending().await,
     }
 }
