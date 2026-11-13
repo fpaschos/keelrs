@@ -84,7 +84,7 @@ pub(super) async fn run(start: Start, mut mailbox: Mailbox<Command, Control>) {
         Ok(actor) => actor,
         Err(cause) => {
             let (commands, controls) = mailbox.close();
-            fail(commands, controls, Vec::new(), || again(&cause));
+            fail(commands, controls, Vec::new(), || cause.clone());
             return;
         }
     };
@@ -401,21 +401,6 @@ fn fail(
     }
     for control in controls {
         let _ = control.send(Err(error()));
-    }
-}
-
-/// The error a start failed with, once more for each caller: a store
-/// failure or an instance data conflict.
-fn again(cause: &Error) -> Error {
-    match cause {
-        Error::InstanceDataConflict { agent, id } => Error::InstanceDataConflict {
-            agent: agent.clone(),
-            id: id.clone(),
-        },
-        Error::Store(e) => Error::Store(e.clone()),
-        other => Error::Store(StoreError::Failed {
-            reason: other.to_string(),
-        }),
     }
 }
 

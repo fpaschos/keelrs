@@ -5,7 +5,7 @@ use crate::store::StoreError;
 use crate::{DispatchId, InstanceId};
 
 /// Something keelrs could not do.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// The agent was never given to [`Runtime::start`](crate::Runtime::start).
