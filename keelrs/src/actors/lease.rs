@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::InstanceId;
-use crate::store::{Epoch, Store, StoreError};
+use crate::store::{self, Epoch, Store, StoreError};
 
 /// A held lease on the event stream of instance `id` of `agent`.
 pub(crate) struct Lease {
@@ -37,7 +37,7 @@ impl Lease {
     }
 
     /// Extends the lease; from when it was asked, not when it was granted.
-    pub(crate) async fn renew(&mut self) -> Result<(), StoreError> {
+    pub(super) async fn renew(&mut self) -> Result<(), StoreError> {
         let asked = Instant::now();
         self.store.renew(&self.agent, &self.id, self.epoch).await?;
         self.renewed = asked;
@@ -45,15 +45,19 @@ impl Lease {
     }
 
     /// When to renew: a third of the TTL after the last renewal.
-    pub(crate) fn renew_at(&self) -> Instant {
+    pub(super) fn renew_at(&self) -> Instant {
         self.renewed + (self.store.ttl() / 3).max(Duration::from_millis(1))
     }
 
-    /// Whether the lease can still be trusted to start a step: it cannot
+    /// The deadline guard: [`StoreError::Fenced`] unless the lease cannot
     /// have run out, with a tenth of its TTL to spare.
-    pub(crate) fn trusted(&self) -> bool {
+    pub(super) fn guard(&self) -> Result<(), StoreError> {
         let ttl = self.store.ttl();
-        Instant::now() < self.renewed + (ttl - ttl / 10)
+        if Instant::now() < self.renewed + (ttl - ttl / 10) {
+            Ok(())
+        } else {
+            Err(store::fenced(&self.agent, &self.id))
+        }
     }
 
     pub(crate) fn epoch(&self) -> Epoch {
@@ -61,7 +65,7 @@ impl Lease {
     }
 
     /// Gives the lease up, best-effort: unreleased, it runs out by itself.
-    pub(crate) async fn release(self) {
+    pub(super) async fn release(self) {
         let _ = self.store.release(&self.agent, &self.id, self.epoch).await;
     }
 }

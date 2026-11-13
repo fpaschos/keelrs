@@ -1,27 +1,26 @@
 //! The actor behind an [`AgentInstance`](super::AgentInstance): the only
 //! writer of its instance's event stream while it holds the stream's lease.
 //!
-//! It lives one incarnation: it takes the lease and recovers the stream once
-//! (its start), serves, and ends on any lease or store failure, failing its
-//! callers with the cause. The next call re-attaches a new incarnation.
+//! Its key's task runs one incarnation at a time, restarted in place: an
+//! incarnation takes the lease and recovers the stream once (its start),
+//! serves, and ends on a stop or on any lease or store failure, failing its
+//! callers with the cause. The next command starts the next incarnation.
 
 use std::collections::HashMap;
 
-use futures::future::{BoxFuture, OptionFuture};
 use serde_json::Value;
-use tokio::select;
 use tokio::sync::oneshot;
 
 use super::fold::Folded;
 use super::{Command, SettledValue};
 use crate::actors::lease::Lease;
-use crate::actors::{Mailbox, Next, sleep_until};
+use crate::actors::{Mailbox, Next};
 use crate::agent::TurnSetup;
 use crate::agent::rig::{self, Connect, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
-use crate::store::{self, Seq, Store, StoreError};
+use crate::store::{Epoch, Seq, Store, StoreError};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// What an aborted dispatch's unanswered tool calls are answered with.
@@ -30,14 +29,8 @@ const ABORTED: &str = "aborted";
 /// Answered once what was asked is stored.
 type Stored = oneshot::Sender<Result<()>>;
 
-/// An abort, sent on the control channel; answered once it is stored.
-pub(crate) type Control = Stored;
-
-/// A parked read's answer.
-type ReadReply = oneshot::Sender<Result<SettledValue>>;
-
-/// The step in flight, with the dispatch it runs for.
-type Running = BoxFuture<'static, Tick>;
+/// Reads parked until their dispatch settles.
+type Waiting = HashMap<DispatchId, Vec<oneshot::Sender<Result<SettledValue>>>>;
 
 /// What the actor needs to start: instance `id` of the agent named `name`.
 pub(super) struct Start {
@@ -51,131 +44,127 @@ pub(super) struct Start {
     pub(super) store: Store,
 }
 
-/// The actor's own sources, beside its mailbox.
-enum Tick {
-    /// The running step finished.
-    Stepped(DispatchId, Box<Run>, Result<Step, String>),
-    /// The lease is due for renewal.
-    Renew,
+/// Why an incarnation ended.
+enum End {
+    /// The runtime was dropped.
+    Shutdown,
+    /// A stop: the inbox and the parked reads carry over.
+    Stopped(Waiting),
+    /// A lease or store failure, the call that failed, and the parked reads.
+    Failed(Error, Option<Stored>, Waiting),
 }
 
-/// Runs one agent instance's dispatches, one at a time, writing its events.
-struct InstanceActor {
-    setup: TurnSetup,
-    connect: Connect,
-    /// The agent's name, which with `id` names the instance's event stream.
-    name: String,
-    id: InstanceId,
-    data: Value,
-    store: Store,
-    lease: Lease,
-    running: Option<Running>,
-    /// Reads parked until their dispatch settles.
-    waiting: HashMap<DispatchId, Vec<ReadReply>>,
+/// The key's task: lazy, and each pass one incarnation. Commands sent
+/// during a start wait in the inbox, in order.
+pub(super) async fn run(start: Start, mut mailbox: Mailbox<Command>) {
+    let mut waiting = Waiting::new();
+    loop {
+        // No lease until the first command.
+        let first = loop {
+            match mailbox.next().await {
+                None => return,
+                Some(Next::Command(command)) => break command,
+                // No incarnation runs: nothing to stop.
+                Some(Next::Stopped | Next::Ended(_)) => {}
+            }
+        };
+        let (end, unserved) = match Incarnation::start(&start, &mut mailbox).await {
+            Ok(mut actor) => {
+                actor.park(waiting);
+                (actor.serve(first, &mut mailbox).await, None)
+            }
+            Err(cause) => (End::Failed(cause, None, waiting), Some(first)),
+        };
+        mailbox.end().await;
+        waiting = match end {
+            End::Shutdown => return,
+            End::Stopped(waiting) => waiting,
+            End::Failed(cause, call, reads) => {
+                if let Some(call) = call {
+                    let _ = call.send(Err(cause.clone()));
+                }
+                for read in reads.into_values().flatten() {
+                    let _ = read.send(Err(cause.clone()));
+                }
+                for command in unserved.into_iter().chain(mailbox.drain()) {
+                    command.fail(cause.clone());
+                }
+                Waiting::new()
+            }
+        };
+    }
+}
+
+/// One incarnation: runs its instance's dispatches, one at a time, writing
+/// its events.
+struct Incarnation<'s> {
+    start: &'s Start,
+    /// The held lease's epoch, which every append carries.
+    epoch: Epoch,
+    /// Whether a step is piped and not yet back.
+    stepping: bool,
+    waiting: Waiting,
     /// What this instance's built-in tools remember of its current sandbox; never stored.
     caches: Caches,
     folded: Folded,
 }
 
-/// The actor's life: start, serve, end. Commands sent during the start
-/// wait in the inbox, in order.
-pub(super) async fn run(start: Start, mut mailbox: Mailbox<Command, Control>) {
-    let mut actor = match InstanceActor::start(start).await {
-        Ok(actor) => actor,
-        Err(cause) => {
-            let (commands, controls) = mailbox.close();
-            fail(commands, controls, Vec::new(), || cause.clone());
-            return;
-        }
-    };
-    let cause = actor.serve(&mut mailbox).await;
-    actor.end(mailbox, cause).await;
-}
-
-impl InstanceActor {
+impl<'s> Incarnation<'s> {
     /// Takes the lease, recovers the stream and starts its first dispatch.
-    async fn start(start: Start) -> Result<Self> {
+    async fn start(start: &'s Start, mailbox: &mut Mailbox<Command>) -> Result<Self> {
         let lease =
             Lease::acquire(start.store.clone(), start.name.clone(), start.id.clone()).await?;
         let mut actor = Self {
-            setup: start.setup,
-            connect: start.connect,
-            name: start.name,
-            id: start.id,
-            data: start.data,
-            store: start.store,
-            lease,
-            running: None,
-            waiting: HashMap::new(),
+            start,
+            epoch: lease.epoch(),
+            stepping: false,
+            waiting: Waiting::new(),
             caches: Caches::default(),
             folded: Folded::default(),
         };
-        if let Err(e) = actor.recover().await {
-            actor.lease.release().await;
-            return Err(e);
-        }
-        actor.start_next();
+        mailbox.hold(lease);
+        actor.recover().await?;
+        actor.start_next(mailbox);
         Ok(actor)
     }
 
-    /// Serves until stopped (`None`) or a lease or store failure: its cause,
-    /// and the failing call's reply, answered at the end.
-    async fn serve(
-        &mut self,
-        mailbox: &mut Mailbox<Command, Control>,
-    ) -> Option<(StoreError, Option<Stored>)> {
-        loop {
-            let running = OptionFuture::from(self.running.as_mut());
-            let renew_at = self.lease.renew_at();
-            let tick = async move {
-                select! {
-                    biased;
-                    Some(tick) = running => tick,
-                    () = sleep_until(Some(renew_at)) => Tick::Renew,
-                }
-            };
-            let (served, reply) = match mailbox.next(tick).await? {
-                Next::Control(respond_to) => (self.abort().await, Some(respond_to)),
-                Next::Tick(Tick::Stepped(dispatch, run, step)) => {
-                    (self.stepped(dispatch, *run, step).await, None)
-                }
-                Next::Tick(Tick::Renew) => (self.lease.renew().await, None),
-                Next::Command(command) => self.command(command).await,
-            };
-            match served {
-                Ok(()) => {
-                    if let Some(reply) = reply {
-                        let _ = reply.send(Ok(()));
+    /// Parks `reads` carried over a stop, answering those already settled.
+    fn park(&mut self, reads: Waiting) {
+        for (dispatch, reads) in reads {
+            match self.folded.settled.get(&dispatch) {
+                Some(result) => {
+                    for read in reads {
+                        let _ = read.send(answer(dispatch, result));
                     }
                 }
-                Err(cause) => return Some((cause, reply)),
+                None => self.waiting.entry(dispatch).or_default().extend(reads),
             }
         }
     }
 
-    /// Releases the lease and closes the mailbox, so a caller that retries
-    /// re-attaches; then fails the failing call and every caller still
-    /// waiting with the cause. On a stop, drops them (the runtime is gone).
-    async fn end(
-        self,
-        mailbox: Mailbox<Command, Control>,
-        failed: Option<(StoreError, Option<Stored>)>,
-    ) {
-        let Self { lease, waiting, .. } = self;
-        lease.release().await;
-        let (commands, controls) = mailbox.close();
-        if let Some((cause, reply)) = failed {
-            let error = || Error::from(cause.clone());
-            if let Some(reply) = reply {
-                let _ = reply.send(Err(error()));
+    /// Serves `first`, then the mailbox, until the incarnation ends.
+    async fn serve(mut self, first: Command, mailbox: &mut Mailbox<Command>) -> End {
+        let mut command = first;
+        loop {
+            if let Err((cause, call)) = self.command(command, mailbox).await {
+                return End::Failed(cause, call, self.waiting);
             }
-            let reads = waiting.into_values().flatten().collect();
-            fail(commands, controls, reads, error);
+            command = match mailbox.next().await {
+                None => return End::Shutdown,
+                Some(Next::Command(command)) => command,
+                Some(Next::Stopped) => return End::Stopped(self.waiting),
+                Some(Next::Ended(cause)) => return End::Failed(cause.into(), None, self.waiting),
+            };
         }
     }
 
-    /// Serves `command`; a dispatch's reply waits until its admission is known.
-    async fn command(&mut self, command: Command) -> (Result<(), StoreError>, Option<Stored>) {
+    /// Serves `command`; on a failure, its cause and the call to answer
+    /// with it once the lease is released.
+    async fn command(
+        &mut self,
+        command: Command,
+        mailbox: &mut Mailbox<Command>,
+    ) -> Result<(), (Error, Option<Stored>)> {
         match command {
             Command::Dispatch {
                 dispatch_id,
@@ -183,36 +172,51 @@ impl InstanceActor {
                 structured,
                 respond_to,
             } => {
-                let admitted = self.admit(dispatch_id, text, structured).await;
-                self.start_next();
-                (admitted, Some(respond_to))
+                if let Err(cause) = self.admit(dispatch_id, text, structured).await {
+                    return Err((cause.into(), Some(respond_to)));
+                }
+                let _ = respond_to.send(Ok(()));
+                self.start_next(mailbox);
             }
             Command::Read {
                 dispatch_id,
                 respond_to,
-            } => {
-                match self.folded.settled.get(&dispatch_id) {
-                    Some(result) => {
-                        let _ = respond_to.send(answer(dispatch_id, result));
-                    }
-                    None if self
-                        .folded
-                        .pending
-                        .iter()
-                        .any(|a| a.dispatch == dispatch_id) =>
-                    {
-                        self.waiting
-                            .entry(dispatch_id)
-                            .or_default()
-                            .push(respond_to);
-                    }
-                    None => {
-                        let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
-                    }
+            } => match self.folded.settled.get(&dispatch_id) {
+                Some(result) => {
+                    let _ = respond_to.send(answer(dispatch_id, result));
                 }
-                (Ok(()), None)
+                None if self
+                    .folded
+                    .pending
+                    .iter()
+                    .any(|a| a.dispatch == dispatch_id) =>
+                {
+                    self.waiting
+                        .entry(dispatch_id)
+                        .or_default()
+                        .push(respond_to);
+                }
+                None => {
+                    let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
+                }
+            },
+            Command::AbortQueued { respond_to } => {
+                if let Err(cause) = self.abort(mailbox).await {
+                    return Err((cause.into(), Some(respond_to)));
+                }
+                let _ = respond_to.send(Ok(()));
+            }
+            Command::Stepped {
+                dispatch,
+                run,
+                step,
+            } => {
+                self.stepped(dispatch, *run, step, mailbox)
+                    .await
+                    .map_err(|cause| (cause.into(), None))?;
             }
         }
+        Ok(())
     }
 
     /// Stores a dispatch, after the instance's `created` when the stream is empty.
@@ -224,7 +228,7 @@ impl InstanceActor {
     ) -> Result<(), StoreError> {
         let mut events = Vec::new();
         if self.folded.last == Seq::default() {
-            let data = self.data.clone();
+            let data = self.start.data.clone();
             events.push((None, Event::Created { data }));
         }
         events.push((Some(dispatch_id), Event::Dispatched { text, structured }));
@@ -234,11 +238,10 @@ impl InstanceActor {
     /// Folds the stream from its first event, then settles a dispatch that
     /// was running when the last writer stopped.
     async fn recover(&mut self) -> Result<()> {
-        let stored = self
-            .store
-            .read(&self.name, &self.id, Seq::default())
-            .await?;
-        for stored in stored {
+        let Start {
+            name, id, store, ..
+        } = self.start;
+        for stored in store.read(name, id, Seq::default()).await? {
             let (seq, dispatch) = (stored.seq, stored.dispatch);
             let event = Event::of(stored).map_err(|reason| StoreError::Failed { reason })?;
             self.folded.apply(seq, dispatch, event);
@@ -247,11 +250,11 @@ impl InstanceActor {
             .folded
             .data
             .as_ref()
-            .is_some_and(|data| *data != self.data)
+            .is_some_and(|data| *data != self.start.data)
         {
             return Err(Error::InstanceDataConflict {
-                agent: self.name.clone(),
-                id: self.id.clone(),
+                agent: name.clone(),
+                id: id.clone(),
             });
         }
         // The recovery seam: Restart replaces this with continuing the dispatch.
@@ -266,30 +269,36 @@ impl InstanceActor {
     }
 
     /// Starts the first stored dispatch, unless one is running.
-    fn start_next(&mut self) {
-        if self.running.is_some() {
+    fn start_next(&mut self, mailbox: &mut Mailbox<Command>) {
+        if self.stepping {
             return;
         }
         let Some(next) = self.folded.pending.front().cloned() else {
             return;
         };
         let run = Run::new(
-            self.setup.clone(),
+            self.start.setup.clone(),
             next.text,
             self.folded.history.clone(),
             next.structured.map(Structured::from_spec),
             std::mem::take(&mut self.caches),
-            self.connect.clone(),
+            self.start.connect.clone(),
         );
-        self.run_step(next.dispatch, run);
+        self.step(next.dispatch, run, mailbox);
     }
 
-    /// Takes `run`'s next step for `dispatch`, kept until it finishes.
-    fn run_step(&mut self, dispatch: DispatchId, run: Run) {
-        self.running = Some(Box::pin(async move {
+    /// Takes `run`'s next step for `dispatch`; it comes back as
+    /// [`Command::Stepped`].
+    fn step(&mut self, dispatch: DispatchId, run: Run, mailbox: &mut Mailbox<Command>) {
+        self.stepping = true;
+        mailbox.pipe_to_self(async move {
             let (run, step) = run.step().await;
-            Tick::Stepped(dispatch, Box::new(run), step)
-        }));
+            Command::Stepped {
+                dispatch,
+                run: Box::new(run),
+                step,
+            }
+        });
     }
 
     /// Stores what `dispatch`'s step produced, then takes the next one,
@@ -299,16 +308,15 @@ impl InstanceActor {
         dispatch: DispatchId,
         run: Run,
         step: Result<Step, String>,
+        mailbox: &mut Mailbox<Command>,
     ) -> Result<(), StoreError> {
-        self.running = None;
+        self.stepping = false;
         match step {
             Ok(Step::Append(events)) => {
                 let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
                 self.append(events).await?;
-                if !self.lease.trusted() {
-                    return Err(store::fenced(&self.name, &self.id));
-                }
-                self.run_step(dispatch, run);
+                mailbox.guard()?;
+                self.step(dispatch, run, mailbox);
                 return Ok(());
             }
             Ok(Step::Settled(events, value)) => {
@@ -321,7 +329,7 @@ impl InstanceActor {
                     .await?;
             }
         }
-        self.start_next();
+        self.start_next(mailbox);
         Ok(())
     }
 
@@ -341,12 +349,14 @@ impl InstanceActor {
         self.append(events).await
     }
 
-    /// Stops the running dispatch and settles it and every queued one as aborted.
-    async fn abort(&mut self) -> Result<(), StoreError> {
+    /// Stops the running step and settles every queued dispatch as aborted.
+    async fn abort(&mut self, mailbox: &mut Mailbox<Command>) -> Result<(), StoreError> {
         if self.folded.pending.is_empty() {
             return Ok(());
         }
-        if self.running.take().is_some() {
+        if self.stepping {
+            mailbox.unpipe();
+            self.stepping = false;
             // The run held them; what they remembered of the sandbox is lost.
             self.caches = Caches::default();
         }
@@ -355,17 +365,18 @@ impl InstanceActor {
             let result = Err(Outcome::Aborted);
             events.push((Some(admitted.dispatch), Event::Settled { result }));
         }
-        self.append(events).await?;
-        self.start_next();
-        Ok(())
+        self.append(events).await
     }
 
     /// Stores `events` after the stream's last, then folds them and answers
     /// the reads they settle.
     async fn append(&mut self, events: Vec<(Option<DispatchId>, Event)>) -> Result<(), StoreError> {
+        let Start {
+            name, id, store, ..
+        } = self.start;
         let expected = self.folded.last;
-        self.store
-            .append(&self.name, &self.id, self.lease.epoch(), expected, &events)
+        store
+            .append(name, id, self.epoch, expected, &events)
             .await?;
         // Numbered as the store numbered them: `expected`+1…
         let mut seq = expected;
@@ -386,29 +397,8 @@ impl InstanceActor {
     }
 }
 
-/// Answers each parked read, queued command and queued control with `error`.
-fn fail(
-    commands: Vec<Command>,
-    controls: Vec<Control>,
-    reads: Vec<ReadReply>,
-    error: impl Fn() -> Error,
-) {
-    commands
-        .into_iter()
-        .for_each(|command| command.fail(error()));
-    for read in reads {
-        let _ = read.send(Err(error()));
-    }
-    for control in controls {
-        let _ = control.send(Err(error()));
-    }
-}
-
 /// An "aborted" result for each tool call `history` leaves unanswered.
-pub(super) fn closing(
-    history: &[Message],
-    dispatch: DispatchId,
-) -> Vec<(Option<DispatchId>, Event)> {
+fn closing(history: &[Message], dispatch: DispatchId) -> Vec<(Option<DispatchId>, Event)> {
     rig::close_pending(history, ABORTED)
         .into_iter()
         .map(|part| (Some(dispatch), Event::ToolResult(part)))

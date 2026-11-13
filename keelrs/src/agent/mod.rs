@@ -9,12 +9,12 @@ use serde::de::DeserializeOwned;
 use context::Declared;
 pub use context::{AgentContext, BuiltinTools};
 pub use id::{DispatchId, InstanceId};
-pub(crate) use instance::SettledValue;
 pub use instance::{AgentInstance, Receipt, Reply};
+pub(crate) use instance::{Instances, SettledValue};
 
 mod context;
 mod id;
-pub(crate) mod instance;
+mod instance;
 pub(crate) mod rig;
 
 type AgentFn<D> = dyn Fn(&mut AgentContext<D>) -> String + Send + Sync;

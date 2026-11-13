@@ -2,19 +2,15 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::TurnSetup;
-use crate::agent::instance::{self, InstanceKey, Instances};
 use crate::agent::rig;
+use crate::agent::{Instances, TurnSetup};
 use crate::store::Store;
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
@@ -32,17 +28,11 @@ pub struct Runtime {
 struct Inner {
     agents: HashMap<String, AnyAgent>,
     /// Each instance asked for so far, so the same id continues the same
-    /// conversation; read by the instances' spawner.
-    created: Created,
-    /// The instances' actors, spawned on their first call.
+    /// conversation.
     instances: Instances,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
-
-/// Each instance asked for, keyed by `(agent name, instance id)`: how its
-/// turns are set up, and its data as JSON.
-type Created = Arc<Mutex<HashMap<InstanceKey, (TurnSetup, Value)>>>;
 
 impl fmt::Debug for Inner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -117,19 +107,8 @@ impl Runtime {
             id: id.clone(),
             reason: e.to_string(),
         })?;
-        let key = (name, id);
-        match self.inner.created.lock().entry(key.clone()) {
-            Entry::Occupied(entry) => {
-                if entry.get().1 != json {
-                    let (agent, id) = key;
-                    return Err(Error::InstanceDataConflict { agent, id });
-                }
-            }
-            Entry::Vacant(entry) => {
-                entry.insert((TurnSetup::new(registered, key.1.clone(), data), json));
-            }
-        }
-        Ok(AgentInstance::new(self.inner.instances.get(key)))
+        let setup = TurnSetup::new(registered, id.clone(), data);
+        self.inner.instances.get(name, id, setup, json)
     }
 }
 
@@ -174,27 +153,11 @@ impl RuntimeBuilder {
         let connect = rig::connect_catalog();
         #[cfg(feature = "testing")]
         let connect = self.model.map_or(connect, |model| model.connect());
-        let (store, shutdown, created) = (self.store, CancellationToken::new(), Created::default());
-        let spawn = {
-            let (shutdown, created) = (shutdown.clone(), Arc::clone(&created));
-            move |key: &InstanceKey| {
-                let (setup, data) = created.lock()[key].clone();
-                instance::spawn(
-                    &rt,
-                    &shutdown,
-                    key,
-                    setup,
-                    data,
-                    Arc::clone(&connect),
-                    store.clone(),
-                )
-            }
-        };
+        let shutdown = CancellationToken::new();
         Ok(Runtime {
             inner: Arc::new(Inner {
                 agents: registry,
-                created,
-                instances: Instances::new(spawn, shutdown.clone()),
+                instances: Instances::new(rt, shutdown.clone(), connect, self.store),
                 shutdown,
             }),
         })
