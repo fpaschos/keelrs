@@ -8,8 +8,8 @@
 //! adds up to ([`fold::Folded`]).
 //!
 //! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold.
-//! The handle holds the actor's [`ActorRef`] for good: after an incarnation
-//! ends, the next call starts a new one in place.
+//! The handle holds the actor's [`ActorRef`] for good: after the actor
+//! stops, the next call restarts it in place.
 
 mod actor;
 mod fold;
@@ -21,9 +21,9 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use self::actor::Start;
-use crate::actors::ActorRef;
+use self::actor::{InstanceActor, Start};
 use crate::actors::entity::Entities;
+use crate::actors::{self, ActorRef};
 use crate::agent::TurnSetup;
 use crate::agent::rig::{Connect, Run, Step};
 use crate::builtin::structured::StructuredSpec;
@@ -35,7 +35,7 @@ type InstanceKey = (String, InstanceId);
 
 /// Every instance's actor, by key, with the data (as JSON) it was created with.
 pub(crate) struct Instances {
-    entities: Entities<InstanceKey, Command, Value>,
+    entities: Entities<InstanceKey, InstanceActor, Value>,
     /// Connects the model each run declares.
     connect: Connect,
     store: Store,
@@ -82,9 +82,7 @@ impl Instances {
             let (agent, id) = key.clone();
             Err(Error::InstanceDataConflict { agent, id })
         };
-        let r = self.entities.get(key.clone(), data, conflict, |mailbox| {
-            actor::run(start, mailbox)
-        })?;
+        let r = self.entities.get(key.clone(), data, conflict, start)?;
         Ok(AgentInstance { key, r })
     }
 }
@@ -222,8 +220,7 @@ enum Command {
     },
 }
 
-impl Command {
-    /// Answers the command with `error`.
+impl actors::Command for Command {
     fn fail(self, error: Error) {
         let _ = match self {
             Self::Dispatch { respond_to, .. } | Self::AbortQueued { respond_to } => {
