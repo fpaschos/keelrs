@@ -164,14 +164,14 @@ impl AgentInstance {
     /// [`Outcome::Aborted`]. With nothing running or queued, does nothing.
     pub async fn abort(&self) -> Result<()> {
         self.r.stop();
-        self.call(|respond_to| Command::AbortQueued { respond_to })
+        self.actor_ask(|respond_to| Command::AbortQueued { respond_to })
             .await
     }
 
     /// Submits `text`, asking for `structured` when given.
     async fn submit(&self, text: String, structured: Option<StructuredSpec>) -> Result<Receipt> {
         let dispatch_id = DispatchId::fresh();
-        self.call(|respond_to| Command::Dispatch {
+        self.actor_ask(|respond_to| Command::Dispatch {
             dispatch_id,
             text,
             structured,
@@ -183,7 +183,7 @@ impl AgentInstance {
 
     /// Waits for `dispatch_id` to settle and takes what it settled with.
     async fn settled(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
-        self.call(|respond_to| Command::Read {
+        self.actor_ask(|respond_to| Command::Read {
             dispatch_id,
             respond_to,
         })
@@ -192,7 +192,10 @@ impl AgentInstance {
 
     /// Sends the command `make` builds and waits for its answer;
     /// [`Error::InstanceUnavailable`] when no actor answers.
-    async fn call<R>(&self, make: impl FnOnce(oneshot::Sender<Result<R>>) -> Command) -> Result<R> {
+    async fn actor_ask<R>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<Result<R>>) -> Command,
+    ) -> Result<R> {
         self.r.ask(make).await.unwrap_or_else(|| {
             let (agent, id) = self.key.clone();
             Err(Error::InstanceUnavailable { agent, id })
