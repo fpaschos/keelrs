@@ -5,7 +5,7 @@ use crate::store::StoreError;
 use crate::{DispatchId, InstanceId};
 
 /// Something keelrs could not do.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// The agent was never given to [`Runtime::start`](crate::Runtime::start).
@@ -14,8 +14,8 @@ pub enum Error {
     /// Two agents given to [`Runtime::start`](crate::Runtime::start) share a name.
     #[error("two agents are named `{0}`; agent names must be unique")]
     DuplicateAgent(String),
-    /// An instance was asked for outside a Tokio runtime, which its actor needs.
-    #[error("agent instances must be created within a Tokio runtime")]
+    /// A runtime was started outside a Tokio runtime, which its actors need.
+    #[error("a keelrs runtime must be started within a Tokio runtime")]
     NoTokioRuntime,
     /// An instance was asked for by a blank id.
     #[error("instance id is blank")]
@@ -37,6 +37,16 @@ pub enum Error {
         id: InstanceId,
         /// Why serialization failed, as plain text.
         reason: String,
+    },
+    /// No actor answered for the instance: its runtime was dropped.
+    #[error(
+        "instance `{id}` of agent `{agent}` did not answer: its runtime was dropped, or its actor failed"
+    )]
+    InstanceUnavailable {
+        /// The agent's name.
+        agent: String,
+        /// The instance's id.
+        id: InstanceId,
     },
     /// A read named a dispatch this instance never received.
     #[error("no dispatch {0}")]
