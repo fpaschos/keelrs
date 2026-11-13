@@ -7,12 +7,14 @@
 //! step produced before the next, and answers reads from what the stream
 //! adds up to ([`fold::Folded`]).
 //!
-//! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold.
+//! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold;
+//! `lease.rs` the lease the actor holds.
 //! The handle holds the actor's [`ActorRef`] for good: after the actor
 //! stops, the next call restarts it in place.
 
 mod actor;
 mod fold;
+mod lease;
 
 use std::sync::Arc;
 
@@ -229,6 +231,8 @@ enum Command {
         run: Box<Run>,
         step: Result<Step, String>,
     },
+    /// The lease is due for renewal: the actor scheduled it for itself.
+    Renew,
 }
 
 impl actors::Command for Command {
@@ -240,7 +244,7 @@ impl actors::Command for Command {
             Self::Read { respond_to, .. } => {
                 let _ = respond_to.send(Err(error));
             }
-            Self::Stepped { .. } => {}
+            Self::Stepped { .. } | Self::Renew => {}
         }
     }
 }

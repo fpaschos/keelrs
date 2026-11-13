@@ -20,7 +20,7 @@ pub(crate) struct Lease {
 
 impl Lease {
     /// Takes the lease; [`StoreError::Held`] while another writer holds it.
-    pub(crate) async fn acquire(
+    pub(super) async fn acquire(
         store: Store,
         agent: String,
         id: InstanceId,
@@ -60,7 +60,7 @@ impl Lease {
         }
     }
 
-    pub(crate) fn epoch(&self) -> Epoch {
+    pub(super) fn epoch(&self) -> Epoch {
         self.epoch
     }
 

@@ -2,8 +2,9 @@
 //! writer of its instance's event stream while it holds the stream's lease.
 //!
 //! Each start takes the lease and recovers the stream; the actor then runs
-//! dispatches one at a time and stops on any lease or store failure. The
-//! library restarts it in place on the next command.
+//! dispatches one at a time, renews its lease on a scheduled
+//! [`Command::Renew`], and stops on any lease or store failure, releasing the
+//! lease. The library restarts it in place on the next command.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,15 +13,15 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 use super::fold::Folded;
+use super::lease::Lease;
 use super::{Command, SettledValue};
-use crate::actors::lease::Lease;
 use crate::actors::{Actor, Context, Stop};
 use crate::agent::TurnSetup;
 use crate::agent::rig::{self, Connect, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
-use crate::store::{Epoch, Seq, Store, StoreError};
+use crate::store::{Seq, Store, StoreError};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// What an aborted dispatch's unanswered tool calls are answered with.
@@ -41,8 +42,8 @@ pub(super) struct Start {
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 pub(super) struct InstanceActor {
     start: Arc<Start>,
-    /// The held lease's epoch, which every append carries.
-    epoch: Epoch,
+    /// Held for the actor's life; its epoch goes with every append.
+    lease: Lease,
     /// Whether a step is piped and not yet back.
     stepping: bool,
     /// Reads parked until their dispatch settles.
@@ -62,14 +63,17 @@ impl Actor for InstanceActor {
             Lease::acquire(start.store.clone(), start.name.clone(), start.id.clone()).await?;
         let mut actor = Self {
             start: Arc::clone(start),
-            epoch: lease.epoch(),
+            lease,
             stepping: false,
             waiting: HashMap::new(),
             caches: Caches::default(),
             folded: Folded::default(),
         };
-        cx.hold(lease);
-        actor.recover().await?;
+        if let Err(cause) = actor.recover().await {
+            actor.lease.release().await;
+            return Err(cause);
+        }
+        cx.schedule(actor.lease.renew_at(), Command::Renew);
         actor.start_next(cx);
         Ok(actor)
     }
@@ -126,13 +130,18 @@ impl Actor for InstanceActor {
                 run,
                 step,
             } => self.stepped(dispatch, *run, step, cx).await?,
+            Command::Renew => {
+                self.lease.renew().await?;
+                cx.schedule(self.lease.renew_at(), Command::Renew);
+            }
         }
         Ok(())
     }
 
-    /// Stashes the parked reads: a graceful stop serves them at the next
-    /// start, a failure fails them.
+    /// Releases the lease, then stashes the parked reads: a graceful stop
+    /// serves them at the next start, a failure fails them.
     async fn stopped(self, _: &Stop, cx: &mut Context<Command>) {
+        self.lease.release().await;
         for (dispatch_id, reads) in self.waiting {
             for respond_to in reads {
                 cx.stash(Command::Read {
@@ -242,7 +251,7 @@ impl InstanceActor {
             Ok(Step::Append(events)) => {
                 let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
                 self.append(events).await?;
-                cx.guard()?;
+                self.lease.guard()?;
                 self.step(dispatch, run, cx);
                 return Ok(());
             }
@@ -303,7 +312,7 @@ impl InstanceActor {
         } = &*self.start;
         let expected = self.folded.last;
         store
-            .append(name, id, self.epoch, expected, &events)
+            .append(name, id, self.lease.epoch(), expected, &events)
             .await?;
         // Numbered as the store numbered them: `expected`+1…
         let mut seq = expected;

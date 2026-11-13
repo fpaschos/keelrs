@@ -2,7 +2,7 @@
 //! Akka ideas. The library owns the loop; an actor gives three hooks
 //! ([`Actor::start`], [`Actor::handle`], [`Actor::stopped`]).
 //!
-//! Three layers, each opt-in over the one before:
+//! Two layers, the second opt-in over the first:
 //!
 //! - **core** (this file): an [`ActorRef`] to send to, and one task per
 //!   actor that runs it. The actor restarts in place inside that task: each
@@ -10,11 +10,11 @@
 //!   never changes.
 //! - **keyed** ([`entity`]): [`Entities`](entity::Entities) holds every actor
 //!   of one type by key.
-//! - **persistent** ([`lease`]): a [`Lease`] the [`Context`] holds makes the
-//!   actor the single writer of its stream.
+//!
+//! The library knows no durability: an actor that writes a stream holds its
+//! own lease and renews it on a [`Context::schedule`] timer.
 
 pub(crate) mod entity;
-pub(crate) mod lease;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -28,8 +28,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Instant};
 use tokio_util::sync::CancellationToken;
 
-use self::lease::Lease;
-use crate::store::StoreError;
 use crate::{Error, Result};
 
 /// How many commands an inbox holds before senders wait.
@@ -60,8 +58,8 @@ pub(crate) trait Actor: Sized + Send + 'static {
         cx: &mut Context<Self::Command>,
     ) -> impl Future<Output = Result<()>> + Send;
 
-    /// The actor is stopped: what it piped is dropped and its lease released.
-    /// It stashes what it still owes an answer and answers nothing itself.
+    /// The actor is stopped: what it piped and scheduled is dropped. It
+    /// releases what it holds first, then stashes what it still owes an answer and answers nothing itself.
     /// On [`Stop::Failed`] the library then fails the stash and the inbox
     /// with the cause; on [`Stop::Graceful`] they wait for the next start.
     fn stopped(
@@ -79,9 +77,10 @@ pub(crate) trait Command: Send + 'static {
 
 /// Why an actor stopped.
 pub(crate) enum Stop {
-    /// [`ActorRef::stop`].
+    /// [`ActorRef::stop`], or the runtime's shutdown (the stash and the
+    /// inbox are then dropped).
     Graceful,
-    /// A start, a command or the lease's renewal failed.
+    /// A start or a command failed.
     Failed(Error),
 }
 
@@ -134,15 +133,15 @@ pub(crate) struct Context<C> {
     system: mpsc::Receiver<System>,
     stashed: VecDeque<C>,
     piped: FuturesUnordered<BoxFuture<'static, C>>,
+    /// The one scheduled command, and when it is due.
+    timer: Option<(Instant, C)>,
     cancel: CancellationToken,
-    lease: Option<Lease>,
 }
 
 /// What [`Context::next`] yields.
 enum Next<C> {
     Command(C),
     Stopped,
-    LeaseLost(StoreError),
 }
 
 impl<C> Context<C> {
@@ -166,19 +165,15 @@ impl<C> Context<C> {
         self.stashed.push_back(command);
     }
 
-    /// Holds `lease`: renewed by the library, released when the actor stops.
-    pub(crate) fn hold(&mut self, lease: Lease) {
-        self.lease = Some(lease);
-    }
-
-    /// The deadline guard: [`StoreError::Fenced`] unless the held lease is
-    /// still trusted.
-    pub(crate) fn guard(&self) -> Result<(), StoreError> {
-        self.lease.as_ref().map_or(Ok(()), Lease::guard)
+    /// Sends `command` to the actor at `at`, before the inbox; replaces the
+    /// command scheduled before. Dropped when the actor stops.
+    pub(crate) fn schedule(&mut self, at: Instant, command: C) {
+        self.timer = Some((at, command));
     }
 
     /// The next thing to serve, in order: cancel (`None`), the stash, the
-    /// system lane, the held lease's renewal, the inbox, then what was piped.
+    /// system lane, the scheduled command once due, the inbox, then what was
+    /// piped.
     async fn next(&mut self) -> Option<Next<C>> {
         if self.cancel.is_cancelled() {
             return None;
@@ -186,31 +181,23 @@ impl<C> Context<C> {
         if let Some(command) = self.stashed.pop_front() {
             return Some(Next::Command(command));
         }
-        loop {
-            let renew_at = self.lease.as_ref().map(Lease::renew_at);
-            select! {
-                biased;
-                () = self.cancel.cancelled() => return None,
-                Some(System::Stop) = self.system.recv() => return Some(Next::Stopped),
-                () = time::sleep_until(renew_at.unwrap_or_else(Instant::now)), if renew_at.is_some() => {
-                    if let Some(lease) = &mut self.lease
-                        && let Err(cause) = lease.renew().await
-                    {
-                        return Some(Next::LeaseLost(cause));
-                    }
-                }
-                Some(command) = self.inbox.recv() => return Some(Next::Command(command)),
-                Some(command) = self.piped.next() => return Some(Next::Command(command)),
+        let due = self.timer.as_ref().map(|(at, _)| *at);
+        select! {
+            biased;
+            () = self.cancel.cancelled() => None,
+            Some(System::Stop) = self.system.recv() => Some(Next::Stopped),
+            () = time::sleep_until(due.unwrap_or_else(Instant::now)), if due.is_some() => {
+                self.timer.take().map(|(_, command)| Next::Command(command))
             }
+            Some(command) = self.inbox.recv() => Some(Next::Command(command)),
+            Some(command) = self.piped.next() => Some(Next::Command(command)),
         }
     }
 
-    /// Drops what was piped and gives the lease up, best-effort.
-    async fn end(&mut self) {
+    /// Drops what was piped and scheduled.
+    fn end(&mut self) {
         self.unpipe();
-        if let Some(lease) = self.lease.take() {
-            lease.release().await;
-        }
+        self.timer = None;
     }
 
     /// The queued commands: the stash, then the inbox.
@@ -235,8 +222,8 @@ pub(crate) fn spawn<A: Actor>(
         system: system_rx,
         stashed: VecDeque::new(),
         piped: FuturesUnordered::new(),
+        timer: None,
         cancel,
-        lease: None,
     };
     rt.spawn(run::<A>(args, cx));
     ActorRef { inbox, system }
@@ -251,13 +238,13 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
             match cx.next().await {
                 None => return,
                 Some(Next::Command(command)) => break command,
-                Some(Next::Stopped | Next::LeaseLost(_)) => {}
+                Some(Next::Stopped) => {}
             }
         };
         let mut actor = match A::start(&args, &mut cx).await {
             Ok(actor) => actor,
             Err(cause) => {
-                cx.end().await;
+                cx.end();
                 fail_queued(&mut cx, Some(first), &cause);
                 continue;
             }
@@ -269,15 +256,15 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
             }
             command = match cx.next().await {
                 None => {
-                    cx.end().await;
+                    cx.end();
+                    actor.stopped(&Stop::Graceful, &mut cx).await;
                     return;
                 }
                 Some(Next::Command(command)) => command,
                 Some(Next::Stopped) => break Stop::Graceful,
-                Some(Next::LeaseLost(cause)) => break Stop::Failed(cause.into()),
             };
         };
-        cx.end().await;
+        cx.end();
         actor.stopped(&why, &mut cx).await;
         if let Stop::Failed(cause) = why {
             fail_queued(&mut cx, None, &cause);
@@ -285,8 +272,9 @@ async fn run<A: Actor>(args: A::Args, mut cx: Context<A::Command>) {
     }
 }
 
-/// Fails `first` and every queued command with `cause`. Called once the
-/// lease is released, so a caller that retries at once reaches the next start.
+/// Fails `first` and every queued command with `cause`. Called after
+/// [`Actor::stopped`] released what the actor held, so a caller that retries
+/// at once reaches the next start.
 fn fail_queued<C: Command>(cx: &mut Context<C>, first: Option<C>, cause: &Error) {
     for command in first.into_iter().chain(cx.drain()) {
         command.fail(cause.clone());
