@@ -116,9 +116,7 @@ impl<Key, C, K> EntityRef<Key, C, K> {
         &self,
         make: impl FnOnce(oneshot::Sender<R>) -> C,
     ) -> Result<R, AskError<C>> {
-        let (respond_to, response) = oneshot::channel();
-        self.deliver(make(respond_to), Handle::inbox).await?;
-        response.await.map_err(|_| AskError::NoReply)
+        self.call(make, Handle::inbox).await
     }
 
     /// Sends the control message `make` builds and waits for its answer.
@@ -126,30 +124,26 @@ impl<Key, C, K> EntityRef<Key, C, K> {
         &self,
         make: impl FnOnce(oneshot::Sender<R>) -> K,
     ) -> Result<R, AskError<K>> {
-        let (respond_to, response) = oneshot::channel();
-        self.deliver(make(respond_to), Handle::control).await?;
-        response.await.map_err(|_| AskError::NoReply)
+        self.call(make, Handle::control).await
     }
 
-    /// Sends `message` on the channel `to` picks; when the actor ended
-    /// before taking it, re-attaches once and sends it again.
-    async fn deliver<M>(
+    /// Sends the message `make` builds on the channel `to` picks and waits
+    /// for its answer; when the actor ended before taking it, re-attaches
+    /// once and sends it again.
+    async fn call<M, R>(
         &self,
-        message: M,
+        make: impl FnOnce(oneshot::Sender<R>) -> M,
         to: fn(&Handle<C, K>) -> &mpsc::Sender<M>,
-    ) -> Result<(), AskError<M>> {
-        let Some(handle) = self.handle() else {
-            return Err(AskError::NotDelivered(message));
-        };
-        let Err(mpsc::error::SendError(message)) = to(&handle).send(message).await else {
-            return Ok(());
-        };
-        let Some(handle) = self.handle() else {
-            return Err(AskError::NotDelivered(message));
-        };
-        to(&handle)
-            .send(message)
-            .await
-            .map_err(|mpsc::error::SendError(message)| AskError::NotDelivered(message))
+    ) -> Result<R, AskError<M>> {
+        let (respond_to, response) = oneshot::channel();
+        let mut message = make(respond_to);
+        for _ in 0..2 {
+            let Some(handle) = self.handle() else { break };
+            match to(&handle).send(message).await {
+                Ok(()) => return response.await.map_err(|_| AskError::NoReply),
+                Err(mpsc::error::SendError(back)) => message = back,
+            }
+        }
+        Err(AskError::NotDelivered(message))
     }
 }

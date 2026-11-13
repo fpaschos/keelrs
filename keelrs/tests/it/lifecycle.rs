@@ -13,7 +13,7 @@ use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::{Instant, timeout};
 
-use crate::support::{TIMEOUT, agent, clock, runtime_on, until_requests};
+use crate::support::{TIMEOUT, agent, ask, clock, runtime_on, until_requests};
 
 /// One stream in memory, as the in-memory store keeps it, with failures the
 /// test switches on.
@@ -196,7 +196,7 @@ async fn a_failed_append_fails_the_waiting_callers_and_the_next_call_re_attaches
     assert!(is_fenced(&two), "got {two:?}");
 
     // A new incarnation recovers the stream: "One" never started, so it runs again.
-    let reply = timeout(TIMEOUT, instance.ask("Three")).await.unwrap();
+    let reply = ask(&instance, "Three").await;
     assert_eq!(reply.unwrap().text(), "Three.");
     let reply = instance.read(&one).await;
     assert_eq!(reply.unwrap().text(), "One again.");
@@ -239,7 +239,7 @@ async fn asking_for_an_instance_takes_no_lease() {
     let model = ScriptedModel::new().reply("Hi.");
     let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, id).unwrap();
-    let reply = timeout(TIMEOUT, instance.ask("Hello")).await.unwrap();
+    let reply = ask(&instance, "Hello").await;
     assert_eq!(reply.unwrap().text(), "Hi.");
 }
 
@@ -261,10 +261,7 @@ async fn a_held_instance_is_unavailable_once_its_runtime_drops() {
     let model = ScriptedModel::new().reply("Hi.");
     let runtime = runtime_on(&Store::in_memory(), &agent, &model);
     let instance = runtime.instance(&agent, InstanceId::new("gone")).unwrap();
-    timeout(TIMEOUT, instance.ask("Hello"))
-        .await
-        .unwrap()
-        .unwrap();
+    ask(&instance, "Hello").await.unwrap();
     drop(runtime);
 
     let dispatched = instance.dispatch("Hello").await;
@@ -293,6 +290,6 @@ async fn a_call_right_after_a_failed_dispatch_re_attaches() {
     backend.fail();
     let one = instance.dispatch("One").await;
     assert!(is_fenced(&one), "got {one:?}");
-    let reply = timeout(TIMEOUT, instance.ask("Two")).await.unwrap();
+    let reply = ask(&instance, "Two").await;
     assert_eq!(reply.unwrap().text(), "Two.");
 }

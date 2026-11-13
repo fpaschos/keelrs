@@ -21,7 +21,7 @@ use crate::agent::rig::{self, Connect, Message, Run, Step};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
-use crate::store::{Seq, Store, StoreError};
+use crate::store::{self, Seq, Store, StoreError};
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// What an aborted dispatch's unanswered tool calls are answered with.
@@ -37,7 +37,7 @@ pub(crate) type Control = Stored;
 type ReadReply = oneshot::Sender<Result<SettledValue>>;
 
 /// The step in flight, with the dispatch it runs for.
-type Running = BoxFuture<'static, (DispatchId, Run, Result<Step, String>)>;
+type Running = BoxFuture<'static, Tick>;
 
 /// What the actor needs to start: instance `id` of the agent named `name`.
 pub(super) struct Start {
@@ -130,7 +130,7 @@ impl InstanceActor {
             let tick = async move {
                 select! {
                     biased;
-                    Some((dispatch, run, step)) = running => Tick::Stepped(dispatch, Box::new(run), step),
+                    Some(tick) = running => tick,
                     () = sleep_until(Some(renew_at)) => Tick::Renew,
                 }
             };
@@ -288,7 +288,7 @@ impl InstanceActor {
     fn run_step(&mut self, dispatch: DispatchId, run: Run) {
         self.running = Some(Box::pin(async move {
             let (run, step) = run.step().await;
-            (dispatch, run, step)
+            Tick::Stepped(dispatch, Box::new(run), step)
         }));
     }
 
@@ -306,10 +306,7 @@ impl InstanceActor {
                 let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
                 self.append(events).await?;
                 if !self.lease.trusted() {
-                    return Err(StoreError::Fenced {
-                        agent: self.name.clone(),
-                        id: self.id.clone(),
-                    });
+                    return Err(store::fenced(&self.name, &self.id));
                 }
                 self.run_step(dispatch, run);
                 return Ok(());
