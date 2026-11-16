@@ -2,18 +2,15 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::TurnSetup;
-use crate::agent::rig::{self, Connect};
+use crate::agent::rig;
+use crate::agent::{Instances, TurnSetup};
 use crate::store::Store;
 use crate::{Agent, AgentInstance, Error, InstanceId, Result};
 
@@ -30,13 +27,9 @@ pub struct Runtime {
 
 struct Inner {
     agents: HashMap<String, AnyAgent>,
-    /// Instances already spawned, keyed by `(agent name, instance id)`, so the
-    /// same id continues the same conversation; each with its data as JSON.
-    instances: Mutex<HashMap<(String, InstanceId), (AgentInstance, Value)>>,
-    /// Where the instances' events are kept.
-    store: Store,
-    /// Connects the model each run declares.
-    connect: Connect,
+    /// Each instance asked for so far, so the same id continues the same
+    /// conversation.
+    instances: Instances,
     /// Parent of every instance token; cancelled when the runtime is dropped.
     shutdown: CancellationToken,
 }
@@ -45,8 +38,6 @@ impl fmt::Debug for Inner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Inner")
             .field("agents", &self.agents)
-            .field("instances", &self.instances)
-            .field("store", &self.store)
             .finish_non_exhaustive()
     }
 }
@@ -62,7 +53,8 @@ impl Runtime {
     /// a tuple, for agents with different data types, or an array, `Vec` or
     /// slice of one type, each by value or by reference.
     ///
-    /// Fails with [`Error::DuplicateAgent`] when two agents share a name.
+    /// Fails with [`Error::DuplicateAgent`] when two agents share a name,
+    /// and with [`Error::NoTokioRuntime`] outside a Tokio runtime.
     pub fn start(agents: impl Agents) -> Result<Self> {
         Self::builder().start(agents)
     }
@@ -84,8 +76,9 @@ impl Runtime {
     /// `data` does not serialize. Fails with [`Error::InvalidInstanceId`] on a
     /// blank id, and with [`Error::UnknownAgent`] unless `agent` is the very
     /// one given to [`Runtime::start`] (not just one with its name); the
-    /// instance runs with that registered agent's settings. Fails with
-    /// [`Error::NoTokioRuntime`] outside a Tokio runtime.
+    /// instance runs with that registered agent's settings.
+    ///
+    /// Takes no lease and starts nothing: the instance's first call does.
     pub fn instance_with<D>(
         &self,
         agent: &Agent<D>,
@@ -108,43 +101,14 @@ impl Runtime {
         else {
             return Err(Error::UnknownAgent(agent.name().to_owned()));
         };
-        // Checked first: the actor's spawn panics outside a Tokio runtime.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return Err(Error::NoTokioRuntime);
-        }
         let name = agent.name().to_owned();
         let json = serde_json::to_value(&data).map_err(|e| Error::InvalidInstanceData {
             agent: name.clone(),
             id: id.clone(),
             reason: e.to_string(),
         })?;
-        match self
-            .inner
-            .instances
-            .lock()
-            .entry((name.clone(), id.clone()))
-        {
-            Entry::Occupied(entry) => {
-                let (instance, kept) = entry.get();
-                if *kept != json {
-                    return Err(Error::InstanceDataConflict { agent: name, id });
-                }
-                Ok(instance.clone())
-            }
-            Entry::Vacant(entry) => {
-                let instance = AgentInstance::spawn(
-                    name,
-                    TurnSetup::new(registered, id.clone(), data),
-                    Arc::clone(&self.inner.connect),
-                    id,
-                    json.clone(),
-                    self.inner.store.clone(),
-                    &self.inner.shutdown,
-                );
-                entry.insert((instance.clone(), json));
-                Ok(instance)
-            }
-        }
+        let setup = || TurnSetup::new(registered, id.clone(), data);
+        self.inner.instances.get(name, id.clone(), setup, json)
     }
 }
 
@@ -175,7 +139,7 @@ impl RuntimeBuilder {
 
     /// Starts the runtime hosting `agents`, as [`Runtime::start`] does.
     ///
-    /// Fails with [`Error::DuplicateAgent`] when two agents share a name.
+    /// Fails as [`Runtime::start`] does.
     pub fn start(self, agents: impl Agents) -> Result<Runtime> {
         let mut registry = HashMap::new();
         for agent in agents.into_agents() {
@@ -184,16 +148,17 @@ impl RuntimeBuilder {
                 return Err(Error::DuplicateAgent(name));
             }
         }
+        // The instances' actors are spawned on this runtime, from any thread.
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| Error::NoTokioRuntime)?;
         let connect = rig::connect_catalog();
         #[cfg(feature = "testing")]
         let connect = self.model.map_or(connect, |model| model.connect());
+        let shutdown = CancellationToken::new();
         Ok(Runtime {
             inner: Arc::new(Inner {
                 agents: registry,
-                instances: Mutex::default(),
-                store: self.store,
-                connect,
-                shutdown: CancellationToken::new(),
+                instances: Instances::new(rt, shutdown.clone(), connect, self.store),
+                shutdown,
             }),
         })
     }

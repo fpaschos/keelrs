@@ -313,6 +313,14 @@ impl Store {
     }
 }
 
+/// The writer of instance `instance` of `agent` lost its lease.
+pub(crate) fn fenced(agent: &str, instance: &InstanceId) -> StoreError {
+    StoreError::Fenced {
+        agent: agent.to_owned(),
+        id: instance.clone(),
+    }
+}
+
 /// Now, in ms since the Unix epoch.
 fn now_ms() -> u64 {
     SystemTime::now()

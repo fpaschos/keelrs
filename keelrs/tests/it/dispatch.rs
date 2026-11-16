@@ -235,9 +235,8 @@ async fn an_instance_runs_with_the_registered_agents_settings() {
 }
 
 #[test]
-fn an_instance_outside_a_tokio_runtime_fails() {
+fn a_runtime_outside_a_tokio_runtime_fails_to_start() {
     let agent = Agent::new("no-model", |_: &mut AgentContext| String::new());
-    let runtime = Runtime::start([&agent]).unwrap();
-    let result = runtime.instance(&agent, InstanceId::new("a"));
+    let result = Runtime::start([&agent]);
     assert!(matches!(&result, Err(Error::NoTokioRuntime)), "{result:?}");
 }

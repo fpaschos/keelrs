@@ -6,7 +6,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
-use super::{Epoch, Result, Seq, StoreBackend, StoreError, StoredEvent};
+use super::{Epoch, Result, Seq, StoreBackend, StoreError, StoredEvent, fenced};
 use crate::InstanceId;
 
 /// Streams keyed by `(agent, instance)`.
@@ -24,13 +24,6 @@ struct Stream {
 
 fn key(agent: &str, instance: &InstanceId) -> (String, InstanceId) {
     (agent.to_owned(), instance.clone())
-}
-
-fn fenced(agent: &str, instance: &InstanceId) -> StoreError {
-    StoreError::Fenced {
-        agent: agent.to_owned(),
-        id: instance.clone(),
-    }
 }
 
 #[async_trait::async_trait]

@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use context::Declared;
 pub use context::{AgentContext, BuiltinTools};
 pub use id::{DispatchId, InstanceId};
-pub(crate) use instance::SettledValue;
 pub use instance::{AgentInstance, Receipt, Reply};
+pub(crate) use instance::{Instances, SettledValue};
 
 mod context;
 mod id;

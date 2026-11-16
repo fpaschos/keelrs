@@ -7,67 +7,110 @@
 //! step produced before the next, and answers reads from what the stream
 //! adds up to ([`fold::Folded`]).
 //!
-//! This file holds the handle; `actor.rs` the actor and its lease;
-//! `fold.rs` the fold.
+//! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold;
+//! `lease.rs` the lease the actor holds.
+//! The handle holds the actor's [`ActorRef`] for good: after the actor
+//! stops, the next call restarts it in place.
 
 mod actor;
 mod fold;
+mod lease;
+
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use self::actor::{Control, InstanceActor};
+use self::actor::{InstanceActor, Start};
+use crate::actors::entity::Entities;
+use crate::actors::{self, ActorRef};
 use crate::agent::TurnSetup;
-use crate::agent::rig::Connect;
+use crate::agent::rig::{Connect, Run, Step};
 use crate::builtin::structured::StructuredSpec;
 use crate::store::Store;
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
+
+/// Names an instance by its agent's name and its id.
+type InstanceKey = (String, InstanceId);
+
+/// Every instance's actor, by key, with the data (as JSON) it was created with.
+pub(crate) struct Instances {
+    entities: Entities<InstanceKey, InstanceActor, Arc<Value>>,
+    /// Connects the model each run declares.
+    connect: Connect,
+    store: Store,
+}
+
+impl Instances {
+    /// No instances yet; their actors run on `rt` until `shutdown` is cancelled.
+    pub(crate) fn new(
+        rt: tokio::runtime::Handle,
+        shutdown: CancellationToken,
+        connect: Connect,
+        store: Store,
+    ) -> Self {
+        Self {
+            entities: Entities::new(rt, shutdown),
+            connect,
+            store,
+        }
+    }
+
+    /// Instance `id` of the agent named `agent`, its turns set up by
+    /// `setup()`, created with `data` (as JSON); [`Error::InstanceDataConflict`]
+    /// when it exists with other data. Its actor starts nothing until its
+    /// first call.
+    pub(crate) fn get(
+        &self,
+        agent: String,
+        id: InstanceId,
+        setup: impl FnOnce() -> TurnSetup,
+        data: Value,
+    ) -> Result<AgentInstance> {
+        let key = (agent, id);
+        let data = Arc::new(data);
+        let conflict = |kept: &Arc<Value>, data: &Arc<Value>| {
+            if kept == data {
+                return Ok(());
+            }
+            let (agent, id) = key.clone();
+            Err(Error::InstanceDataConflict { agent, id })
+        };
+        let start = || {
+            Arc::new(Start {
+                name: key.0.clone(),
+                id: key.1.clone(),
+                setup: setup(),
+                data: Arc::clone(&data),
+                connect: self.connect.clone(),
+                store: self.store.clone(),
+            })
+        };
+        let r = self
+            .entities
+            .get(key.clone(), Arc::clone(&data), conflict, start)?;
+        Ok(AgentInstance { key, r })
+    }
+}
 
 /// One conversation with an agent, addressed by an id.
 ///
 /// A handle to the instance's actor: clones reach the same instance.
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
-    id: InstanceId,
-    /// The actor's inbox.
-    inbox: mpsc::Sender<Command>,
-    /// The actor's control channel, served before the inbox: aborts.
-    control: mpsc::Sender<Control>,
+    key: InstanceKey,
+    r: ActorRef<Command>,
 }
 
 impl AgentInstance {
-    /// Spawns the actor for instance `id` of the agent named `name`, its turns
-    /// set up by `setup` and its model connected by `connect`, created with
-    /// `data` (as JSON) and kept in `store`; `shutdown` cancelling stops it.
-    pub(crate) fn spawn(
-        name: String,
-        setup: TurnSetup,
-        connect: Connect,
-        id: InstanceId,
-        data: Value,
-        store: Store,
-        shutdown: &CancellationToken,
-    ) -> Self {
-        let (inbox, control) = InstanceActor::spawn(
-            name,
-            setup,
-            connect,
-            id.clone(),
-            data,
-            store,
-            shutdown.child_token(),
-        );
-        Self { id, inbox, control }
-    }
-
     /// The id that addresses this instance.
     #[must_use]
     pub fn id(&self) -> &InstanceId {
-        &self.id
+        &self.key.1
     }
 
     /// Submits `message`; returns a receipt, not the reply.
@@ -121,55 +164,49 @@ impl AgentInstance {
 
     /// Stops the running dispatch and drops every queued one; each settles as
     /// [`Outcome::Aborted`]. With nothing running or queued, does nothing.
-    ///
-    /// Served before dispatches and reads already sent.
     pub async fn abort(&self) -> Result<()> {
-        let (respond_to, response) = oneshot::channel();
-        let _ = self.control.send(respond_to).await;
-        // An actor that is gone, or stops before answering, has nothing left to abort.
-        response.await.unwrap_or(Ok(()))
+        self.r.stop();
+        self.actor_ask(|respond_to| Command::AbortQueued { respond_to })
+            .await
     }
 
     /// Submits `text`, asking for `structured` when given.
     async fn submit(&self, text: String, structured: Option<StructuredSpec>) -> Result<Receipt> {
         let dispatch_id = DispatchId::fresh();
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Dispatch {
+        self.actor_ask(|respond_to| Command::Dispatch {
             dispatch_id,
             text,
             structured,
             respond_to,
-        };
-        // A gone actor drops `respond_to` with the command: aborted, as below.
-        let _ = self.inbox.send(command).await;
-        response
-            .await
-            .unwrap_or_else(|_| Err(aborted(dispatch_id)))?;
+        })
+        .await?;
         Ok(Receipt { dispatch_id })
     }
 
     /// Waits for `dispatch_id` to settle and takes what it settled with.
     async fn settled(&self, dispatch_id: DispatchId) -> Result<SettledValue> {
-        let (respond_to, response) = oneshot::channel();
-        let command = Command::Read {
+        self.actor_ask(|respond_to| Command::Read {
             dispatch_id,
             respond_to,
-        };
-        let _ = self.inbox.send(command).await;
-        // An actor that is gone, or stops before answering (it panicked), counts as aborted.
-        response.await.unwrap_or_else(|_| Err(aborted(dispatch_id)))
+        })
+        .await
+    }
+
+    /// Sends the command `make` builds and waits for its answer;
+    /// [`Error::InstanceUnavailable`] when no actor answers.
+    async fn actor_ask<R>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<Result<R>>) -> Command,
+    ) -> Result<R> {
+        self.r.ask(make).await.unwrap_or_else(|| {
+            let (agent, id) = self.key.clone();
+            Err(Error::InstanceUnavailable { agent, id })
+        })
     }
 }
 
-fn aborted(dispatch_id: DispatchId) -> Error {
-    Error::Run {
-        outcome: Outcome::Aborted,
-        dispatch_id,
-    }
-}
-
-/// What an [`AgentInstance`] sends its actor, in order.
-#[derive(Debug)]
+/// What an [`AgentInstance`] sends its actor, in order; and what the actor
+/// pipes to itself.
 enum Command {
     Dispatch {
         dispatch_id: DispatchId,
@@ -183,6 +220,33 @@ enum Command {
         dispatch_id: DispatchId,
         respond_to: oneshot::Sender<Result<SettledValue>>,
     },
+    /// After a stop: settles every queued dispatch as aborted; answered once
+    /// stored.
+    AbortQueued {
+        respond_to: oneshot::Sender<Result<()>>,
+    },
+    /// A step of `dispatch` finished: the actor piped it to itself.
+    Stepped {
+        dispatch: DispatchId,
+        run: Box<Run>,
+        step: Result<Step, String>,
+    },
+    /// The lease is due for renewal: the actor scheduled it for itself.
+    Renew,
+}
+
+impl actors::Command for Command {
+    fn fail(self, error: Error) {
+        match self {
+            Self::Dispatch { respond_to, .. } | Self::AbortQueued { respond_to } => {
+                let _ = respond_to.send(Err(error));
+            }
+            Self::Read { respond_to, .. } => {
+                let _ = respond_to.send(Err(error));
+            }
+            Self::Stepped { .. } | Self::Renew => {}
+        }
+    }
 }
 
 /// What a dispatched message settled with when it produced a reply.
