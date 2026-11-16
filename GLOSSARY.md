@@ -52,6 +52,11 @@ The right to write one agent instance's event stream, held by one runtime at a t
 a runtime that has lost it writes nothing more to that stream.
 _Avoid_: Lock, ownership, claim
 
+**Incarnation**:
+One life of an agent instance in a runtime, from taking its lease to stopping; a failure ends it, and the next call to
+the instance starts a new one that continues the same event stream.
+_Avoid_: Session, generation, restart
+
 **Dispatch**:
 Submitting a message to an agent instance; it returns a receipt, not the reply.
 _Avoid_: Ask, send, prompt
