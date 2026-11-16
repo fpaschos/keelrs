@@ -2,9 +2,9 @@
 //! writer of its instance's event stream while it holds the stream's lease.
 //!
 //! Each start takes the lease and recovers the stream; the actor then runs
-//! dispatches one at a time, renews its lease on a scheduled
-//! [`Command::Renew`], and stops on any lease or store failure, releasing the
-//! lease. The library restarts it in place on the next command.
+//! dispatches one at a time, each as one piped [`Run`], renews its lease on a
+//! scheduled [`Command::Renew`], and stops on any lease or store failure,
+//! releasing the lease. The library starts it again on the next command.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,9 +15,9 @@ use tokio::sync::oneshot;
 use super::fold::Folded;
 use super::lease::Lease;
 use super::{Command, SettledValue};
-use crate::actors::{Actor, Context, Stop};
+use crate::actors::{Actor, ActorRef, Context, PipeGuard};
 use crate::agent::TurnSetup;
-use crate::agent::rig::{self, Connect, Message, Run, Step};
+use crate::agent::rig::{self, Connect, Message, PersistSink, Run};
 use crate::builtin::Caches;
 use crate::builtin::structured::{Structured, StructuredSpec};
 use crate::event::Event;
@@ -28,7 +28,7 @@ use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 const ABORTED: &str = "aborted";
 
 /// What the actor is built from: instance `id` of the agent named `name`.
-pub(super) struct Start {
+pub(super) struct InstanceArgs {
     pub(super) name: String,
     pub(super) id: InstanceId,
     pub(super) setup: TurnSetup,
@@ -41,11 +41,11 @@ pub(super) struct Start {
 
 /// Runs one agent instance's dispatches, one at a time, writing its events.
 pub(super) struct InstanceActor {
-    start: Arc<Start>,
+    args: Arc<InstanceArgs>,
     /// Held for the actor's life; its epoch goes with every append.
     lease: Lease,
-    /// Whether a step is piped and not yet back.
-    stepping: bool,
+    /// The running dispatch's run; dropping it cancels the run.
+    running: Option<PipeGuard>,
     /// Reads parked until their dispatch settles.
     waiting: HashMap<DispatchId, Vec<oneshot::Sender<Result<SettledValue>>>>,
     /// What this instance's built-in tools remember of its current sandbox; never stored.
@@ -53,18 +53,41 @@ pub(super) struct InstanceActor {
     folded: Folded,
 }
 
+/// The run's sink: asks the actor to store, one persist at a time.
+struct Writer {
+    me: ActorRef<Command>,
+    dispatch: DispatchId,
+}
+
+impl PersistSink for Writer {
+    async fn persist(&mut self, events: Vec<Event>) {
+        let dispatch = self.dispatch;
+        let stored = self
+            .me
+            .ask(|respond_to| Command::Persist {
+                dispatch,
+                events,
+                respond_to,
+            })
+            .await;
+        if stored.is_none() {
+            // The actor stopped; it drops this run.
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 impl Actor for InstanceActor {
     type Command = Command;
-    type Args = Arc<Start>;
+    type Args = Arc<InstanceArgs>;
 
     /// Takes the lease, recovers the stream and starts its first dispatch.
-    async fn start(start: &Arc<Start>, cx: &mut Context<Command>) -> Result<Self> {
-        let lease =
-            Lease::acquire(start.store.clone(), start.name.clone(), start.id.clone()).await?;
+    async fn start(args: Arc<InstanceArgs>, cx: &mut Context<Command>) -> Result<Self> {
+        let lease = Lease::acquire(args.store.clone(), args.name.clone(), args.id.clone()).await?;
         let mut actor = Self {
-            start: Arc::clone(start),
+            args,
             lease,
-            stepping: false,
+            running: None,
             waiting: HashMap::new(),
             caches: Caches::default(),
             folded: Folded::default(),
@@ -81,20 +104,23 @@ impl Actor for InstanceActor {
     async fn handle(&mut self, command: Command, cx: &mut Context<Command>) -> Result<()> {
         match command {
             Command::Dispatch {
+                data, respond_to, ..
+            } if *data != *self.args.data => {
+                let InstanceArgs { name, id, .. } = &*self.args;
+                let _ = respond_to.send(Err(Error::InstanceDataConflict {
+                    agent: name.clone(),
+                    id: id.clone(),
+                }));
+            }
+            Command::Dispatch {
                 dispatch_id,
                 text,
                 structured,
                 respond_to,
+                ..
             } => {
-                if let Err(cause) = self.admit(dispatch_id, &text, structured.as_ref()).await {
-                    cx.stash(Command::Dispatch {
-                        dispatch_id,
-                        text,
-                        structured,
-                        respond_to,
-                    });
-                    return Err(cause.into());
-                }
+                // An error drops `respond_to`: its caller gets `InstanceUnavailable`.
+                self.admit(dispatch_id, &text, structured.as_ref()).await?;
                 let _ = respond_to.send(Ok(()));
                 self.start_next(cx);
             }
@@ -118,18 +144,44 @@ impl Actor for InstanceActor {
                     let _ = respond_to.send(Err(Error::DispatchNotFound(dispatch_id)));
                 }
             }
-            Command::AbortQueued { respond_to } => {
-                if let Err(cause) = self.abort(cx).await {
-                    cx.stash(Command::AbortQueued { respond_to });
-                    return Err(cause.into());
-                }
+            Command::Abort { respond_to } => {
+                self.abort().await?;
                 let _ = respond_to.send(Ok(()));
             }
-            Command::Stepped {
+            Command::Persist {
                 dispatch,
-                run,
-                step,
-            } => self.stepped(dispatch, *run, step, cx).await?,
+                events,
+                respond_to,
+            } => {
+                // Its run was dropped by an abort: the dispatch settled. Its
+                // `respond_to` may still be open: the inbox is served before
+                // the dropped run is.
+                if self
+                    .folded
+                    .pending
+                    .front()
+                    .is_none_or(|a| a.dispatch != dispatch)
+                {
+                    return Ok(());
+                }
+                let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
+                self.append(events).await?;
+                // Tools start only after a guarded write.
+                self.lease.guard()?;
+                let _ = respond_to.send(());
+            }
+            Command::Finished {
+                dispatch,
+                completed,
+            } => {
+                self.running = None;
+                self.caches = completed.caches;
+                let result = completed
+                    .result
+                    .map_err(|reason| Outcome::Failed { reason });
+                self.settle(dispatch, completed.events, result).await?;
+                self.start_next(cx);
+            }
             Command::Renew => {
                 self.lease.renew().await?;
                 cx.schedule(self.lease.renew_at(), Command::Renew);
@@ -138,17 +190,29 @@ impl Actor for InstanceActor {
         Ok(())
     }
 
-    /// Releases the lease, then stashes the parked reads: a graceful stop
-    /// serves them at the next start, a failure fails them.
-    async fn stopped(self, _: &Stop, cx: &mut Context<Command>) {
+    /// Releases the lease, then answers the parked reads with the cause of a
+    /// failure; `running` drops after, cancelling the run.
+    async fn post_stop(self, cause: Option<&Error>, _: &mut Context<Command>) {
         self.lease.release().await;
-        for (dispatch_id, reads) in self.waiting {
-            for respond_to in reads {
-                cx.stash(Command::Read {
-                    dispatch_id,
-                    respond_to,
-                });
+        if let Some(cause) = cause {
+            for respond_to in self.waiting.into_values().flatten() {
+                let _ = respond_to.send(Err(cause.clone()));
             }
+        }
+    }
+
+    /// Answers `first` with the cause: `Held` tells the caller that another
+    /// runtime holds the instance.
+    fn start_failed(first: Command, cause: &Error) {
+        match first {
+            Command::Dispatch { respond_to, .. } | Command::Abort { respond_to } => {
+                let _ = respond_to.send(Err(cause.clone()));
+            }
+            Command::Read { respond_to, .. } => {
+                let _ = respond_to.send(Err(cause.clone()));
+            }
+            // Never first: the actor sends them to itself while it runs.
+            Command::Persist { .. } | Command::Finished { .. } | Command::Renew => {}
         }
     }
 }
@@ -163,7 +227,7 @@ impl InstanceActor {
     ) -> Result<(), StoreError> {
         let mut events = Vec::new();
         if self.folded.last == Seq::default() {
-            let data = Value::clone(&self.start.data);
+            let data = Value::clone(&self.args.data);
             events.push((None, Event::Created { data }));
         }
         let (text, structured) = (text.to_owned(), structured.cloned());
@@ -174,9 +238,9 @@ impl InstanceActor {
     /// Folds the stream from its first event, then settles a dispatch that
     /// was running when the last writer stopped.
     async fn recover(&mut self) -> Result<()> {
-        let Start {
+        let InstanceArgs {
             name, id, store, ..
-        } = &*self.start;
+        } = &*self.args;
         for stored in store.read(name, id, Seq::default()).await? {
             let (seq, dispatch) = (stored.seq, stored.dispatch);
             let event = Event::of(stored).map_err(|reason| StoreError::Failed { reason })?;
@@ -186,11 +250,11 @@ impl InstanceActor {
             .folded
             .data
             .as_ref()
-            .is_some_and(|data| *data != *self.start.data)
+            .is_some_and(|data| *data != *self.args.data)
         {
             return Err(Error::InstanceDataConflict {
-                agent: self.start.name.clone(),
-                id: self.start.id.clone(),
+                agent: self.args.name.clone(),
+                id: self.args.id.clone(),
             });
         }
         // The recovery seam: Restart replaces this with continuing the dispatch.
@@ -204,69 +268,32 @@ impl InstanceActor {
         Ok(())
     }
 
-    /// Starts the first stored dispatch, unless one is running.
+    /// Starts the first stored dispatch as a piped run, unless one is running;
+    /// it comes back as [`Command::Finished`].
     fn start_next(&mut self, cx: &mut Context<Command>) {
-        if self.stepping {
+        if self.running.is_some() {
             return;
         }
         let Some(next) = self.folded.pending.front().cloned() else {
             return;
         };
+        let dispatch = next.dispatch;
         let run = Run::new(
-            self.start.setup.clone(),
+            self.args.setup.clone(),
             next.text,
             self.folded.history.clone(),
             next.structured.map(Structured::from_spec),
             std::mem::take(&mut self.caches),
-            self.start.connect.clone(),
+            self.args.connect.clone(),
         );
-        self.step(next.dispatch, run, cx);
-    }
-
-    /// Takes `run`'s next step for `dispatch`; it comes back as
-    /// [`Command::Stepped`].
-    fn step(&mut self, dispatch: DispatchId, run: Run, cx: &mut Context<Command>) {
-        self.stepping = true;
-        cx.pipe_to_self(async move {
-            let (run, step) = run.step().await;
-            Command::Stepped {
+        let me = cx.self_ref();
+        self.running = Some(cx.pipe_to_self(async move {
+            let completed = run.drive(Writer { me, dispatch }).await;
+            Command::Finished {
                 dispatch,
-                run: Box::new(run),
-                step,
+                completed,
             }
-        });
-    }
-
-    /// Stores what `dispatch`'s step produced, then takes the next one,
-    /// unless the lease may have run out meanwhile.
-    async fn stepped(
-        &mut self,
-        dispatch: DispatchId,
-        run: Run,
-        step: Result<Step, String>,
-        cx: &mut Context<Command>,
-    ) -> Result<(), StoreError> {
-        self.stepping = false;
-        match step {
-            Ok(Step::Append(events)) => {
-                let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
-                self.append(events).await?;
-                self.lease.guard()?;
-                self.step(dispatch, run, cx);
-                return Ok(());
-            }
-            Ok(Step::Settled(events, value)) => {
-                self.caches = run.into_caches();
-                self.settle(dispatch, events, Ok(value)).await?;
-            }
-            Err(reason) => {
-                self.caches = run.into_caches();
-                self.settle(dispatch, Vec::new(), Err(Outcome::Failed { reason }))
-                    .await?;
-            }
-        }
-        self.start_next(cx);
-        Ok(())
+        }));
     }
 
     /// Stores `events` and how `dispatch` settled in one append, answering
@@ -285,14 +312,12 @@ impl InstanceActor {
         self.append(events).await
     }
 
-    /// Stops the running step and settles every queued dispatch as aborted.
-    async fn abort(&mut self, cx: &mut Context<Command>) -> Result<(), StoreError> {
+    /// Cancels the running dispatch and settles every queued one as aborted.
+    async fn abort(&mut self) -> Result<(), StoreError> {
         if self.folded.pending.is_empty() {
             return Ok(());
         }
-        if self.stepping {
-            cx.unpipe();
-            self.stepping = false;
+        if self.running.take().is_some() {
             // The run held them; what they remembered of the sandbox is lost.
             self.caches = Caches::default();
         }
@@ -307,9 +332,9 @@ impl InstanceActor {
     /// Stores `events` after the stream's last, then folds them and answers
     /// the reads they settle.
     async fn append(&mut self, events: Vec<(Option<DispatchId>, Event)>) -> Result<(), StoreError> {
-        let Start {
+        let InstanceArgs {
             name, id, store, ..
-        } = &*self.start;
+        } = &*self.args;
         let expected = self.folded.last;
         store
             .append(name, id, self.lease.epoch(), expected, &events)

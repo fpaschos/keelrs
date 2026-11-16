@@ -158,7 +158,7 @@ impl StoreBackend for Faulty {
 }
 
 #[tokio::test]
-async fn a_failed_append_fails_the_waiting_callers_and_the_next_call_re_attaches() {
+async fn a_failed_append_drops_the_queued_calls_and_the_next_call_re_attaches() {
     let backend = Faulty::default();
     let store = Store::new(backend.clone());
     let agent = agent(|cx| cx.use_tool(clock())).await;
@@ -182,14 +182,19 @@ async fn a_failed_append_fails_the_waiting_callers_and_the_next_call_re_attaches
         let instance = instance.clone();
         async move { instance.dispatch("Two").await }
     });
-    // Both wait on the actor, parked or queued.
+    // Both wait in the inbox, behind the held append.
     tokio::time::sleep(Duration::from_millis(50)).await;
     backend.fail();
 
-    let read = timeout(TIMEOUT, read).await.unwrap().unwrap();
-    assert!(is_fenced(&read), "got {read:?}");
-    let two = timeout(TIMEOUT, two).await.unwrap().unwrap();
-    assert!(is_fenced(&two), "got {two:?}");
+    // A failure drops the queued commands.
+    let read = timeout(TIMEOUT, read).await.unwrap().unwrap().map(drop);
+    let two = timeout(TIMEOUT, two).await.unwrap().unwrap().map(drop);
+    for queued in [read, two] {
+        assert!(
+            matches!(queued, Err(Error::InstanceUnavailable { .. })),
+            "got {queued:?}"
+        );
+    }
 
     // A new incarnation recovers the stream: "One" never started, so it runs again.
     let reply = ask(&instance, "Three").await;
@@ -281,11 +286,15 @@ async fn a_call_right_after_a_failed_dispatch_re_attaches() {
     let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
-    // The first append stores "One": it fails as soon as it is reached.
+    // The first append stores "One": it fails as soon as it is reached, and
+    // the failing command is dropped.
     backend.hold_append(1);
     backend.fail();
     let one = instance.dispatch("One").await;
-    assert!(is_fenced(&one), "got {one:?}");
+    assert!(
+        matches!(one, Err(Error::InstanceUnavailable { .. })),
+        "got {one:?}"
+    );
     let reply = ask(&instance, "Two").await;
     assert_eq!(reply.unwrap().text(), "Two.");
 }

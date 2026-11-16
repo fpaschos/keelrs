@@ -1,4 +1,5 @@
-//! The stepper: one dispatch's run on Rig's `AgentRun`, one step at a time.
+//! One dispatch's run on Rig's `AgentRun`: a plain future that persists what
+//! it produced through a [`PersistSink`] before it goes on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,13 +34,21 @@ use crate::skills::catalog::catalog;
 use crate::skills::tools::skill_tools;
 use crate::{Model, Tool};
 
-/// What one [`Run::step`] produced.
+/// Where a run stores what it produced before it goes on.
+///
+/// `persist` returns once `events` are stored. When they cannot be stored,
+/// it never returns: the owner handles the failure and drops the run.
+pub(crate) trait PersistSink: Send {
+    async fn persist(&mut self, events: Vec<Event>);
+}
+
+/// A run that completed: its last events (stored with `settled`), its result
+/// (a reply, or why it failed), and the caches for the next run.
 #[derive(Debug)]
-pub(crate) enum Step {
-    /// Events to append before the next step.
-    Append(Vec<Event>),
-    /// The run's last events, appended with its settled value.
-    Settled(Vec<Event>, SettledValue),
+pub(crate) struct RunCompleted {
+    pub(crate) events: Vec<Event>,
+    pub(crate) result: Result<SettledValue, String>,
+    pub(crate) caches: Caches,
 }
 
 /// Connects the declared model; shared by every run of a runtime.
@@ -58,8 +67,7 @@ pub(crate) fn connect_catalog() -> Connect {
 /// A tool call running; it yields its id and the answer.
 type Running = BoxFuture<'static, Result<(CallId, ToolAnswer), String>>;
 
-/// One dispatch's run on Rig's `AgentRun`, driven one [`step`](Self::step) at a
-/// time so the caller stores what each step produced before the next one.
+/// One dispatch's run on Rig's `AgentRun`, driven to its end by [`drive`](Self::drive).
 pub(crate) struct Run {
     setup: TurnSetup,
     pub(super) run: AgentRun,
@@ -70,15 +78,8 @@ pub(crate) struct Run {
     connect: Connect,
     /// Connected from the first turn setup and kept for every turn (use_model behaviour).
     connected: Option<(DynModel<Completion>, Option<Thinking>)>,
-    /// The last turn's tools, by name, and its sandbox, for the `CallTools`
-    /// step after its model call.
-    pinned: Option<(Arc<HashMap<String, Tool>>, Sandbox)>,
-    /// How many of the run's messages earlier steps produced.
+    /// How many of the run's messages were produced so far.
     produced: usize,
-    /// The step taken after a model call, to run next.
-    next: Option<AgentRunStep>,
-    /// The tool calls of the pending batch, started at the next step.
-    calls: FuturesUnordered<Running>,
 }
 
 impl Run {
@@ -110,94 +111,97 @@ impl Run {
             caches,
             connect,
             connected: None,
-            pinned: None,
             produced: 0,
-            next: None,
-            calls: FuturesUnordered::new(),
         }
     }
 
-    /// What the instance's built-in tools remember, once the run is over.
-    pub(crate) fn into_caches(self) -> Caches {
-        self.caches
+    /// Runs the dispatch to its end, persisting each model answer (B) and
+    /// each tool result (C) before it goes on.
+    pub(crate) async fn drive(mut self, mut sink: impl PersistSink) -> RunCompleted {
+        let (events, result) = match self.go(&mut sink).await {
+            Ok((events, value)) => (events, Ok(value)),
+            // The owner adds the closing events.
+            Err(reason) => (Vec::new(), Err(reason)),
+        };
+        RunCompleted {
+            events,
+            result,
+            caches: self.caches,
+        }
     }
 
-    /// Takes the next step: one model call (its answer), one finished tool
-    /// result, or the final answer; an error is the failure reason, as plain
-    /// text. Owned and `'static`, so the caller can keep it across awaits.
-    pub(crate) async fn step(mut self) -> (Self, Result<Step, String>) {
-        let step = self.advance().await;
-        (self, step)
-    }
-
-    async fn advance(&mut self) -> Result<Step, String> {
+    /// The loop. Returns D: the last events and the settled value; an error
+    /// is the failure reason, as plain text.
+    async fn go(
+        &mut self,
+        sink: &mut impl PersistSink,
+    ) -> Result<(Vec<Event>, SettledValue), String> {
+        // The last turn's tools, by name, and its sandbox.
+        let mut pinned = None;
+        let mut step = self.next_step()?;
         loop {
-            // C: the batch's next result to finish.
-            if let Some(answered) = self.calls.next().await {
-                let (id, answer) = answered?;
-                self.run.answer(answer).map_err(|e| e.to_string())?;
-                let events = vec![Event::ToolResult(self.result_of(&id)?)];
-                if !self.calls.is_empty() {
-                    return Ok(Step::Append(events));
-                }
-                // Rig commits the batch's results as one message, produced above one by one.
-                self.produced = self.run.messages().len();
-                // A recorded result ends the dispatch once its whole batch has run.
-                return match self.structured.as_ref().and_then(Structured::recorded) {
-                    Some(value) => Ok(Step::Settled(
-                        events,
-                        SettledValue {
-                            text: String::new(),
-                            structured: Some(value),
-                        },
-                    )),
-                    None => Ok(Step::Append(events)),
-                };
-            }
-            let step = match self.next.take() {
-                Some(step) => step,
-                None => self.next_step()?,
-            };
-            match step {
+            step = match step {
                 AgentRunStep::CallModel {
                     prompt, history, ..
                 } => {
-                    self.call_model(&prompt, &history).await?;
-                    // B: the model's answer, once the run has taken it.
-                    self.next = Some(self.next_step()?);
-                    if let Some(AgentRunStep::Done(_)) = &self.next {
-                        continue;
+                    pinned = Some(self.call_model(&prompt, &history).await?);
+                    let next = self.next_step()?;
+                    // B, unless the answer is final: then it goes with D.
+                    if !matches!(next, AgentRunStep::Done(_)) {
+                        let events = self.produced();
+                        if !events.is_empty() {
+                            sink.persist(events).await;
+                        }
                     }
-                    let events = self.produced();
-                    if !events.is_empty() {
-                        return Ok(Step::Append(events));
-                    }
+                    next
                 }
                 AgentRunStep::CallTools { calls } => {
-                    let (tools, sandbox) = self
-                        .pinned
+                    let (tools, sandbox): &(Arc<HashMap<String, Tool>>, Sandbox) = pinned
                         .as_ref()
                         .ok_or("the run called tools before any turn setup")?;
                     // One reply's calls run concurrently; Rig commits them in call order.
                     // Each shares the turn's tools.
-                    for call in calls {
-                        let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
-                        self.calls.push(Box::pin(
-                            async move { answer(call, &tools, &sandbox).await },
-                        ));
+                    let mut running: FuturesUnordered<Running> = calls
+                        .into_iter()
+                        .map(|call| {
+                            let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
+                            Box::pin(async move { answer(call, &tools, &sandbox).await }) as Running
+                        })
+                        .collect();
+                    while let Some(answered) = running.next().await {
+                        let (id, answer) = answered?;
+                        self.run.answer(answer).map_err(|e| e.to_string())?;
+                        let open = !running.is_empty();
+                        let event = Event::ToolResult(self.result_of(&id, open)?);
+                        if !open {
+                            // Rig commits the batch's results as one message, produced above one by one.
+                            self.produced = self.run.messages().len();
+                            // A recorded result ends the dispatch once its whole batch
+                            // has run: the last result goes with D.
+                            if let Some(value) =
+                                self.structured.as_ref().and_then(Structured::recorded)
+                            {
+                                let value = SettledValue {
+                                    text: String::new(),
+                                    structured: Some(value),
+                                };
+                                return Ok((vec![event], value));
+                            }
+                        }
+                        // C
+                        sink.persist(vec![event]).await;
                     }
+                    self.next_step()?
                 }
                 AgentRunStep::Done(response) => {
+                    let value = SettledValue {
+                        text: response.output(),
+                        structured: None,
+                    };
                     // D: the final answer and settled together.
-                    return Ok(Step::Settled(
-                        self.produced(),
-                        SettledValue {
-                            text: response.output(),
-                            structured: None,
-                        },
-                    ));
+                    return Ok((self.produced(), value));
                 }
-            }
+            };
         }
     }
 
@@ -210,7 +214,7 @@ impl Run {
         })
     }
 
-    /// The run's messages no step has produced yet, as events.
+    /// The run's messages not produced yet, as events.
     fn produced(&mut self) -> Vec<Event> {
         let messages = &self.run.messages()[self.produced..];
         self.produced += messages.len();
@@ -220,8 +224,9 @@ impl Run {
             .collect()
     }
 
-    /// The result the run built for the call `id`.
-    fn result_of(&self, id: &CallId) -> Result<ToolResultPart, String> {
+    /// The result the run built for the call `id`; `open`: its batch still
+    /// has calls running.
+    fn result_of(&self, id: &CallId, open: bool) -> Result<ToolResultPart, String> {
         let find = |message: &RigMessage| match message {
             RigMessage::User { content } => content.iter().find_map(|c| match c {
                 UserContent::ToolResult(r) if r.call == *id => Some(ToolResultPart(r.clone())),
@@ -231,20 +236,21 @@ impl Run {
         };
         // A finished batch is the run's last message; an open one shows only
         // at the end of its full history, which Rig builds by copying.
-        let found = if self.calls.is_empty() {
-            self.run.messages().last().and_then(|m| find(m))
-        } else {
+        let found = if open {
             self.run.full_history().last().and_then(find)
+        } else {
+            self.run.messages().last().and_then(|m| find(m))
         };
         found.ok_or_else(|| format!("no result for tool call `{id}`"))
     }
 
-    /// Sets up the turn and calls the model once, leaving its answer with the run.
+    /// Sets up the turn and calls the model once, leaving its answer with the
+    /// run. Returns the turn's tools, by name, and its sandbox.
     async fn call_model(
         &mut self,
         prompt: &RigMessage,
         history: &[Arc<RigMessage>],
-    ) -> Result<(), String> {
+    ) -> Result<(Arc<HashMap<String, Tool>>, Sandbox), String> {
         let max_turns = self.setup.max_turns;
         // The agent function runs again before every turn (ADR 0004).
         let declared = self.setup.run();
@@ -280,7 +286,7 @@ impl Run {
                 )))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        self.pinned = Some((
+        let pinned = (
             Arc::new(
                 tools
                     .iter()
@@ -288,7 +294,7 @@ impl Run {
                     .collect(),
             ),
             sb,
-        ));
+        );
 
         let mut spec = RunSpec::new();
         // The skill catalog follows the instructions (How a skill reaches the model).
@@ -359,7 +365,7 @@ impl Run {
             run.retry_model_turn(RetryRequest::Feedback(REASK.to_owned()))
                 .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        Ok(pinned)
     }
 }
 

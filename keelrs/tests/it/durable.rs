@@ -65,14 +65,17 @@ async fn other_data_for_a_stored_instance_conflicts_at_dispatch() {
         matches!(conflict, Err(Error::InstanceDataConflict { .. })),
         "got {conflict:?}"
     );
-    // Calls queued while a new incarnation starts get the conflict too.
+    // The call that starts a new incarnation gets the conflict; the calls
+    // queued behind it are dropped with the failed start.
     let (a, b) = tokio::join!(instance.dispatch("A"), instance.dispatch("B"));
-    for queued in [a, b] {
-        assert!(
-            matches!(queued, Err(Error::InstanceDataConflict { .. })),
-            "got {queued:?}"
-        );
-    }
+    assert!(
+        matches!(a, Err(Error::InstanceDataConflict { .. })),
+        "got {a:?}"
+    );
+    assert!(
+        matches!(b, Err(Error::InstanceUnavailable { .. })),
+        "got {b:?}"
+    );
 }
 
 #[tokio::test]

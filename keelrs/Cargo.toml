@@ -30,6 +30,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "fs", "process", "io-util", "net"] }
 tokio-util.workspace = true
+trait-variant.workspace = true
 uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]

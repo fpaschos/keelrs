@@ -20,7 +20,8 @@ pub enum Error {
     /// An instance was asked for by a blank id.
     #[error("instance id is blank")]
     InvalidInstanceId(InstanceId),
-    /// An existing instance was asked for with data other than it was created with.
+    /// A dispatch went to an existing instance through a handle with data
+    /// other than the instance was created with.
     #[error("instance `{id}` of agent `{agent}` exists with other data")]
     InstanceDataConflict {
         /// The agent's name.
@@ -38,9 +39,10 @@ pub enum Error {
         /// Why serialization failed, as plain text.
         reason: String,
     },
-    /// No actor answered for the instance: its runtime was dropped.
+    /// No actor answered for the instance: the runtime was dropped, or the
+    /// incarnation stopped (a failure drops its queued commands).
     #[error(
-        "instance `{id}` of agent `{agent}` did not answer: its runtime was dropped, or its actor failed"
+        "no actor answered for instance `{id}` of agent `{agent}`: the runtime was dropped, or the incarnation stopped"
     )]
     InstanceUnavailable {
         /// The agent's name.
