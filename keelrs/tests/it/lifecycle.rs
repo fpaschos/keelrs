@@ -1,6 +1,7 @@
 //! An instance's actor lives one incarnation: it ends on a lease or store
-//! failure, failing its callers with the cause and releasing its lease, and
-//! the next call on the same `AgentInstance` re-attaches a new one.
+//! failure. It releases its lease, answers its parked reads with the cause
+//! and drops its queued calls. The next call on the same `AgentInstance`
+//! starts a new incarnation.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -263,7 +264,7 @@ async fn a_held_instance_is_unavailable_once_its_runtime_drops() {
 }
 
 #[tokio::test]
-async fn a_call_right_after_a_failed_dispatch_re_attaches() {
+async fn a_call_right_after_a_failed_dispatch_starts_a_new_incarnation() {
     let backend = Faulty::default();
     let store = Store::new(backend.clone());
     let agent = agent(|_| {}).await;

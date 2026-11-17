@@ -107,10 +107,15 @@ impl AgentInstance {
     /// Submits `message`; returns a receipt, not the reply.
     ///
     /// The message is stored before the receipt returns, and runs after those
-    /// dispatched before it. A store error, or another runtime holding the
-    /// instance, shows up here; a model or connect error on [`read`](Self::read).
+    /// dispatched before it. A model or connect error shows up on
+    /// [`read`](Self::read).
+    ///
     /// Fails with [`Error::InstanceDataConflict`] when the instance exists
-    /// with other data than this handle's.
+    /// with other data than this handle's. When this call starts the
+    /// instance, a failed start shows up here with its cause (for example
+    /// another runtime holding the instance). When storing the message
+    /// fails, the incarnation stops and this call fails with
+    /// [`Error::InstanceUnavailable`]; the next call starts a new one.
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
         self.submit(message.into(), None).await
     }
