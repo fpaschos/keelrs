@@ -158,7 +158,7 @@ impl StoreBackend for Faulty {
 }
 
 #[tokio::test]
-async fn a_failed_append_drops_the_queued_calls_and_the_next_call_re_attaches() {
+async fn a_failed_persist_drops_the_queued_calls_and_a_new_incarnation_runs_the_dispatch_again() {
     let backend = Faulty::default();
     let store = Store::new(backend.clone());
     let agent = agent(|cx| cx.use_tool(clock())).await;
@@ -169,32 +169,24 @@ async fn a_failed_append_drops_the_queued_calls_and_the_next_call_re_attaches() 
     let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
-    // The second append stores the first step: it waits, then fails.
+    // The second append persists the run's first model answer: it waits, then fails.
     backend.hold_append(2);
     let one = instance.dispatch("One").await.unwrap();
     backend.reached().await;
-    let read = tokio::spawn({
-        let instance = instance.clone();
-        let one = one.clone();
-        async move { instance.read(&one).await }
-    });
     let two = tokio::spawn({
         let instance = instance.clone();
         async move { instance.dispatch("Two").await }
     });
-    // Both wait in the inbox, behind the held append.
+    // "Two" waits in the inbox, behind the held append.
     tokio::time::sleep(Duration::from_millis(50)).await;
     backend.fail();
 
-    // A failure drops the queued commands.
-    let read = timeout(TIMEOUT, read).await.unwrap().unwrap().map(drop);
-    let two = timeout(TIMEOUT, two).await.unwrap().unwrap().map(drop);
-    for queued in [read, two] {
-        assert!(
-            matches!(queued, Err(Error::InstanceUnavailable { .. })),
-            "got {queued:?}"
-        );
-    }
+    // The failure stops the incarnation, which drops its queued calls.
+    let two = timeout(TIMEOUT, two).await.unwrap().unwrap();
+    assert!(
+        matches!(two, Err(Error::InstanceUnavailable { .. })),
+        "got {two:?}"
+    );
 
     // A new incarnation recovers the stream: "One" never started, so it runs again.
     let reply = ask(&instance, "Three").await;
