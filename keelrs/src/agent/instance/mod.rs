@@ -3,7 +3,7 @@
 //!
 //! The actor is the only writer of its instance's event stream, while it
 //! holds the stream's lease. It stores each dispatch before returning its
-//! receipt, runs dispatches one at a time, each as one piped [`Run`] that
+//! receipt, runs dispatches one at a time, each as one piped [`Run`](crate::agent::rig::Run) that
 //! stores what it produced through the actor before it goes on, and answers
 //! reads from what the stream adds up to ([`fold::Folded`]).
 //!
@@ -29,8 +29,6 @@ use self::actor::{InstanceActor, InstanceArgs};
 use crate::actors::ActorRef;
 use crate::actors::entity::Entities;
 use crate::agent::TurnSetup;
-#[cfg(doc)]
-use crate::agent::rig::Run;
 use crate::agent::rig::{Connect, RunCompleted};
 use crate::builtin::structured::StructuredSpec;
 use crate::event::Event;

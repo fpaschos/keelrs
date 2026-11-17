@@ -9,7 +9,8 @@ use serde_json::json;
 use tokio::time::timeout;
 
 use crate::support::{
-    TIMEOUT, agent, clock, is_aborted, is_failed, once_free, runtime_on, until_requests,
+    TIMEOUT, agent, clock, is_aborted, is_failed, is_unavailable, once_free, runtime_on,
+    until_requests,
 };
 
 /// An agent whose every run fails at once: it never calls `use_model`.
@@ -72,10 +73,7 @@ async fn other_data_for_a_stored_instance_conflicts_at_dispatch() {
         matches!(a, Err(Error::InstanceDataConflict { .. })),
         "got {a:?}"
     );
-    assert!(
-        matches!(b, Err(Error::InstanceUnavailable { .. })),
-        "got {b:?}"
-    );
+    assert!(is_unavailable(&b), "got {b:?}");
 }
 
 #[tokio::test]

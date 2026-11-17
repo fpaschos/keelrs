@@ -61,11 +61,10 @@ struct Writer {
 
 impl PersistSink for Writer {
     async fn persist(&mut self, events: Vec<Event>) {
-        let dispatch = self.dispatch;
         let stored = self
             .me
             .ask(|respond_to| Command::Persist {
-                dispatch,
+                dispatch: self.dispatch,
                 events,
                 respond_to,
             })
@@ -105,12 +104,8 @@ impl Actor for InstanceActor {
         match command {
             Command::Dispatch {
                 data, respond_to, ..
-            } if *data != *self.args.data => {
-                let InstanceArgs { name, id, .. } = &*self.args;
-                let _ = respond_to.send(Err(Error::InstanceDataConflict {
-                    agent: name.clone(),
-                    id: id.clone(),
-                }));
+            } if !Arc::ptr_eq(&data, &self.args.data) && *data != *self.args.data => {
+                let _ = respond_to.send(Err(self.data_conflict()));
             }
             Command::Dispatch {
                 dispatch_id,
@@ -164,8 +159,7 @@ impl Actor for InstanceActor {
                 {
                     return Ok(());
                 }
-                let events = events.into_iter().map(|e| (Some(dispatch), e)).collect();
-                self.append(events).await?;
+                self.append(tagged(dispatch, events)).await?;
                 // Tools start only after a guarded write.
                 self.lease.guard()?;
                 let _ = respond_to.send(());
@@ -218,6 +212,14 @@ impl Actor for InstanceActor {
 }
 
 impl InstanceActor {
+    /// The instance exists with other data than asked for.
+    fn data_conflict(&self) -> Error {
+        Error::InstanceDataConflict {
+            agent: self.args.name.clone(),
+            id: self.args.id.clone(),
+        }
+    }
+
     /// Stores a dispatch, after the instance's `created` when the stream is empty.
     async fn admit(
         &mut self,
@@ -252,10 +254,7 @@ impl InstanceActor {
             .as_ref()
             .is_some_and(|data| *data != *self.args.data)
         {
-            return Err(Error::InstanceDataConflict {
-                agent: self.args.name.clone(),
-                id: self.args.id.clone(),
-            });
+            return Err(self.data_conflict());
         }
         // The recovery seam: Restart replaces this with continuing the dispatch.
         if let Some(first) = self.folded.pending.front()
@@ -304,7 +303,7 @@ impl InstanceActor {
         events: Vec<Event>,
         result: Result<SettledValue, Outcome>,
     ) -> Result<(), StoreError> {
-        let mut events: Vec<_> = events.into_iter().map(|e| (Some(dispatch), e)).collect();
+        let mut events = tagged(dispatch, events);
         if result.is_err() {
             events.extend(closing(&self.folded.history, dispatch));
         }
@@ -356,6 +355,11 @@ impl InstanceActor {
         }
         Ok(())
     }
+}
+
+/// `events`, each tagged with `dispatch`.
+fn tagged(dispatch: DispatchId, events: Vec<Event>) -> Vec<(Option<DispatchId>, Event)> {
+    events.into_iter().map(|e| (Some(dispatch), e)).collect()
 }
 
 /// An "aborted" result for each tool call `history` leaves unanswered.

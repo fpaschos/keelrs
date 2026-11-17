@@ -6,14 +6,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use keelrs::InstanceId;
 use keelrs::store::{Epoch, Seq, Store, StoreBackend, StoreError, StoredEvent};
 use keelrs::testing::ScriptedModel;
-use keelrs::{Error, InstanceId};
 use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::{Instant, timeout};
 
-use crate::support::{TIMEOUT, agent, ask, clock, is_fenced, runtime_on, until_requests};
+use crate::support::{
+    TIMEOUT, agent, ask, clock, is_fenced, is_unavailable, runtime_on, until_requests,
+};
 
 /// One stream in memory, as the in-memory store keeps it, with failures the
 /// test switches on.
@@ -183,10 +185,7 @@ async fn a_failed_persist_drops_the_queued_calls_and_a_new_incarnation_runs_the_
 
     // The failure stops the incarnation, which drops its queued calls.
     let two = timeout(TIMEOUT, two).await.unwrap().unwrap();
-    assert!(
-        matches!(two, Err(Error::InstanceUnavailable { .. })),
-        "got {two:?}"
-    );
+    assert!(is_unavailable(&two), "got {two:?}");
 
     // A new incarnation recovers the stream: "One" never started, so it runs again.
     let reply = ask(&instance, "Three").await;
@@ -258,15 +257,9 @@ async fn a_held_instance_is_unavailable_once_its_runtime_drops() {
     drop(runtime);
 
     let dispatched = instance.dispatch("Hello").await;
-    assert!(
-        matches!(dispatched, Err(Error::InstanceUnavailable { .. })),
-        "got {dispatched:?}"
-    );
+    assert!(is_unavailable(&dispatched), "got {dispatched:?}");
     let aborted = instance.abort().await;
-    assert!(
-        matches!(aborted, Err(Error::InstanceUnavailable { .. })),
-        "got {aborted:?}"
-    );
+    assert!(is_unavailable(&aborted), "got {aborted:?}");
 }
 
 #[tokio::test]
@@ -283,10 +276,7 @@ async fn a_call_right_after_a_failed_dispatch_re_attaches() {
     backend.hold_append(1);
     backend.fail();
     let one = instance.dispatch("One").await;
-    assert!(
-        matches!(one, Err(Error::InstanceUnavailable { .. })),
-        "got {one:?}"
-    );
+    assert!(is_unavailable(&one), "got {one:?}");
     let reply = ask(&instance, "Two").await;
     assert_eq!(reply.unwrap().text(), "Two.");
 }
