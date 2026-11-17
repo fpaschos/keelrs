@@ -148,9 +148,7 @@ impl Actor for InstanceActor {
                 events,
                 respond_to,
             } => {
-                // Its run was dropped by an abort: the dispatch settled. Its
-                // `respond_to` may still be open: the inbox is served before
-                // the dropped run is.
+                // Stale: an abort settled its dispatch and dropped its run.
                 if self
                     .folded
                     .pending
@@ -185,7 +183,7 @@ impl Actor for InstanceActor {
     }
 
     /// Releases the lease, then answers the parked reads with the cause of a
-    /// failure; `running` drops after, cancelling the run.
+    /// failure.
     async fn post_stop(self, cause: Option<&Error>, _: &mut Context<Command>) {
         self.lease.release().await;
         if let Some(cause) = cause {

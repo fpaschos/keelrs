@@ -8,7 +8,7 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use super::{Actor, ActorRef, Context, PipeGuard, setup, spawn, spawn_with};
+use super::{Actor, ActorRef, Context, setup, spawn, spawn_with};
 use crate::{Error, Result};
 
 /// What the probe does with a piped future's guard.
@@ -51,7 +51,7 @@ impl Actor for Prober {
                 guard,
                 respond_to,
             } => {
-                let piped: PipeGuard = cx.pipe_to_self(future);
+                let piped = cx.pipe_to_self(future);
                 match guard {
                     Guard::Drop => drop(piped),
                     Guard::Detach => piped.detach(),

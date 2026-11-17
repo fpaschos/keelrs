@@ -156,7 +156,7 @@ impl Run {
                     next
                 }
                 AgentRunStep::CallTools { calls } => {
-                    let (tools, sandbox): &(Arc<HashMap<String, Tool>>, Sandbox) = pinned
+                    let (tools, sandbox) = pinned
                         .as_ref()
                         .ok_or("the run called tools before any turn setup")?;
                     // One reply's calls run concurrently; Rig commits them in call order.

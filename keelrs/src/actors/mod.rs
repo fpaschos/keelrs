@@ -15,8 +15,8 @@
 //!
 //! An actor's lifecycle, Akka's default: spawn → idle → [`Actor::start`] on
 //! the first command → [`Actor::handle`] each command → stop (after the
-//! current command) → [`Actor::post_stop`] → the library drops what was piped
-//! and scheduled, and the inbox → idle, or the end on shutdown. The next
+//! current command) → the library drops what was piped and scheduled, and the
+//! inbox → [`Actor::post_stop`] → idle, or the end on shutdown. The next
 //! command starts the actor again behind the same [`ActorRef`].
 
 pub(crate) mod entity;
@@ -134,7 +134,6 @@ enum System {
 /// Owns a future piped with [`Context::pipe_to_self`]: dropping it cancels
 /// the future.
 #[must_use = "dropping a PipeGuard cancels its future; call .detach() to let it run"]
-#[derive(Debug)]
 pub(crate) struct PipeGuard(Option<AbortHandle>);
 
 impl PipeGuard {
@@ -205,9 +204,6 @@ impl<C> Context<C> {
     /// the scheduled command once due, the inbox, then what was piped.
     async fn next(&mut self) -> Option<Next<C>> {
         loop {
-            if self.cancel.is_cancelled() {
-                return None;
-            }
             let due = self.timer.as_ref().map(|(at, _)| *at);
             let piped = select! {
                 biased;
@@ -234,14 +230,11 @@ impl<C> Context<C> {
         }
     }
 
-    /// Drops what was piped and scheduled.
+    /// Drops what was piped and scheduled, and the queued commands: their
+    /// callers get no answer.
     fn clear(&mut self) {
         self.piped.clear();
         self.timer = None;
-    }
-
-    /// Drops the queued commands: their callers get no answer.
-    fn drop_inbox(&mut self) {
         while self.inbox.try_recv().is_ok() {}
     }
 }
@@ -301,7 +294,6 @@ async fn run<A: Actor>(setup: Setup<A>, mut cx: Context<A::Command>) {
             Ok(actor) => actor,
             Err(cause) => {
                 cx.clear();
-                cx.drop_inbox();
                 A::start_failed(first, &cause);
                 continue;
             }
@@ -318,7 +310,6 @@ async fn run<A: Actor>(setup: Setup<A>, mut cx: Context<A::Command>) {
             };
         };
         cx.clear();
-        cx.drop_inbox();
         actor.post_stop(cause.as_ref(), &mut cx).await;
         if shutdown {
             return;
