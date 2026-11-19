@@ -65,6 +65,7 @@ impl Lease {
     }
 
     /// Gives the lease up, best-effort: unreleased, it runs out by itself.
+    /// So it returns no error: no caller could act on one.
     pub(super) async fn release(self) {
         let _ = self.store.release(&self.agent, &self.id, self.epoch).await;
     }
