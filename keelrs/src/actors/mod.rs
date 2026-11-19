@@ -13,11 +13,52 @@
 //! 3. **what they run**: plain futures, piped to the actor
 //!    ([`Context::pipe_to_self`]), that know no actor.
 //!
-//! An actor's lifecycle, Akka's default: spawn → idle → [`Actor::start`] on
-//! the first command → [`Actor::handle`] each command → stop (after the
-//! current command) → the library drops what was piped and scheduled, and the
-//! inbox → [`Actor::post_stop`] → idle, or the end on shutdown. The next
-//! command starts the actor again behind the same [`ActorRef`].
+//! # Lifecycle
+//!
+//! The library runs each actor in one task, for the life of its [`ActorRef`].
+//! The task goes through four states. No field holds the state: it is the
+//! place where the task waits in its loop.
+//!
+//! | State | The task waits on | Hook |
+//! |---|---|---|
+//! | **Idle** | the first command; a stop is ignored | — |
+//! | **Start** | building the actor from its [`Actor::Args`] | [`Actor::start`] |
+//! | **Serve** | the current command, then the next one | [`Actor::handle`] |
+//! | **Stop** | the actor's own cleanup | [`Actor::post_stop`] |
+//!
+//! - **Idle → Start.** The first command after the spawn, or after a stop,
+//!   starts the actor (lazy start). Commands sent during the start wait in
+//!   the inbox, in order.
+//! - **Start → Serve.** `start` returns the actor; it then serves the first
+//!   command.
+//! - **Start fails.** The library drops what was piped and scheduled, and the
+//!   inbox. It then calls [`Actor::start_failed`] with the first command and
+//!   the cause, and goes back to Idle.
+//! - **Serve.** The actor serves one command at a time, in this order: the
+//!   system lane, the scheduled command once due, the inbox, then the output
+//!   of a piped future ([`Context::pipe_to_self`]).
+//! - **Serve → Stop.** Three events stop the actor, always after the current
+//!   command:
+//!   - `handle` returns an error (the cause);
+//!   - [`ActorRef::stop`] (no cause);
+//!   - the runtime shuts down (no cause).
+//! - **Stop.** The library drops what was piped and scheduled, and the inbox:
+//!   their callers get no answer. It then calls `post_stop` with the cause.
+//!   The actor's fields drop when `post_stop` returns. The library drops the
+//!   inbox before any hook answers, so a caller that retries once it gets an
+//!   answer reaches the next start.
+//! - **Stop → Idle**, or the end of the task on shutdown. The next command
+//!   starts a new actor behind the same `ActorRef` (Akka's default stop).
+//!
+//! # What lives where
+//!
+//! - **[`Context`]** lives as long as the task, through every start. It holds
+//!   the mailbox (the inbox, the system lane, [`Context::self_ref`]) and the
+//!   cancel token. It also holds the piped futures and the scheduled command;
+//!   the library drops these two at each stop.
+//! - **The actor value** lives from `start` to `post_stop`. It holds its own
+//!   state. It decides which piped future to cancel: it keeps the future's
+//!   [`PipeGuard`], and a drop of the guard cancels the future.
 
 pub(crate) mod entity;
 
