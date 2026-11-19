@@ -3,14 +3,14 @@
 //!
 //! The actor is the only writer of its instance's event stream, while it
 //! holds the stream's lease. It stores each dispatch before returning its
-//! receipt, runs dispatches one at a time, step by step, storing what each
-//! step produced before the next, and answers reads from what the stream
-//! adds up to ([`fold::Folded`]).
+//! receipt, runs dispatches one at a time, each as one piped [`Run`](crate::agent::rig::Run) that
+//! stores what it produced through the actor before it goes on, and answers
+//! reads from what the stream adds up to ([`fold::Folded`]).
 //!
 //! This file holds the handle; `actor.rs` the actor; `fold.rs` the fold;
 //! `lease.rs` the lease the actor holds.
 //! The handle holds the actor's [`ActorRef`] for good: after the actor
-//! stops, the next call restarts it in place.
+//! stops, the next call starts it again in place.
 
 mod actor;
 mod fold;
@@ -25,21 +25,22 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use self::actor::{InstanceActor, Start};
+use self::actor::{InstanceActor, InstanceArgs};
+use crate::actors::ActorRef;
 use crate::actors::entity::Entities;
-use crate::actors::{self, ActorRef};
 use crate::agent::TurnSetup;
-use crate::agent::rig::{Connect, Run, Step};
+use crate::agent::rig::{Connect, RunCompleted};
 use crate::builtin::structured::StructuredSpec;
+use crate::event::Event;
 use crate::store::Store;
 use crate::{DispatchId, Error, InstanceId, Outcome, Result};
 
 /// Names an instance by its agent's name and its id.
 type InstanceKey = (String, InstanceId);
 
-/// Every instance's actor, by key, with the data (as JSON) it was created with.
+/// Every instance's actor, by key.
 pub(crate) struct Instances {
-    entities: Entities<InstanceKey, InstanceActor, Arc<Value>>,
+    entities: Entities<InstanceKey, InstanceActor>,
     /// Connects the model each run declares.
     connect: Connect,
     store: Store,
@@ -61,39 +62,27 @@ impl Instances {
     }
 
     /// Instance `id` of the agent named `agent`, its turns set up by
-    /// `setup()`, created with `data` (as JSON); [`Error::InstanceDataConflict`]
-    /// when it exists with other data. Its actor starts nothing until its
-    /// first call.
+    /// `setup`, created with `data` (as JSON). Its actor starts nothing until
+    /// its first call.
     pub(crate) fn get(
         &self,
         agent: String,
         id: InstanceId,
-        setup: impl FnOnce() -> TurnSetup,
+        setup: TurnSetup,
         data: Value,
-    ) -> Result<AgentInstance> {
+    ) -> AgentInstance {
         let key = (agent, id);
         let data = Arc::new(data);
-        let conflict = |kept: &Arc<Value>, data: &Arc<Value>| {
-            if kept == data {
-                return Ok(());
-            }
-            let (agent, id) = key.clone();
-            Err(Error::InstanceDataConflict { agent, id })
-        };
-        let start = || {
-            Arc::new(Start {
-                name: key.0.clone(),
-                id: key.1.clone(),
-                setup: setup(),
-                data: Arc::clone(&data),
-                connect: self.connect.clone(),
-                store: self.store.clone(),
-            })
-        };
-        let r = self
-            .entities
-            .get(key.clone(), Arc::clone(&data), conflict, start)?;
-        Ok(AgentInstance { key, r })
+        let args = Arc::new(InstanceArgs {
+            name: key.0.clone(),
+            id: key.1.clone(),
+            setup,
+            data: Arc::clone(&data),
+            connect: self.connect.clone(),
+            store: self.store.clone(),
+        });
+        let r = self.entities.get(key.clone(), args);
+        AgentInstance { key, data, r }
     }
 }
 
@@ -103,6 +92,8 @@ impl Instances {
 #[derive(Debug, Clone)]
 pub struct AgentInstance {
     key: InstanceKey,
+    /// The data (as JSON) this handle was given; checked on each dispatch.
+    data: Arc<Value>,
     r: ActorRef<Command>,
 }
 
@@ -116,14 +107,21 @@ impl AgentInstance {
     /// Submits `message`; returns a receipt, not the reply.
     ///
     /// The message is stored before the receipt returns, and runs after those
-    /// dispatched before it. A store error, or another runtime holding the
-    /// instance, shows up here; a model or connect error on [`read`](Self::read).
+    /// dispatched before it. A model or connect error shows up on
+    /// [`read`](Self::read).
+    ///
+    /// Fails with [`Error::InstanceDataConflict`] when the instance exists
+    /// with other data than this handle's. When this call starts the
+    /// instance, a failed start shows up here with its cause (for example
+    /// another runtime holding the instance). When storing the message
+    /// fails, the incarnation stops and this call fails with
+    /// [`Error::InstanceUnavailable`]; the next call starts a new one.
     pub async fn dispatch(&self, message: impl Into<String>) -> Result<Receipt> {
         self.submit(message.into(), None).await
     }
 
     /// [`dispatch`](Self::dispatch) then [`read`](Self::read): submits `message`
-    /// and waits for its reply.
+    /// and waits for its reply. Fails as both do.
     pub async fn ask(&self, message: impl Into<String>) -> Result<Reply> {
         let receipt = self.dispatch(message).await?;
         self.read(&receipt).await
@@ -165,8 +163,7 @@ impl AgentInstance {
     /// Stops the running dispatch and drops every queued one; each settles as
     /// [`Outcome::Aborted`]. With nothing running or queued, does nothing.
     pub async fn abort(&self) -> Result<()> {
-        self.r.stop();
-        self.actor_ask(|respond_to| Command::AbortQueued { respond_to })
+        self.actor_ask(|respond_to| Command::Abort { respond_to })
             .await
     }
 
@@ -177,6 +174,7 @@ impl AgentInstance {
             dispatch_id,
             text,
             structured,
+            data: Arc::clone(&self.data),
             respond_to,
         })
         .await?;
@@ -206,13 +204,15 @@ impl AgentInstance {
 }
 
 /// What an [`AgentInstance`] sends its actor, in order; and what the actor
-/// pipes to itself.
+/// and its run send to themselves.
 enum Command {
     Dispatch {
         dispatch_id: DispatchId,
         text: String,
         /// The structured result the message asks for, if any.
         structured: Option<StructuredSpec>,
+        /// The handle's instance data, checked against the instance's.
+        data: Arc<Value>,
         /// Answered once the dispatch is stored.
         respond_to: oneshot::Sender<Result<()>>,
     },
@@ -220,33 +220,25 @@ enum Command {
         dispatch_id: DispatchId,
         respond_to: oneshot::Sender<Result<SettledValue>>,
     },
-    /// After a stop: settles every queued dispatch as aborted; answered once
-    /// stored.
-    AbortQueued {
+    /// Cancels the running dispatch and settles every queued one as aborted;
+    /// answered once stored.
+    Abort {
         respond_to: oneshot::Sender<Result<()>>,
     },
-    /// A step of `dispatch` finished: the actor piped it to itself.
-    Stepped {
+    /// A running dispatch's events (B, C), sent by its run; answered once
+    /// stored.
+    Persist {
         dispatch: DispatchId,
-        run: Box<Run>,
-        step: Result<Step, String>,
+        events: Vec<Event>,
+        respond_to: oneshot::Sender<()>,
+    },
+    /// The run completed; piped, so dropping the actor's `running` drops it.
+    Finished {
+        dispatch: DispatchId,
+        completed: RunCompleted,
     },
     /// The lease is due for renewal: the actor scheduled it for itself.
     Renew,
-}
-
-impl actors::Command for Command {
-    fn fail(self, error: Error) {
-        match self {
-            Self::Dispatch { respond_to, .. } | Self::AbortQueued { respond_to } => {
-                let _ = respond_to.send(Err(error));
-            }
-            Self::Read { respond_to, .. } => {
-                let _ = respond_to.send(Err(error));
-            }
-            Self::Stepped { .. } | Self::Renew => {}
-        }
-    }
 }
 
 /// What a dispatched message settled with when it produced a reply.

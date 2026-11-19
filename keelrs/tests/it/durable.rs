@@ -9,7 +9,8 @@ use serde_json::json;
 use tokio::time::timeout;
 
 use crate::support::{
-    TIMEOUT, agent, clock, is_aborted, is_failed, once_free, runtime_on, until_requests,
+    TIMEOUT, agent, clock, is_aborted, is_failed, is_unavailable, once_free, runtime_on,
+    until_requests,
 };
 
 /// An agent whose every run fails at once: it never calls `use_model`.
@@ -65,14 +66,14 @@ async fn other_data_for_a_stored_instance_conflicts_at_dispatch() {
         matches!(conflict, Err(Error::InstanceDataConflict { .. })),
         "got {conflict:?}"
     );
-    // Calls queued while a new incarnation starts get the conflict too.
+    // The call that starts a new incarnation gets the conflict; the calls
+    // queued behind it are dropped with the failed start.
     let (a, b) = tokio::join!(instance.dispatch("A"), instance.dispatch("B"));
-    for queued in [a, b] {
-        assert!(
-            matches!(queued, Err(Error::InstanceDataConflict { .. })),
-            "got {queued:?}"
-        );
-    }
+    assert!(
+        matches!(a, Err(Error::InstanceDataConflict { .. })),
+        "got {a:?}"
+    );
+    assert!(is_unavailable(&b), "got {b:?}");
 }
 
 #[tokio::test]

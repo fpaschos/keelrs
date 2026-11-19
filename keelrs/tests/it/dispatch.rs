@@ -128,13 +128,16 @@ async fn an_existing_id_with_equal_data_continues_the_same_instance() {
 }
 
 #[tokio::test]
-async fn an_existing_id_with_other_data_fails() {
+async fn an_existing_id_with_other_data_fails_at_dispatch() {
     let agent = recorder(&Seen::default());
     let runtime = Runtime::start([&agent]).unwrap();
     runtime
         .instance_with(&agent, InstanceId::new("a"), Issue { number: 1 })
         .unwrap();
-    let result = runtime.instance_with(&agent, InstanceId::new("a"), Issue { number: 2 });
+    let other = runtime
+        .instance_with(&agent, InstanceId::new("a"), Issue { number: 2 })
+        .unwrap();
+    let result = other.dispatch("Hello").await;
     assert!(
         matches!(&result, Err(Error::InstanceDataConflict { agent, id })
             if agent == "recorder" && id.as_str() == "a"),

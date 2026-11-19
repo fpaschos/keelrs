@@ -69,10 +69,11 @@ impl Runtime {
 
     /// The instance `id` of `agent`, created with its frozen `data` on first
     /// use and continued after when `data` is equal (compared as serialized
-    /// JSON).
+    /// JSON). When the instance exists with other data, its
+    /// [`dispatch`](AgentInstance::dispatch) fails with
+    /// [`Error::InstanceDataConflict`].
     ///
-    /// Fails with [`Error::InstanceDataConflict`] when the instance already
-    /// exists with other data, and with [`Error::InvalidInstanceData`] when
+    /// Fails with [`Error::InvalidInstanceData`] when
     /// `data` does not serialize. Fails with [`Error::InvalidInstanceId`] on a
     /// blank id, and with [`Error::UnknownAgent`] unless `agent` is the very
     /// one given to [`Runtime::start`] (not just one with its name); the
@@ -107,8 +108,8 @@ impl Runtime {
             id: id.clone(),
             reason: e.to_string(),
         })?;
-        let setup = || TurnSetup::new(registered, id.clone(), data);
-        self.inner.instances.get(name, id.clone(), setup, json)
+        let setup = TurnSetup::new(registered, id.clone(), data);
+        Ok(self.inner.instances.get(name, id, setup, json))
     }
 }
 

@@ -1,19 +1,22 @@
 //! An instance's actor lives one incarnation: it ends on a lease or store
-//! failure, failing its callers with the cause and releasing its lease, and
-//! the next call on the same `AgentInstance` re-attaches a new one.
+//! failure. It releases its lease, answers its parked reads with the cause
+//! and drops its queued calls. The next call on the same `AgentInstance`
+//! starts a new incarnation.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use keelrs::InstanceId;
 use keelrs::store::{Epoch, Seq, Store, StoreBackend, StoreError, StoredEvent};
 use keelrs::testing::ScriptedModel;
-use keelrs::{Error, InstanceId};
 use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::{Instant, timeout};
 
-use crate::support::{TIMEOUT, agent, ask, clock, is_fenced, runtime_on, until_requests};
+use crate::support::{
+    TIMEOUT, agent, ask, clock, is_fenced, is_unavailable, runtime_on, until_requests,
+};
 
 /// One stream in memory, as the in-memory store keeps it, with failures the
 /// test switches on.
@@ -158,7 +161,7 @@ impl StoreBackend for Faulty {
 }
 
 #[tokio::test]
-async fn a_failed_append_fails_the_waiting_callers_and_the_next_call_re_attaches() {
+async fn a_failed_persist_drops_the_queued_calls_and_a_new_incarnation_runs_the_dispatch_again() {
     let backend = Faulty::default();
     let store = Store::new(backend.clone());
     let agent = agent(|cx| cx.use_tool(clock())).await;
@@ -169,27 +172,21 @@ async fn a_failed_append_fails_the_waiting_callers_and_the_next_call_re_attaches
     let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
-    // The second append stores the first step: it waits, then fails.
+    // The second append persists the run's first model answer: it waits, then fails.
     backend.hold_append(2);
     let one = instance.dispatch("One").await.unwrap();
     backend.reached().await;
-    let read = tokio::spawn({
-        let instance = instance.clone();
-        let one = one.clone();
-        async move { instance.read(&one).await }
-    });
     let two = tokio::spawn({
         let instance = instance.clone();
         async move { instance.dispatch("Two").await }
     });
-    // Both wait on the actor, parked or queued.
+    // "Two" waits in the inbox, behind the held append.
     tokio::time::sleep(Duration::from_millis(50)).await;
     backend.fail();
 
-    let read = timeout(TIMEOUT, read).await.unwrap().unwrap();
-    assert!(is_fenced(&read), "got {read:?}");
+    // The failure stops the incarnation, which drops its queued calls.
     let two = timeout(TIMEOUT, two).await.unwrap().unwrap();
-    assert!(is_fenced(&two), "got {two:?}");
+    assert!(is_unavailable(&two), "got {two:?}");
 
     // A new incarnation recovers the stream: "One" never started, so it runs again.
     let reply = ask(&instance, "Three").await;
@@ -261,19 +258,13 @@ async fn a_held_instance_is_unavailable_once_its_runtime_drops() {
     drop(runtime);
 
     let dispatched = instance.dispatch("Hello").await;
-    assert!(
-        matches!(dispatched, Err(Error::InstanceUnavailable { .. })),
-        "got {dispatched:?}"
-    );
+    assert!(is_unavailable(&dispatched), "got {dispatched:?}");
     let aborted = instance.abort().await;
-    assert!(
-        matches!(aborted, Err(Error::InstanceUnavailable { .. })),
-        "got {aborted:?}"
-    );
+    assert!(is_unavailable(&aborted), "got {aborted:?}");
 }
 
 #[tokio::test]
-async fn a_call_right_after_a_failed_dispatch_re_attaches() {
+async fn a_call_right_after_a_failed_dispatch_starts_a_new_incarnation() {
     let backend = Faulty::default();
     let store = Store::new(backend.clone());
     let agent = agent(|_| {}).await;
@@ -281,11 +272,12 @@ async fn a_call_right_after_a_failed_dispatch_re_attaches() {
     let runtime = runtime_on(&store, &agent, &model);
     let instance = runtime.instance(&agent, InstanceId::fresh()).unwrap();
 
-    // The first append stores "One": it fails as soon as it is reached.
+    // The first append stores "One": it fails as soon as it is reached, and
+    // the failing command is dropped.
     backend.hold_append(1);
     backend.fail();
     let one = instance.dispatch("One").await;
-    assert!(is_fenced(&one), "got {one:?}");
+    assert!(is_unavailable(&one), "got {one:?}");
     let reply = ask(&instance, "Two").await;
     assert_eq!(reply.unwrap().text(), "Two.");
 }

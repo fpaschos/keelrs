@@ -9,6 +9,7 @@ use super::*;
 use crate::agent::TurnSetup;
 use crate::builtin::Caches;
 use crate::builtin::structured::{FINISH_STRUCTURED, Structured, StructuredSpec};
+use crate::event::Event;
 use crate::{Agent, AgentContext, InstanceId};
 
 /// A plan of work.
@@ -30,7 +31,7 @@ async fn a_failed_model_turn_is_not_re_asked_as_a_missing_result() {
         String::new()
     });
     let mock = model.clone();
-    let mut run = Run::new(
+    let run = Run::new(
         TurnSetup::new(&agent, InstanceId::new("test"), ()),
         "Go".to_owned(),
         Vec::new(),
@@ -38,15 +39,17 @@ async fn a_failed_model_turn_is_not_re_asked_as_a_missing_result() {
         Caches::default(),
         Arc::new(move |_| Ok(mock.clone().erase())),
     );
-    let reason = loop {
-        let (next, step) = run.step().await;
-        run = next;
-        match step {
-            Ok(Step::Append(_)) => {}
-            Ok(Step::Settled(..)) => panic!("the run settled"),
-            Err(reason) => break reason,
-        }
-    };
+    let mut stored = Vec::new();
+    let completed = run.drive(&mut stored).await;
+    let reason = completed.result.expect_err("the run settled");
+    assert!(stored.is_empty(), "the failed turn stored {stored:?}");
     assert!(reason.contains("max_tokens"), "{reason}");
     assert_eq!(model.requests().len(), 1);
+}
+
+/// A sink that keeps what the run persisted.
+impl PersistSink for &mut Vec<Event> {
+    async fn persist(&mut self, events: Vec<Event>) {
+        self.extend(events);
+    }
 }
