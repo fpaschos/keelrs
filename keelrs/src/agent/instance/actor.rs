@@ -104,7 +104,7 @@ impl Actor for InstanceActor {
         match command {
             Command::Dispatch {
                 data, respond_to, ..
-            } if !Arc::ptr_eq(&data, &self.args.data) && *data != *self.args.data => {
+            } if data != self.args.data => {
                 let _ = respond_to.send(Err(self.data_conflict()));
             }
             Command::Dispatch {
