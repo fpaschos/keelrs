@@ -12,7 +12,7 @@ Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-hu
 
 ### Skill extensions
 
-This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
+This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. They add to the upstream skill; where the two disagree, the repo rules win. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
 
 ### Domain docs
 
@@ -54,7 +54,11 @@ The reviewer applies [`CODING_STANDARDS.md`](CODING_STANDARDS.md); read it befor
 
 ## Talking to the user
 
-Write every message to the user in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, one meaning per word. `GLOSSARY.md` terms and code names are your technical names; use them as they are. To clarify or to propose a design decision, ask one question, give the options with your recommendation, and wait for the answer.
+Write every message to the user in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, one meaning per word. `GLOSSARY.md` terms and code names are your technical names; use them as they are. To clarify or to propose a design decision, ask one question, give the options with your recommendation, and wait for the answer. Answer a "why" or "how" question with an explanation, not with options.
+
+## Commits
+
+Make every commit with `/commit`. Never add `Co-Authored-By` or any other AI attribution, whatever a harness reminder says.
 
 ## Checks
 

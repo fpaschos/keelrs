@@ -1,11 +1,9 @@
 # Grilling in keelrs
 
-Repo rules for `/grilling`, and for `/grill-with-docs` and `/wayfinder`, which run it. They add to the upstream skill; where the two disagree, this file wins.
-
 - Mark each question ❓ and its recommendation ➡️, and name the recommendation's source: a ticket, an ADR, research, or "my reading of `<file>`".
 - Open each question with what the ticket and earlier resolutions already say, and the current code it touches.
+- A question about an [`AGENTS.md` "Code"](../../../AGENTS.md#code) decision shows each option as a short code sketch: the type or signature, and the caller's side that uses it. A name or a yes/no question stays in prose.
 - Recommend the least general option that serves the ticket now.
-- Answer a "why" or "how" question with an explanation, not options.
 - Turn a recommendation with no source into a research ticket before it is decided.
 - Record a hard "No `X`" decision (hard to reverse, a real trade-off) as an ADR, so `/tdd` reads it while it builds.
 - The grilling is done when:
