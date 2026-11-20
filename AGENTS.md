@@ -12,7 +12,7 @@ Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-hu
 
 ### Skill extensions
 
-This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`, plus any `docs/agents/skills/<s>/*.md` whose first line `args: <regex>` matches the skill's arguments. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
+This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
 
 ### Domain docs
 
