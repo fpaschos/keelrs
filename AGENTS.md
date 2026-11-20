@@ -10,9 +10,9 @@ Issues and specs live in GitHub Issues on `fpaschos/keelrs`, via the `gh` CLI. S
 
 Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-human` → `human-ready`; plus `agent-complete` (agent finished its step, issue open, waiting on the user). See `docs/agents/triage-labels.md`.
 
-### Wayfinder
+### Skill extensions
 
-Rules for grilling, task tickets, review and tracker writes on a map. See `docs/agents/wayfinder.md`.
+This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`, plus any `docs/agents/skills/<s>/*.md` whose first line `args: <regex>` matches the skill's arguments. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
 
 ### Domain docs
 
