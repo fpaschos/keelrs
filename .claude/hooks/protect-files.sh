@@ -6,10 +6,9 @@
 
 set -uo pipefail
 
-command -v jq &>/dev/null || exit 0
-
 input=$(cat)
-tool=$(jq -r '.tool_name // empty' <<<"$input")
+[[ $input == *Cargo.* ]] || exit 0 # most calls: no Cargo file, no jq
+command -v jq &>/dev/null || exit 0
 
 deny_lock() {
   echo "Cargo.lock is generated: use cargo update / cargo add / cargo generate-lockfile (AGENTS.md)." >&2
@@ -25,17 +24,18 @@ ask_toml() {
   exit 0
 }
 
+IFS=$'\t' read -r tool target < <(jq -r \
+  '[.tool_name, (.tool_input.command // .tool_input.file_path // "")] | @tsv' <<<"$input")
+
 if [[ $tool == Bash ]]; then
-  cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
   # One pattern per write form; [^;&|]* keeps the match inside one command.
   writes='((sed|perl)[[:space:]][^;&|]*(-[a-zA-Z]*i|--in-place)[^;&|]*|(>|>>)[[:space:]]*|tee[[:space:]]+(-a[[:space:]]+)?)[^;&|[:space:]]*Cargo\.'
-  grep -Eq "${writes}lock" <<<"$cmd" && deny_lock
-  grep -Eq "${writes}toml" <<<"$cmd" && ask_toml
+  [[ $target =~ ${writes}lock ]] && deny_lock
+  [[ $target =~ ${writes}toml ]] && ask_toml
   exit 0
 fi
 
-file=$(jq -r '.tool_input.file_path // empty' <<<"$input")
-case "$(basename -- "$file")" in
+case "${target##*/}" in
   Cargo.lock) deny_lock ;;
   Cargo.toml) ask_toml ;;
 esac

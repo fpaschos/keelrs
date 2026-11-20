@@ -1,6 +1,6 @@
 # Wayfinder in keelrs
 
-Repo rules for `/wayfinder`. They add to the upstream skill; where the two disagree, this file wins. Grilling rules are in `grilling.md`, implementation rules in `implement.md` and `AGENTS.md` ("Code"), review rules in `CODING_STANDARDS.md`.
+Repo rules for `/wayfinder`. They add to the upstream skill; where the two disagree, this file wins. Review rules are in `CODING_STANDARDS.md`.
 
 ## The loop
 
@@ -24,7 +24,7 @@ A feature's last ticket is a task on the real codebase. A prototype comes first 
 
 - A review that changes a decision rewrites the grilling resolution and the task body in place, whole, to match the code, before the merge.
 - A PR closes the task it builds with `Closes #<n>`.
-- The PR reports the metrics before and after against the ticket's targets. A miss in the wrong direction is a question to the user before the merge.
+- A metric that misses the ticket's target in the wrong direction is a question to the user before the merge.
 
 ## Tracker writes
 

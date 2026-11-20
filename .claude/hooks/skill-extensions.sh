@@ -9,24 +9,17 @@ set -uo pipefail
 
 command -v jq &>/dev/null || exit 0
 
-input=$(cat)
-event=$(jq -r '.hook_event_name // empty' <<<"$input")
-if [[ $event == PostToolUse ]]; then
-  skill=$(jq -r '.tool_input.skill // empty' <<<"$input")
-else
-  skill=$(jq -r '.command_name // empty' <<<"$input")
-fi
+IFS=$'\t' read -r event skill session < <(jq -r \
+  '[.hook_event_name, (.tool_input.skill // .command_name // ""), (.session_id // "-")] | @tsv')
 skill=${skill##*:} # a plugin skill is named <plugin>:<skill>
 [[ $skill =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
 
-root=${CLAUDE_PROJECT_DIR:-$(jq -r '.cwd // "."' <<<"$input")}
 doc="docs/agents/skills/$skill.md"
-[[ -f "$root/$doc" ]] || exit 0
+[[ -f "$CLAUDE_PROJECT_DIR/$doc" ]] || exit 0
 
-printf '%s %s %s %s %s\n' "$(date -u +%FT%TZ)" "$(jq -r '.session_id // "-"' <<<"$input")" \
-  "$event" "$skill" "$doc" >>"$root/.claude/hooks/skill-extensions.log"
+printf '%s %s %s %s %s\n' "$(date -u +%FT%TZ)" "$session" "$event" "$skill" "$doc" \
+  >>"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-extensions.log"
 
-jq -n --arg e "$event" --rawfile d "$root/$doc" --arg p "$doc" \
-  '{hookSpecificOutput: {hookEventName: $e,
-    additionalContext: ("Repo rules for this skill (" + $p + "); they add to the skill, and where the two disagree, these win:\n\n" + $d)}}'
+jq -n --arg e "$event" --arg p "$doc" --rawfile d "$CLAUDE_PROJECT_DIR/$doc" \
+  '{hookSpecificOutput: {hookEventName: $e, additionalContext: ("Repo rules for this skill (" + $p + "):\n\n" + $d)}}'
 exit 0

@@ -13,7 +13,7 @@ The diff builds what the ticket and the decisions it links settle (`AGENTS.md` "
 
 ## Own abstractions
 
-Like things are built alike, on keelrs's own abstractions: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. Flag a parallel path: a second way to do what an existing abstraction does.
+Flag a parallel path, as `AGENTS.md` "Code" defines it.
 
 ## Ownership
 

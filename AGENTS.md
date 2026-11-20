@@ -48,7 +48,7 @@ Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSAR
 - **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
 - **Types and names**: a new type, trait or module, or a renamed one.
 - **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
-- **Parallel paths**: a second way to do what a keelrs abstraction already does. Generalize the abstraction, drop it, or propose a replacement.
+- **Parallel paths**: a second way to do what a keelrs abstraction already does. Like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. Generalize the abstraction, drop it, or propose a replacement.
 
 TDD tests are scaffolding: once the loop is green, unify them, move them to the agreed public seam, or delete the ones that only restate the code. The reviewer applies `CODING_STANDARDS.md`; read it before you open a PR.
 

@@ -2,7 +2,7 @@
 
 Repo rules for `/grilling`, and for `/grill-with-docs` and `/wayfinder`, which run it. They add to the upstream skill; where the two disagree, this file wins.
 
-- Ask one question per turn: ❓ the question, the options, ➡️ the recommendation and its source (a ticket, an ADR, research, or "my reading of `<file>`").
+- Mark each question ❓ and its recommendation ➡️, and name the recommendation's source: a ticket, an ADR, research, or "my reading of `<file>`".
 - Open each question with what the ticket and earlier resolutions already say, and the current code it touches.
 - Recommend the least general option that serves the ticket now.
 - Answer a "why" or "how" question with an explanation, not options.
