@@ -4,16 +4,16 @@ Judgement rules a reviewer applies to a diff. `/code-review` reads this file; so
 
 ## Ticket fidelity
 
-The diff builds what the ticket and the decisions it links settle (`AGENTS.md` "Code").
+The diff builds what the ticket and the decisions it links settle ([`AGENTS.md` "Code"](AGENTS.md#code)).
 
-- Flag every new or changed state, concurrency, type, name or contract that the ticket, an ADR, `GLOSSARY.md` or a linked resolution does not settle, unless the PR shows the user's approval.
+- Flag every design decision in [`AGENTS.md` "Code"](AGENTS.md#code) that the ticket, an ADR, `GLOSSARY.md` or a linked resolution does not settle, unless the PR shows the user's approval.
 - Flag every item of the ticket's code sketch that the diff leaves out.
 - Every "No `X`" decision in the ticket or its resolution holds: `X` is absent from the diff.
 - A changed doc comment on a `pub` item is a contract change.
 
 ## Own abstractions
 
-Flag a parallel path, as `AGENTS.md` "Code" defines it.
+Flag a parallel path, as [`AGENTS.md` "Code"](AGENTS.md#code) defines it.
 
 ## Ownership
 

@@ -42,7 +42,7 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 ## Code
 
-Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options before you write it, and build it once the user approves, also when a test seems to need it.
+Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options before you write it, and build it once the user approves.
 
 - **State**: a new field, or state moved or regrouped between types.
 - **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
@@ -50,7 +50,7 @@ Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSAR
 - **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
 - **Parallel paths**: a second way to do what a keelrs abstraction already does. Like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. Generalize the abstraction, drop it, or propose a replacement.
 
-TDD tests are scaffolding: once the loop is green, unify them, move them to the agreed public seam, or delete the ones that only restate the code. The reviewer applies `CODING_STANDARDS.md`; read it before you open a PR.
+The reviewer applies [`CODING_STANDARDS.md`](CODING_STANDARDS.md); read it before you open a PR.
 
 ## Talking to the user
 
