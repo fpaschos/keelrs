@@ -10,6 +10,10 @@ Issues and specs live in GitHub Issues on `fpaschos/keelrs`, via the `gh` CLI. S
 
 Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-human` → `human-ready`; plus `agent-complete` (agent finished its step, issue open, waiting on the user). See `docs/agents/triage-labels.md`.
 
+### Skill extensions
+
+This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
+
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, shared by all crates. See `docs/agents/domain.md`.
@@ -38,16 +42,15 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 ## Code
 
-Build on keelrs's own abstractions, so like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. When one does not fit, generalize it, drop it, or propose a replacement to the user before writing a parallel path.
-
-Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options and build it once the user approves.
+Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options before you write it, and build it once the user approves, also when a test seems to need it.
 
 - **State**: a new field, or state moved or regrouped between types.
 - **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
 - **Types and names**: a new type, trait or module, or a renamed one.
 - **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
+- **Parallel paths**: a second way to do what a keelrs abstraction already does. Like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. Generalize the abstraction, drop it, or propose a replacement.
 
-Tests follow the design, never shape it. A behaviour no agreed seam reaches waits for one, or goes untested for now; wrapping existing state in a new type so a test can reach it is the antipattern. TDD tests are scaffolding: once the loop is green, review them: unify, move to the agreed public seam, or delete the ones that only restate the code.
+TDD tests are scaffolding: once the loop is green, unify them, move them to the agreed public seam, or delete the ones that only restate the code. The reviewer applies `CODING_STANDARDS.md`; read it before you open a PR.
 
 ## Talking to the user
 

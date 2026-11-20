@@ -66,7 +66,7 @@ context paragraph.
 
 **Tags:** `feat` `fix` `refactor` `docs` `test` `chore` `perf`
 
-**Scopes in this repo:** crate scopes (`keelrs`, `examples`) or doc scopes (`docs`, `agents`). Omit scope for repo-wide changes (e.g. `docs:`, `chore:`).
+**Scopes:** the ones recent commits use (`git log`), unless `AGENTS.md` lists them. Omit scope for repo-wide changes (e.g. `docs:`, `chore:`).
 
 **Rules:**
 
