@@ -23,7 +23,7 @@ Ask which stop the user is on. Then take each message as one of three kinds:
 
 - **Question** (why, how, what does this do): explain from the code, citing `file:line`. A question is never a decision: answer with the explanation alone.
 - **Smell** (something in the code looks duplicated, over-guarded, misplaced or out of line with its siblings): **hunt** that smell across the whole change, following [`reference/HUNT.md`](reference/HUNT.md). Report the hits, the options and your recommendation, then ask one question and wait for the answer before editing.
-- **Decision**: build it, keeping behaviour unless the user asked to change it. One logical change per commit: run the `AGENTS.md` checks, report its metrics before and after, commit with the repo's commit skill and push. Tests follow the design: one test per behaviour, at the seam that reaches it, with no coverage lost.
+- **Decision**: build it, keeping behaviour unless the user asked to change it. One logical change per commit: run the `AGENTS.md` checks, report its metrics before and after, commit with the repo's commit skill and push. Tests follow the repo's `CODING_STANDARDS.md`, with no coverage lost.
 
 A finding that belongs to a later ticket goes to that ticket once the user agrees, its body rewritten in place.
 

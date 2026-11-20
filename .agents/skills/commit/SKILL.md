@@ -66,7 +66,9 @@ context paragraph.
 
 **Tags:** `feat` `fix` `refactor` `docs` `test` `chore` `perf`
 
-**Scopes in this repo:** crate scopes (`keelrs`, `examples`) or doc scopes (`docs`, `agents`). Omit scope for repo-wide changes (e.g. `docs:`, `chore:`).
+**Scopes:** the ones recent commits use (`git log`), unless `AGENTS.md` lists them. Omit scope for repo-wide changes (e.g. `docs:`, `chore:`).
+
+**Tickets:** reference them as the repo's `docs/agents/issue-tracker.md` says (e.g. `Refs #<n>`), never with a keyword that closes them on merge.
 
 **Rules:**
 

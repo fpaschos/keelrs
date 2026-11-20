@@ -8,7 +8,7 @@ Less code, less liability: every line is something to read, test and maintain. C
 
 For a diff target, first find the ticket the branch implements, taking the first that turns one up: the user's argument, the conversation so far, issue references in the branch's commit messages (`Refs #6`, `Closes #6`), the branch name, the open PR's description. Fetch it and list its acceptance criteria; those and all existing tests must still hold. If no ticket turns up, ask; with none, and for a named target, the tests are the only bar.
 
-Read each target file whole for context, but cut only lines in the target. Hunt these smells (Fowler's names, each a judgement call; the repo's documented code style overrides any line saving):
+Read each target file whole for context, but cut only lines in the target. Hunt these smells (Fowler's names, each a judgement call) and the rules in the repo's `CODING_STANDARDS.md`; a documented standard (`CODING_STANDARDS.md`, then `AGENTS.md`) overrides any line saving:
 - **Speculative Generality** (YAGNI): code the ticket does not require, such as checks, heuristics, parameters, or guards against your own repo's scripts.
 - **Dead Code**: unused imports, exports, branches and parameters.
 - **Duplicated Code**: two fields, helpers or branches that do the same thing; merge them when the merge is shorter.
