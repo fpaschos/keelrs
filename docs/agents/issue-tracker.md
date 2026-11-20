@@ -40,8 +40,6 @@ gh issue edit <n> --remove-label agent-ready --add-label agent-complete
 gh issue comment <n> --body "<what was done, where (branch/PR), and what the user needs to do next>"
 ```
 
-In PRs, reference tickets with `Refs #<n>`, not `Closes #<n>`, so merging does not close them.
-
 ## When a skill says "fetch the relevant ticket"
 
 Read it as in **Read an issue** above.

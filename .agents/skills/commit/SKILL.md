@@ -68,8 +68,6 @@ context paragraph.
 
 **Scopes:** the ones recent commits use (`git log`), unless `AGENTS.md` lists them. Omit scope for repo-wide changes (e.g. `docs:`, `chore:`).
 
-**Tickets:** reference them as the repo's `docs/agents/issue-tracker.md` says (e.g. `Refs #<n>`), never with a keyword that closes them on merge.
-
 **Rules:**
 
 - Subject ≤72 chars, imperative (`add`, `drop`, `rename` — not `added`/`adds`). Match the case used in recent commits.

@@ -36,7 +36,7 @@ A feature's last ticket is a task on the real codebase. A prototype comes first 
 ## Review and close
 
 - A review that changes a decision rewrites the grilling resolution and the task body in place, whole, to match the code, before the merge.
-- PRs say `Refs #<n>`; the user closes tickets (see `issue-tracker.md`).
+- A PR closes the task it builds with `Closes #<n>`.
 - The PR reports the metrics before and after against the ticket's targets. A miss in the wrong direction is a question to the user before the merge.
 
 ## Tracker writes
