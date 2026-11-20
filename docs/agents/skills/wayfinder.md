@@ -1,6 +1,6 @@
 # Wayfinder in keelrs
 
-Repo rules for `/wayfinder`. They add to the upstream skill; where the two disagree, this file wins. Review rules are in `CODING_STANDARDS.md`.
+Review rules are in [`CODING_STANDARDS.md`](../../../CODING_STANDARDS.md).
 
 ## The loop
 

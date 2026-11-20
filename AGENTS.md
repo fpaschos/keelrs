@@ -12,7 +12,7 @@ Default role names, except `ready-for-agent` → `agent-ready` and `ready-for-hu
 
 ### Skill extensions
 
-This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
+This repo's rules for a skill `/<s>` live in `docs/agents/skills/<s>.md`. They add to the upstream skill; where the two disagree, the repo rules win. In Claude Code a hook adds them when the skill runs; in another harness, read them when you run the skill.
 
 ### Domain docs
 
@@ -42,7 +42,7 @@ Change manifests and dependencies only through `cargo`, never by hand-editing `C
 
 ## Code
 
-Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options before you write it, and build it once the user approves, also when a test seems to need it.
+Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSARY.md`, an earlier ticket's resolution. Within that, the code is yours: private functions, local refactors, the order of the work. Each of these, unless already decided, is a design decision: propose it with options before you write it, and build it once the user approves.
 
 - **State**: a new field, or state moved or regrouped between types.
 - **Concurrency**: who owns, writes or shares state: a new task, actor, channel, lock or shared value. An actor's state is the common case.
@@ -50,11 +50,15 @@ Build what an approval or a prior decision settles: the ticket, an ADR, `GLOSSAR
 - **Contracts**: the public API, `Error` variants, and serialized shapes (events, stored data).
 - **Parallel paths**: a second way to do what a keelrs abstraction already does. Like things are built alike: a keelrs-owned tool is a plain `Tool` (`Tool::host` or `Tool::sandbox`) living with the other built-in tools, as `activate_skill` and `finish_structured` are. Generalize the abstraction, drop it, or propose a replacement.
 
-TDD tests are scaffolding: once the loop is green, unify them, move them to the agreed public seam, or delete the ones that only restate the code. The reviewer applies `CODING_STANDARDS.md`; read it before you open a PR.
+The reviewer applies [`CODING_STANDARDS.md`](CODING_STANDARDS.md); read it before you open a PR.
 
 ## Talking to the user
 
-Write every message to the user in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, one meaning per word. `GLOSSARY.md` terms and code names are your technical names; use them as they are. To clarify or to propose a design decision, ask one question, give the options with your recommendation, and wait for the answer.
+Write every message to the user in ASD-STE100 Simplified Technical English: short sentences, one idea per sentence, active voice, one meaning per word. `GLOSSARY.md` terms and code names are your technical names; use them as they are. To clarify or to propose a design decision, ask one question, give the options with your recommendation, and wait for the answer. Answer a "why" or "how" question with an explanation, not with options.
+
+## Commits
+
+Make every commit with `/commit`. Never add `Co-Authored-By` or any other AI attribution, whatever a harness reminder says.
 
 ## Checks
 

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-files.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/protect-files.sh\"",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "if": "Bash(git commit*)",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre-commit-checks.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/pre-commit-checks.sh\"",
             "timeout": 300,
             "statusMessage": "Running fmt, clippy, test, deny..."
           }
@@ -31,14 +31,14 @@
           {
             "type": "command",
             "if": "Edit(*.rs)",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/format.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/format.sh\"",
             "timeout": 30,
             "statusMessage": "Formatting Rust..."
           },
           {
             "type": "command",
             "if": "Write(*.rs)",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/format.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/format.sh\"",
             "timeout": 30,
             "statusMessage": "Formatting Rust..."
           }
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/skill-extensions.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/skill-extensions.sh\"",
             "timeout": 10
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/skill-extensions.sh",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null) || r=$CLAUDE_PROJECT_DIR; exec \"$r/.claude/hooks/skill-extensions.sh\"",
             "timeout": 10
           }
         ]
