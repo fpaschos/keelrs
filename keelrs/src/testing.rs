@@ -66,6 +66,8 @@ impl ScriptedModel {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Request {
+    /// The id of the model the turn declared.
+    pub model: String,
     /// The preamble: the instructions, then the skill catalog.
     pub instructions: Option<String>,
     /// The history, then the prompt, one entry per part: a text as itself,

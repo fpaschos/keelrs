@@ -4,26 +4,40 @@
 use std::collections::HashMap;
 
 use rig_agent::run::{PendingToolCall, ToolAnswer};
-use rig_core::message::{CallId, ToolCall as RigToolCall, ToolFunction, ToolName};
-use rig_core::tool::feedback::arguments_refusal;
+use rig_core::message::{ToolCall as RigToolCall, ToolFunction, ToolName, UserContent};
+use rig_core::tool::feedback::{
+    arguments_refusal, invalid_arguments_feedback, tool_result_message,
+};
 use rig_core::tool::{ToolErrorKind, ToolExecutionError, ToolOutput, ToolResult};
 use serde_json::Value;
 
+use super::history::ToolResultPart;
 use crate::Tool;
 use crate::sandbox::Sandbox;
 use crate::tool::{Called, FailKind, Failed};
 
-/// Runs one call with its pinned tool and answers it, with the call's id; a model mistake is an
+/// A call's answer for Rig, and the result part Rig commits for it.
+pub(super) type Answered = (ToolAnswer, ToolResultPart);
+
+/// Runs one call with its pinned tool and answers it; a model mistake is an
 /// error result the model reads, never a failed run.
 pub(super) async fn answer(
     call: PendingToolCall,
     tools: &HashMap<String, Tool>,
     sandbox: &Sandbox,
-) -> Result<(CallId, ToolAnswer), String> {
+) -> Result<Answered, String> {
     let exec = match call {
         PendingToolCall::Execute(call) => call,
-        // Arguments that are not a JSON object: Rig's feedback asks for a retry.
-        PendingToolCall::Malformed(call) => return Ok((call.id().clone(), call.answer(None))),
+        // Arguments that are not a JSON object: Rig's default feedback asks for a retry.
+        PendingToolCall::Malformed(call) => {
+            let feedback = invalid_arguments_feedback(call.name().as_str(), call.raw_arguments());
+            let UserContent::ToolResult(part) =
+                tool_result_message(call.id().clone(), call.name().clone(), feedback)
+            else {
+                unreachable!("tool_result_message builds a tool result")
+            };
+            return Ok((call.answer(None), ToolResultPart(part)));
+        }
         other => return Err(format!("unsupported tool call {other:?}")),
     };
     // The run only emits calls the pinned turn setup declared.
@@ -32,7 +46,9 @@ pub(super) async fn answer(
         .ok_or_else(|| format!("tool \"{}\" was not declared this turn", exec.name()))?;
     let id = exec.id().wire().into_owned();
     let called = self::call(tool, exec.arguments(), id, sandbox).await;
-    Ok((exec.id().clone(), exec.answer(result(called))))
+    let result = result(called);
+    let part = ToolResultPart(exec.tool_call().answer(&result));
+    Ok((exec.answer(result), part))
 }
 
 /// What Rig is answered with for `called`: a string is text, `()` empty

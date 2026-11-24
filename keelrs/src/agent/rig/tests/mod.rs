@@ -20,6 +20,7 @@ use crate::sandbox::unused;
 use crate::tool::{FailKind, Failed};
 
 mod call;
+mod connect;
 mod structured;
 
 #[derive(Deserialize, JsonSchema)]

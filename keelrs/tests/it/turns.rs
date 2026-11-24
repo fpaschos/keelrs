@@ -2,10 +2,11 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use keelrs::sandbox::Sandbox;
 use keelrs::testing::ScriptedModel;
-use keelrs::{Tool, ToolCall};
+use keelrs::{Agent, AgentContext, Tool, ToolCall};
 use serde_json::{Value, json};
 use tokio::sync::Barrier;
 
@@ -125,4 +126,24 @@ async fn a_tool_may_take_a_name_keelrs_has_no_builtin_for() {
         let reply = scripted(&agent, &ScriptedModel::new().reply("Done."), "Go").await;
         assert!(reply.is_ok(), "{name}: {reply:?}");
     }
+}
+
+#[tokio::test]
+async fn each_turn_calls_the_model_it_declared() {
+    let dir = temp_dir();
+    let sb = open(&dir).await;
+    let turns = Arc::new(AtomicUsize::new(0));
+    let agent = Agent::new("scripted", move |cx: &mut AgentContext| {
+        let first = turns.fetch_add(1, Ordering::SeqCst) == 0;
+        cx.use_model(if first { "scripted/a" } else { "scripted/b" });
+        cx.use_sandbox(&sb).only([]);
+        cx.use_tool(clock());
+        String::new()
+    });
+    let model = ScriptedModel::new()
+        .calls([("c1", "current_time", json!({}))])
+        .reply("It is noon.");
+    scripted(&agent, &model, "Go").await.unwrap();
+    let models: Vec<String> = model.requests().into_iter().map(|r| r.model).collect();
+    assert_eq!(models, ["scripted/a", "scripted/b"]);
 }

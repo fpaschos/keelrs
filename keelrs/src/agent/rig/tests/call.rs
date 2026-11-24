@@ -1,7 +1,49 @@
 //! One call through the crate-private `rig::call`, the seam `answer` runs it with:
-//! arguments, decode errors and timeouts no public seam reaches alone.
+//! arguments, decode errors and timeouts no public seam reaches alone. And
+//! `answer`'s result part against the one Rig commits, which no public seam sees.
 
+use std::collections::{BTreeSet, HashMap};
+
+use rig_agent::run::{AgentRun, AgentRunStep, ModelTurn, TurnPolicy};
+use rig_core::completion::{AssistantContent, AssistantMessage, Usage};
+use rig_core::message::{
+    Message as RigMessage, ToolCall as RigToolCall, ToolFunction, ToolName, UserContent,
+};
+
+use super::super::call::answer;
 use super::*;
+
+#[tokio::test]
+async fn a_malformed_calls_part_is_the_result_rig_commits() {
+    let mut run = AgentRun::new("Go").max_turns(2);
+    assert!(matches!(
+        run.next_step(),
+        Ok(AgentRunStep::CallModel { .. })
+    ));
+    let name = ToolName::new("lookup_order").unwrap();
+    let call = RigToolCall::from_wire("c1", ToolFunction::parse(name, "{\"order_id\":"));
+    let policy = TurnPolicy::new(BTreeSet::from(["lookup_order".to_owned()]), None, None).unwrap();
+    let turn = ModelTurn::new(
+        AssistantMessage::default(),
+        vec![AssistantContent::ToolCall(call)],
+        Usage::default(),
+        policy,
+        json!({}),
+    );
+    run.model_response(turn).unwrap();
+    let Ok(AgentRunStep::CallTools { mut calls }) = run.next_step() else {
+        panic!("the run calls tools");
+    };
+    let (answer, part) = answer(calls.pop().unwrap(), &HashMap::new(), &unused())
+        .await
+        .unwrap();
+    run.answer(answer).unwrap();
+    let RigMessage::User { content } = run.messages().last().unwrap().as_ref() else {
+        panic!("the run committed a user message");
+    };
+    let committed: Vec<_> = content.iter().collect();
+    assert_eq!(committed, [&UserContent::ToolResult(part.0)]);
+}
 
 #[tokio::test]
 async fn a_call_gets_its_arguments_and_id_and_settles_to_its_value() {

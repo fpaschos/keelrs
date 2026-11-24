@@ -89,6 +89,9 @@ impl<D> AgentContext<D> {
     ///
     /// Call it exactly once per turn. No call, a second call or an empty id
     /// settles the dispatch as [`Outcome::Failed`](crate::Outcome::Failed).
+    ///
+    /// A model changed between turns is used from that turn on; the new
+    /// provider does not continue the other's reasoning, and the prompt cache misses.
     pub fn use_model(&mut self, model: impl Into<Model>) {
         self.declared.models.push(model.into());
     }
