@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
-use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use rig_agent::run::{
     AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PromptError,
@@ -20,7 +19,7 @@ use rig_core::completion::{
 use rig_core::message::{AssistantContent, Message as RigMessage, ToolName};
 use rig_core::operation::Completion;
 
-use super::call::{Answered, answer};
+use super::call::answer;
 use super::history::Message;
 use crate::agent::{SettledValue, TurnSetup};
 use crate::builtin::structured::{
@@ -63,9 +62,6 @@ pub(crate) fn connect_catalog() -> Connect {
             .map_err(|e| e.to_string())
     })
 }
-
-/// A tool call running; it yields the answer and its result part.
-type Running = BoxFuture<'static, Result<Answered, String>>;
 
 /// One dispatch's run on Rig's `AgentRun`, driven to its end by [`drive`](Self::drive).
 pub(crate) struct Run {
@@ -161,11 +157,11 @@ impl Run {
                         .ok_or("the run called tools before any turn setup")?;
                     // One reply's calls run concurrently; Rig commits them in call order.
                     // Each shares the turn's tools.
-                    let mut running: FuturesUnordered<Running> = calls
+                    let mut running: FuturesUnordered<_> = calls
                         .into_iter()
                         .map(|call| {
                             let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
-                            Box::pin(async move { answer(call, &tools, &sandbox).await }) as Running
+                            async move { answer(call, &tools, &sandbox).await }
                         })
                         .collect();
                     while let Some(answered) = running.next().await {
@@ -233,7 +229,7 @@ impl Run {
     ) -> Result<(Arc<HashMap<String, Tool>>, Sandbox), String> {
         let turn = self.set_up_turn()?;
         let model = self.connect(&turn.model)?;
-        let (response, policy) = call(model, &turn, prompt, history).await?;
+        let (response, policy) = call(model, &turn.spec, turn.definitions, prompt, history).await?;
         self.accept(&response, policy)?;
         self.reask_if_text(&response)?;
         Ok((turn.tools, turn.sandbox))
@@ -285,8 +281,8 @@ impl Run {
     /// Gives the run the model's answer. A call to a tool this turn did not
     /// declare is skipped with the names it did; its siblings are re-issued next turn.
     fn accept(&mut self, response: &CompletionResponse, policy: TurnPolicy) -> Result<(), String> {
-        let run = &mut self.run;
-        let mut outcome = run
+        let mut outcome = self
+            .run
             .model_response(ModelTurn::from_policy(response, policy))
             .map_err(|e| e.to_string())?;
         while let ModelTurnOutcome::NeedsResolution(invalid) = outcome {
@@ -298,7 +294,8 @@ impl Run {
                 "tool \"{}\" is not available; available tools: {available}",
                 invalid.tool_name
             ));
-            outcome = run
+            outcome = self
+                .run
                 .resolve_invalid_tool_call(skip)
                 .map_err(|e| e.to_string())?;
         }
@@ -308,26 +305,27 @@ impl Run {
     /// A text ending, when a structured result is asked for, is re-asked
     /// in the same run: the reply stays, the re-ask follows it.
     fn reask_if_text(&mut self, response: &CompletionResponse) -> Result<(), String> {
-        let failed = turn_failure(
-            &response.choice,
-            response.head().stop.as_ref(),
-            response.finish_reason().as_ref(),
-        )
-        .is_some();
-        let called = response
-            .choice
-            .iter()
-            .any(|item| matches!(item, AssistantContent::ToolCall(_)));
-        if self.structured.is_none() || failed || called {
+        if self.structured.is_none()
+            || turn_failure(
+                &response.choice,
+                response.head().stop.as_ref(),
+                response.finish_reason().as_ref(),
+            )
+            .is_some()
+            || response
+                .choice
+                .iter()
+                .any(|item| matches!(item, AssistantContent::ToolCall(_)))
+        {
             return Ok(());
         }
-        let max_turns = self.setup.max_turns;
         if self.reasks == MAX_STRUCTURED_REASKS {
             return Err(format!(
                 "ended without calling `{FINISH_STRUCTURED}` after {} re-asks",
                 self.reasks
             ));
         }
+        let max_turns = self.setup.max_turns;
         if self.run.turn() >= max_turns {
             return Err(format!(
                 "ended without calling `{FINISH_STRUCTURED}`: turn limit ({max_turns}) reached"
@@ -363,23 +361,18 @@ fn definitions(tools: &[Tool]) -> Result<Vec<Arc<ToolDefinition>>, String> {
         .collect()
 }
 
-/// Calls `model` once with `turn`'s request; returns its answer and the
-/// policy the run reads it by.
+/// Calls `model` once with a turn's `spec` and tool `definitions`; returns
+/// its answer and the policy the run reads it by.
 async fn call(
     model: &DynModel<Completion>,
-    turn: &Turn,
+    spec: &RunSpec,
+    definitions: Vec<Arc<ToolDefinition>>,
     prompt: &RigMessage,
     history: &[Arc<RigMessage>],
 ) -> Result<(CompletionResponse, TurnPolicy), String> {
-    let prepared = prepare_request(
-        &turn.spec,
-        &model.capabilities().completion,
-        history,
-        turn.definitions.clone(),
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
+    let capabilities = &model.capabilities().completion;
+    let prepared = prepare_request(spec, capabilities, history, definitions, None, None)
+        .map_err(|e| e.to_string())?;
     let policy = prepared.policy.clone();
     let response = model
         .call(prepared.apply(CompletionRequest::new(prompt.clone())))

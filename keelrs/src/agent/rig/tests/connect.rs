@@ -6,10 +6,6 @@ use std::sync::atomic::AtomicUsize;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 
 use super::*;
-use crate::agent::TurnSetup;
-use crate::builtin::Caches;
-use crate::event::Event;
-use crate::{Agent, AgentContext, InstanceId};
 
 #[tokio::test]
 async fn turns_that_declare_the_same_model_connect_it_once() {
@@ -17,20 +13,11 @@ async fn turns_that_declare_the_same_model_connect_it_once() {
         MockTurn::tool_call("c1", "lookup_order", json!({"order_id": "A1"})),
         MockTurn::text("Found it."),
     ]);
-    let agent = Agent::new("scripted", |cx: &mut AgentContext| {
-        cx.use_model("mock/model");
-        cx.use_sandbox(&unused()).only([]);
-        cx.use_tool(lookup_order());
-        String::new()
-    });
     let connections = Arc::new(AtomicUsize::new(0));
     let (mock, counted) = (model.clone(), connections.clone());
-    let run = Run::new(
-        TurnSetup::new(&agent, InstanceId::new("test"), ()),
-        "Go".to_owned(),
-        Vec::new(),
+    let run = mock_run(
+        vec![lookup_order()],
         None,
-        Caches::default(),
         Arc::new(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Ok(mock.clone().erase())
