@@ -169,8 +169,7 @@ impl Run {
                         self.run.answer(answer).map_err(|e| e.to_string())?;
                         let event = Event::ToolResult(part);
                         if running.is_empty() {
-                            // The batch is committed: Rig's history now holds its results as one
-                            // message. Its own event is decided in issue #47.
+                            // Rig committed the batch as one message; its event is decided in #47.
                             self.produced = self.run.messages().len();
                             // A recorded result ends the dispatch once its whole batch
                             // has run: the last result goes with D.

@@ -67,11 +67,8 @@ impl Script {
     pub(crate) fn connect(&self) -> Connect {
         let script = self.clone();
         Arc::new(move |model| {
-            let connection = Connection {
-                script: script.clone(),
-                model: model.id.clone(),
-            };
-            Ok(Model::new(MockScript::default(), connection).erase())
+            let (script, model) = (script.clone(), model.id.clone());
+            Ok(Model::new(MockScript::default(), Connection { script, model }).erase())
         })
     }
 
