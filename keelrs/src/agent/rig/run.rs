@@ -90,7 +90,6 @@ impl Run {
         caches: Caches,
         connect: Connect,
     ) -> Self {
-        let history: Vec<Arc<RigMessage>> = history.into_iter().map(|m| m.0).collect();
         // The footer is stored with the message it asks a structured result for.
         let text = match structured {
             Some(_) => format!("{text}\n\n{FOOTER}"),
@@ -111,10 +110,10 @@ impl Run {
         }
     }
 
-    /// Runs the dispatch to its end, persisting each model answer (B) and
-    /// each tool result (C) before it goes on.
+    /// Runs the dispatch to its end, persisting each model answer and each
+    /// tool result before it goes on.
     pub(crate) async fn drive(mut self, mut sink: impl PersistSink) -> RunCompleted {
-        let (events, result) = match self.go(&mut sink).await {
+        let (events, result) = match self.run_until_settled(&mut sink).await {
             Ok((events, value)) => (events, Ok(value)),
             // The owner adds the closing events.
             Err(reason) => (Vec::new(), Err(reason)),
@@ -126,9 +125,10 @@ impl Run {
         }
     }
 
-    /// The loop. Returns D: the last events and the settled value; an error
-    /// is the failure reason, as plain text.
-    async fn go(
+    /// Steps the run until the dispatch settles. Returns the last events,
+    /// which the owner stores with `settled`, and the settled value; an
+    /// error is the failure reason, as plain text.
+    async fn run_until_settled(
         &mut self,
         sink: &mut impl PersistSink,
     ) -> Result<(Vec<Event>, SettledValue), String> {
@@ -142,7 +142,7 @@ impl Run {
                 } => {
                     pinned = Some(self.call_model(&prompt, &history).await?);
                     let next = self.next_step()?;
-                    // B, unless the answer is final: then it goes with D.
+                    // Persist the answer, unless it is final: then it goes with the last events.
                     if !matches!(next, AgentRunStep::Done(_)) {
                         let events = self.produced();
                         if !events.is_empty() {
@@ -172,7 +172,7 @@ impl Run {
                             // Rig committed the batch as one message; its event is decided in #47.
                             self.produced = self.run.messages().len();
                             // A recorded result ends the dispatch once its whole batch
-                            // has run: the last result goes with D.
+                            // has run: the last result goes with the last events.
                             if let Some(value) =
                                 self.structured.as_ref().and_then(Structured::recorded)
                             {
@@ -183,7 +183,6 @@ impl Run {
                                 return Ok((vec![event], value));
                             }
                         }
-                        // C
                         sink.persist(vec![event]).await;
                     }
                     self.next_step()?
@@ -193,7 +192,7 @@ impl Run {
                         text: response.output(),
                         structured: None,
                     };
-                    // D: the final answer and settled together.
+                    // The final answer is a last event, stored with `settled`.
                     return Ok((self.produced(), value));
                 }
             };
@@ -215,7 +214,7 @@ impl Run {
         self.produced += messages.len();
         messages
             .iter()
-            .map(|m| Event::Message(Message(m.clone())))
+            .map(|m| Event::Message(m.clone().into()))
             .collect()
     }
 

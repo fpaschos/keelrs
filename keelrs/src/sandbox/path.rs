@@ -2,10 +2,13 @@
 
 use std::fmt;
 
+use derive_more::{AsRef, Display};
+
 /// A path inside a sandbox: UTF-8, POSIX (`/`-separated) and absolute,
 /// with `.` and `..` folded away. It serialises as its text.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, AsRef, Display, serde::Serialize)]
 #[serde(transparent)]
+#[as_ref(forward)]
 pub struct SandboxPath(String);
 
 impl SandboxPath {
@@ -56,18 +59,6 @@ impl SandboxPath {
             }
         }
         Self(format!("/{}", parts.join("/")))
-    }
-}
-
-impl AsRef<str> for SandboxPath {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for SandboxPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 

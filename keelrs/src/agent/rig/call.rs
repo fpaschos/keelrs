@@ -36,7 +36,7 @@ pub(super) async fn answer(
             else {
                 unreachable!("tool_result_message builds a tool result")
             };
-            return Ok((call.answer(None), ToolResultPart(part)));
+            return Ok((call.answer(None), part.into()));
         }
         other => return Err(format!("unsupported tool call {other:?}")),
     };
@@ -47,7 +47,7 @@ pub(super) async fn answer(
     let id = exec.id().wire().into_owned();
     let called = self::call(tool, exec.arguments(), id, sandbox).await;
     let result = result(called);
-    let part = ToolResultPart(exec.tool_call().answer(&result));
+    let part = exec.tool_call().answer(&result).into();
     Ok((exec.answer(result), part))
 }
 

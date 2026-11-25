@@ -42,7 +42,7 @@ async fn a_malformed_calls_part_is_the_result_rig_commits() {
         panic!("the run committed a user message");
     };
     let committed: Vec<_> = content.iter().collect();
-    assert_eq!(committed, [&UserContent::ToolResult(part.0)]);
+    assert_eq!(committed, [&UserContent::ToolResult(part.into())]);
 }
 
 #[tokio::test]

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use derive_more::{From, Into};
 use rig_core::conversation::pairing;
 use rig_core::message::{
     AssistantContent, CallId, Message as RigMessage, ToolResult as RigToolResult, UserContent,
@@ -12,15 +13,15 @@ use serde::{Deserialize, Serialize};
 use crate::event::Event;
 
 /// One message a run accepted; opaque so Rig's type stays in this module.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, From, Into, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(crate) struct Message(pub(super) Arc<RigMessage>);
+pub(crate) struct Message(Arc<RigMessage>);
 
 /// One tool call's result, as the next user message carries it; opaque so
 /// Rig's type stays in this module.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, From, Into, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(crate) struct ToolResultPart(pub(super) RigToolResult);
+pub(crate) struct ToolResultPart(RigToolResult);
 
 /// Adds a run's message or tool result to `history`, as the next run reads
 /// it; any other event leaves it unchanged.

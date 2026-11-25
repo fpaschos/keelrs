@@ -38,7 +38,8 @@ pub(crate) enum FailKind {
 }
 
 /// A failed call: the message the model reads, and its kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[display("{message}")]
 pub(crate) struct Failed {
     pub(crate) kind: FailKind,
     pub(crate) message: String,
@@ -50,12 +51,6 @@ impl Failed {
             kind,
             message: message.into(),
         }
-    }
-}
-
-impl fmt::Display for Failed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
     }
 }
 
