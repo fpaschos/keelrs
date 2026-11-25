@@ -19,6 +19,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use derive_more::Display;
 use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
@@ -35,7 +36,7 @@ pub mod testing;
 const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(30);
 
 /// The name of one event: unique everywhere, minted by the writer before the append.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Display, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EventId(uuid::Uuid);
 
@@ -45,15 +46,20 @@ impl EventId {
     }
 }
 
-impl fmt::Display for EventId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 /// An event's position in its stream: 1, 2, 3… with no gaps; 0 before the first.
 #[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Debug,
+    Display,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
 )]
 #[serde(transparent)]
 pub struct Seq(u64);
@@ -75,12 +81,6 @@ impl Seq {
     #[must_use]
     pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
-    }
-}
-
-impl fmt::Display for Seq {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }
 

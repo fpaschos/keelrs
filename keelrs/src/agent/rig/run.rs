@@ -5,23 +5,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
-use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use rig_agent::run::{
     AgentRun, AgentRunStep, InvalidToolCallAction, ModelTurn, ModelTurnOutcome, PromptError,
-    RetryRequest, RunSpec, ToolAnswer, prepare_request,
+    RetryRequest, RunSpec, TurnPolicy, prepare_request,
 };
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
 use rig_core::completion::message::turn_failure;
 use rig_core::completion::{
-    CompletionRequest, Effort, GenerationOptions, Reasoning, ToolDefinition,
+    CompletionRequest, CompletionResponse, Effort, GenerationOptions, Reasoning, ToolDefinition,
 };
-use rig_core::message::{AssistantContent, CallId, Message as RigMessage, ToolName, UserContent};
+use rig_core::message::{AssistantContent, Message as RigMessage, ToolName};
 use rig_core::operation::Completion;
 
 use super::call::answer;
-use super::history::{Message, ToolResultPart};
+use super::history::Message;
 use crate::agent::{SettledValue, TurnSetup};
 use crate::builtin::structured::{
     FINISH_STRUCTURED, FOOTER, MAX_STRUCTURED_REASKS, REASK, Structured,
@@ -64,9 +63,6 @@ pub(crate) fn connect_catalog() -> Connect {
     })
 }
 
-/// A tool call running; it yields its id and the answer.
-type Running = BoxFuture<'static, Result<(CallId, ToolAnswer), String>>;
-
 /// One dispatch's run on Rig's `AgentRun`, driven to its end by [`drive`](Self::drive).
 pub(crate) struct Run {
     setup: TurnSetup,
@@ -76,8 +72,8 @@ pub(crate) struct Run {
     /// What this instance's built-in tools remember; handed back at the end.
     caches: Caches,
     connect: Connect,
-    /// Connected from the first turn setup and kept for every turn (use_model behaviour).
-    connected: Option<(DynModel<Completion>, Option<Thinking>)>,
+    /// The declared model this run is connected to; connected again when a turn declares another.
+    connected: Option<(Model, DynModel<Completion>)>,
     /// How many of the run's messages were produced so far.
     produced: usize,
 }
@@ -94,7 +90,6 @@ impl Run {
         caches: Caches,
         connect: Connect,
     ) -> Self {
-        let history: Vec<Arc<RigMessage>> = history.into_iter().map(|m| m.0).collect();
         // The footer is stored with the message it asks a structured result for.
         let text = match structured {
             Some(_) => format!("{text}\n\n{FOOTER}"),
@@ -115,10 +110,10 @@ impl Run {
         }
     }
 
-    /// Runs the dispatch to its end, persisting each model answer (B) and
-    /// each tool result (C) before it goes on.
+    /// Runs the dispatch to its end, persisting each model answer and each
+    /// tool result before it goes on.
     pub(crate) async fn drive(mut self, mut sink: impl PersistSink) -> RunCompleted {
-        let (events, result) = match self.go(&mut sink).await {
+        let (events, result) = match self.run_until_settled(&mut sink).await {
             Ok((events, value)) => (events, Ok(value)),
             // The owner adds the closing events.
             Err(reason) => (Vec::new(), Err(reason)),
@@ -130,9 +125,10 @@ impl Run {
         }
     }
 
-    /// The loop. Returns D: the last events and the settled value; an error
-    /// is the failure reason, as plain text.
-    async fn go(
+    /// Steps the run until the dispatch settles. Returns the last events,
+    /// which the owner stores with `settled`, and the settled value; an
+    /// error is the failure reason, as plain text.
+    async fn run_until_settled(
         &mut self,
         sink: &mut impl PersistSink,
     ) -> Result<(Vec<Event>, SettledValue), String> {
@@ -146,7 +142,7 @@ impl Run {
                 } => {
                     pinned = Some(self.call_model(&prompt, &history).await?);
                     let next = self.next_step()?;
-                    // B, unless the answer is final: then it goes with D.
+                    // Persist the answer, unless it is final: then it goes with the last events.
                     if !matches!(next, AgentRunStep::Done(_)) {
                         let events = self.produced();
                         if !events.is_empty() {
@@ -161,23 +157,22 @@ impl Run {
                         .ok_or("the run called tools before any turn setup")?;
                     // One reply's calls run concurrently; Rig commits them in call order.
                     // Each shares the turn's tools.
-                    let mut running: FuturesUnordered<Running> = calls
+                    let mut running: FuturesUnordered<_> = calls
                         .into_iter()
                         .map(|call| {
                             let (tools, sandbox) = (Arc::clone(tools), sandbox.clone());
-                            Box::pin(async move { answer(call, &tools, &sandbox).await }) as Running
+                            async move { answer(call, &tools, &sandbox).await }
                         })
                         .collect();
                     while let Some(answered) = running.next().await {
-                        let (id, answer) = answered?;
+                        let (answer, part) = answered?;
                         self.run.answer(answer).map_err(|e| e.to_string())?;
-                        let open = !running.is_empty();
-                        let event = Event::ToolResult(self.result_of(&id, open)?);
-                        if !open {
-                            // Rig commits the batch's results as one message, produced above one by one.
+                        let event = Event::ToolResult(part);
+                        if running.is_empty() {
+                            // Rig committed the batch as one message; its event is decided in #47.
                             self.produced = self.run.messages().len();
                             // A recorded result ends the dispatch once its whole batch
-                            // has run: the last result goes with D.
+                            // has run: the last result goes with the last events.
                             if let Some(value) =
                                 self.structured.as_ref().and_then(Structured::recorded)
                             {
@@ -188,7 +183,6 @@ impl Run {
                                 return Ok((vec![event], value));
                             }
                         }
-                        // C
                         sink.persist(vec![event]).await;
                     }
                     self.next_step()?
@@ -198,7 +192,7 @@ impl Run {
                         text: response.output(),
                         structured: None,
                     };
-                    // D: the final answer and settled together.
+                    // The final answer is a last event, stored with `settled`.
                     return Ok((self.produced(), value));
                 }
             };
@@ -220,28 +214,8 @@ impl Run {
         self.produced += messages.len();
         messages
             .iter()
-            .map(|m| Event::Message(Message(m.clone())))
+            .map(|m| Event::Message(m.clone().into()))
             .collect()
-    }
-
-    /// The result the run built for the call `id`; `open`: its batch still
-    /// has calls running.
-    fn result_of(&self, id: &CallId, open: bool) -> Result<ToolResultPart, String> {
-        let find = |message: &RigMessage| match message {
-            RigMessage::User { content } => content.iter().find_map(|c| match c {
-                UserContent::ToolResult(r) if r.call == *id => Some(ToolResultPart(r.clone())),
-                _ => None,
-            }),
-            _ => None,
-        };
-        // A finished batch is the run's last message; an open one shows only
-        // at the end of its full history, which Rig builds by copying.
-        let found = if open {
-            self.run.full_history().last().and_then(find)
-        } else {
-            self.run.messages().last().and_then(|m| find(m))
-        };
-        found.ok_or_else(|| format!("no result for tool call `{id}`"))
     }
 
     /// Sets up the turn and calls the model once, leaving its answer with the
@@ -251,78 +225,65 @@ impl Run {
         prompt: &RigMessage,
         history: &[Arc<RigMessage>],
     ) -> Result<(Arc<HashMap<String, Tool>>, Sandbox), String> {
-        let max_turns = self.setup.max_turns;
-        // The agent function runs again before every turn (ADR 0004).
+        let turn = self.set_up_turn()?;
+        let model = self.connect(&turn.model)?;
+        let (response, policy) = call(model, &turn.spec, turn.definitions, prompt, history).await?;
+        self.accept(&response, policy)?;
+        self.reask_if_text(&response)?;
+        Ok((turn.tools, turn.sandbox))
+    }
+
+    /// Runs the agent function again (ADR 0004) and builds the turn it declared.
+    fn set_up_turn(&mut self) -> Result<Turn, String> {
         let declared = self.setup.run();
-        let declared_model = declared.model()?;
-        let sb = declared.sandbox()?.clone();
+        let model = declared.model()?.clone();
+        let sandbox = declared.sandbox()?.clone();
         let instructions = declared.instructions()?;
         let skills = declared.skills()?;
         let names = declared.builtin_names()?;
         let declared_tools = declared.tools()?;
         // Flue's order: the sandbox built-ins, the skill tools, then the declared ones.
         // The cache is taken only once the turn setup is valid, so a failed one keeps it.
-        let tools: Vec<Tool> = builtin::tools(&sb, &self.caches.seen(sb.id()), &names)
+        let tools: Vec<Tool> = builtin::tools(&sandbox, &self.caches.seen(sandbox.id()), &names)
             .into_iter()
             .chain(skill_tools(skills))
             .chain(declared_tools.iter().cloned())
             .chain(self.structured.as_ref().map(|s| s.tool.clone()))
             .collect();
-        let (model, thinking) = match &mut self.connected {
-            Some(connected) => connected,
-            None => self
-                .connected
-                .insert(((self.connect)(declared_model)?, declared_model.thinking)),
-        };
-        let definitions = tools
-            .iter()
-            .map(|tool| {
-                let name = ToolName::new(&*tool.name).map_err(|e| e.to_string())?;
-                let schema = (*tool.schema).clone();
-                Ok(Arc::new(ToolDefinition::new(
-                    name,
-                    &*tool.description,
-                    schema,
-                )))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let pinned = (
-            Arc::new(
-                tools
-                    .iter()
-                    .map(|tool| (tool.name.to_string(), tool.clone()))
-                    .collect(),
-            ),
-            sb,
-        );
-
+        let definitions = definitions(&tools)?;
         let mut spec = RunSpec::new();
         // The skill catalog follows the instructions (How a skill reaches the model).
         let parts: Vec<String> = instructions.into_iter().chain(catalog(skills)).collect();
         spec.preamble = (!parts.is_empty()).then(|| parts.join("\n\n"));
-        if let Some(thinking) = thinking {
-            spec.options = GenerationOptions::default().reasoning(reasoning(*thinking));
+        if let Some(thinking) = model.thinking {
+            spec.options = GenerationOptions::default().reasoning(reasoning(thinking));
         }
-        let prepared = prepare_request(
-            &spec,
-            &model.capabilities().completion,
-            history,
+        let tools = Arc::new(tools.into_iter().map(|t| (t.name.to_string(), t)).collect());
+        Ok(Turn {
+            model,
+            spec,
             definitions,
-            None,
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-        let policy = prepared.policy.clone();
-        let response = model
-            .call(prepared.apply(CompletionRequest::new(prompt.clone())))
-            .await
+            tools,
+            sandbox,
+        })
+    }
+
+    /// The connection to `declared`; connected again when the last turn declared another model.
+    fn connect(&mut self, declared: &Model) -> Result<&DynModel<Completion>, String> {
+        let connected = match self.connected.take() {
+            Some(connected) if connected.0 == *declared => connected,
+            _ => (declared.clone(), (self.connect)(declared)?),
+        };
+        Ok(&self.connected.insert(connected).1)
+    }
+
+    /// Gives the run the model's answer. A call to a tool this turn did not
+    /// declare is skipped with the names it did; its siblings are re-issued next turn.
+    fn accept(&mut self, response: &CompletionResponse, policy: TurnPolicy) -> Result<(), String> {
+        let mut outcome = self
+            .run
+            .model_response(ModelTurn::from_policy(response, policy))
             .map_err(|e| e.to_string())?;
-        let run = &mut self.run;
-        let mut outcome = run
-            .model_response(ModelTurn::from_policy(&response, policy))
-            .map_err(|e| e.to_string())?;
-        // A call to a tool this turn did not declare is skipped with
-        // the names it did; its siblings are re-issued next turn.
         while let ModelTurnOutcome::NeedsResolution(invalid) = outcome {
             let available = match invalid.available_tools.as_slice() {
                 [] => "none".to_owned(),
@@ -332,41 +293,91 @@ impl Run {
                 "tool \"{}\" is not available; available tools: {available}",
                 invalid.tool_name
             ));
-            outcome = run
+            outcome = self
+                .run
                 .resolve_invalid_tool_call(skip)
                 .map_err(|e| e.to_string())?;
         }
-        // A text ending, when a structured result is asked for, is re-asked
-        // in the same run: the reply stays, the re-ask follows it.
-        if self.structured.is_some()
-            && turn_failure(
+        Ok(())
+    }
+
+    /// A text ending, when a structured result is asked for, is re-asked
+    /// in the same run: the reply stays, the re-ask follows it.
+    fn reask_if_text(&mut self, response: &CompletionResponse) -> Result<(), String> {
+        if self.structured.is_none()
+            || turn_failure(
                 &response.choice,
                 response.head().stop.as_ref(),
                 response.finish_reason().as_ref(),
             )
-            .is_none()
-            && !response
+            .is_some()
+            || response
                 .choice
                 .iter()
                 .any(|item| matches!(item, AssistantContent::ToolCall(_)))
         {
-            if self.reasks == MAX_STRUCTURED_REASKS {
-                return Err(format!(
-                    "ended without calling `{FINISH_STRUCTURED}` after {} re-asks",
-                    self.reasks
-                ));
-            }
-            if run.turn() >= max_turns {
-                return Err(format!(
-                    "ended without calling `{FINISH_STRUCTURED}`: turn limit ({max_turns}) reached"
-                ));
-            }
-            self.reasks += 1;
-            run.retry_model_turn(RetryRequest::Feedback(REASK.to_owned()))
-                .map_err(|e| e.to_string())?;
+            return Ok(());
         }
-        Ok(pinned)
+        if self.reasks == MAX_STRUCTURED_REASKS {
+            return Err(format!(
+                "ended without calling `{FINISH_STRUCTURED}` after {} re-asks",
+                self.reasks
+            ));
+        }
+        let max_turns = self.setup.max_turns;
+        if self.run.turn() >= max_turns {
+            return Err(format!(
+                "ended without calling `{FINISH_STRUCTURED}`: turn limit ({max_turns}) reached"
+            ));
+        }
+        self.reasks += 1;
+        self.run
+            .retry_model_turn(RetryRequest::Feedback(REASK.to_owned()))
+            .map_err(|e| e.to_string())
     }
+}
+
+/// One turn's setup, from the agent function's declaration.
+struct Turn {
+    model: Model,
+    /// The instructions, then the skill catalog, and the thinking level.
+    spec: RunSpec,
+    definitions: Vec<Arc<ToolDefinition>>,
+    /// The turn's tools, by name, pinned for the `CallTools` step that follows.
+    tools: Arc<HashMap<String, Tool>>,
+    sandbox: Sandbox,
+}
+
+/// What the model is sent for each of `tools`.
+fn definitions(tools: &[Tool]) -> Result<Vec<Arc<ToolDefinition>>, String> {
+    tools
+        .iter()
+        .map(|tool| {
+            let name = ToolName::new(&*tool.name).map_err(|e| e.to_string())?;
+            let (description, schema) = (&*tool.description, (*tool.schema).clone());
+            Ok(Arc::new(ToolDefinition::new(name, description, schema)))
+        })
+        .collect()
+}
+
+/// Calls `model` once with a turn's `spec` and tool `definitions`; returns
+/// its answer and the policy the run reads it by.
+async fn call(
+    model: &DynModel<Completion>,
+    spec: &RunSpec,
+    definitions: Vec<Arc<ToolDefinition>>,
+    prompt: &RigMessage,
+    history: &[Arc<RigMessage>],
+) -> Result<(CompletionResponse, TurnPolicy), String> {
+    let capabilities = &model.capabilities().completion;
+    let prepared = prepare_request(spec, capabilities, history, definitions, None, None)
+        .map_err(|e| e.to_string())?;
+    let policy = prepared.policy.clone();
+    let response = model
+        .call(prepared.apply(CompletionRequest::new(prompt.clone())))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((response, policy))
 }
 
 /// Maps keelrs's thinking level 1:1 onto Rig's.

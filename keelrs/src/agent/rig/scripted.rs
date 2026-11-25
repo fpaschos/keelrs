@@ -65,8 +65,11 @@ impl Script {
 
     /// Connects every declared model to this script.
     pub(crate) fn connect(&self) -> Connect {
-        let transport = self.clone();
-        Arc::new(move |_| Ok(Model::new(MockScript::default(), transport.clone()).erase()))
+        let script = self.clone();
+        Arc::new(move |model| {
+            let (script, model) = (script.clone(), model.id.clone());
+            Ok(Model::new(MockScript::default(), Connection { script, model }).erase())
+        })
     }
 
     fn then(&self, turn: Turn) {
@@ -74,11 +77,18 @@ impl Script {
     }
 }
 
-impl Transport<MockScript> for Script {
+/// One connection to the script, for the declared model `model`.
+#[derive(Clone)]
+struct Connection {
+    script: Script,
+    model: String,
+}
+
+impl Transport<MockScript> for Connection {
     fn send(&self, request: CompletionRequest, exchange: Exchange) -> Opening<MockFrame> {
         let turn = {
-            let mut state = self.0.lock();
-            state.requests.push(self::request(&request));
+            let mut state = self.script.0.lock();
+            state.requests.push(self::request(&self.model, &request));
             state.turns.pop_front()
         };
         match turn {
@@ -94,8 +104,8 @@ impl Transport<MockScript> for Script {
     }
 }
 
-/// What `request` sent the model, as plain data.
-fn request(request: &CompletionRequest) -> Request {
+/// What `request` sent the declared `model`, as plain data.
+fn request(model: &str, request: &CompletionRequest) -> Request {
     let mut instructions = None;
     let mut messages = Vec::new();
     for message in &request.chat_history {
@@ -114,6 +124,7 @@ fn request(request: &CompletionRequest) -> Request {
         .map(|tool| serde_json::to_value(&**tool).expect("a tool definition serializes"))
         .collect();
     Request {
+        model: model.to_owned(),
         instructions,
         messages,
         tools,

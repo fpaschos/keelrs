@@ -180,19 +180,14 @@ fn reason(ran: &Ran) -> String {
 
 /// A sandbox's identity, unique within this process: what tells two
 /// sandboxes apart, such as in a tool call's footprint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, derive_more::Display)]
+#[display("sandbox-{_0}")]
 pub struct SandboxId(u64);
 
 impl SandboxId {
     fn next() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl fmt::Display for SandboxId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sandbox-{}", self.0)
     }
 }
 
