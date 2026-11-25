@@ -270,10 +270,11 @@ impl Run {
 
     /// The connection to `declared`; connected again when the last turn declared another model.
     fn connect(&mut self, declared: &Model) -> Result<&DynModel<Completion>, String> {
-        if self.connected.as_ref().is_none_or(|(m, _)| m != declared) {
-            self.connected = Some((declared.clone(), (self.connect)(declared)?));
-        }
-        Ok(&self.connected.as_ref().expect("set above").1)
+        let connected = match self.connected.take() {
+            Some(connected) if connected.0 == *declared => connected,
+            _ => (declared.clone(), (self.connect)(declared)?),
+        };
+        Ok(&self.connected.insert(connected).1)
     }
 
     /// Gives the run the model's answer. A call to a tool this turn did not
